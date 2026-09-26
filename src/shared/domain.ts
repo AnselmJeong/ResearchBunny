@@ -199,6 +199,8 @@ export function filterReasons(
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean))
     if (text.includes(term)) reasons.push(`제외어: ${term}`);
+  if (filters.reading && w.state.reading !== filters.reading)
+    reasons.push("읽기 상태 불일치");
   if (filters.hasAbstract && !w.abstract) reasons.push("초록 없음");
   if (filters.hasPdf && !w.attachmentCount) reasons.push("보관 PDF 없음");
   if (filters.openAccess && !w.oaUrl) reasons.push("OA 링크 없음");

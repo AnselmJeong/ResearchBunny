@@ -20,6 +20,7 @@ const id = z.string().min(1).max(160);
 const ids = z.array(id).max(10000);
 const text = z.string().max(20000);
 export const filtersSchema = z.object({
+  reading: z.enum(["unread", "planned", "reading", "read"]).optional(),
   strictness: z.enum(["strict", "balanced", "broad"]),
   relevance: z.boolean(),
   minCitations: z.number().min(0).max(1e9),

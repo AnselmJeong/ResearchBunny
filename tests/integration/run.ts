@@ -616,3 +616,181 @@ test("100-file PDF batch preserves all originals and records every result", () =
     assert.equal(db.candidates(run.id).length, 100);
     assert.deepEqual(await Promise.all(paths.map((p) => hashFile(p))), before);
   }));
+
+test("backtracking preserves selections, view state, branches and restart state", async () => {
+  const {
+    defaultView,
+    restoreNavigation,
+    visitView,
+    moveHistory,
+    rememberView,
+  } = await import("../../src/shared/navigation");
+  const root = defaultView({
+    scope: "run",
+    scopeId: "search",
+    selected: ["a", "b", "c"],
+    query: "question",
+    localQuery: "topic",
+    view: "timeline",
+    sort: "year",
+    inspectorId: "b",
+    positions: { a: { x: 3, y: 7 } },
+  });
+  const related = defaultView({
+    scope: "run",
+    scopeId: "related",
+    selected: ["d"],
+  });
+  let history = visitView(restoreNavigation(root), root, related);
+  root.selected.push("mutation-after-navigation");
+  history = moveHistory(history, related, -1);
+  const restored = history.views[history.keys[history.index]];
+  assert.deepEqual(restored.selected, ["a", "b", "c"]);
+  assert.equal(restored.view, "timeline");
+  assert.equal(restored.localQuery, "topic");
+  assert.deepEqual(restored.positions, { a: { x: 3, y: 7 } });
+  const forward = moveHistory(history, restored, 1);
+  assert.deepEqual(forward.views[forward.keys[forward.index]].selected, ["d"]);
+  const cited = defaultView({ scope: "run", scopeId: "cited" });
+  history = visitView(history, restored, cited);
+  assert.deepEqual(history.keys, ["run:search", "run:cited"]);
+  assert.deepEqual(history.views["run:related"].selected, ["d"]);
+  assert.deepEqual(
+    restoreNavigation(
+      JSON.parse(JSON.stringify({ navigation: rememberView(history, cited) })),
+    ),
+    history,
+  );
+  assert.equal(
+    restoreNavigation({
+      navigation: { keys: ["missing"], index: 7, views: {} },
+    }).views["archive:"].scope,
+    "archive",
+  );
+});
+
+test("long navigation histories keep the current stage and bound preference storage", async () => {
+  const { defaultView, restoreNavigation, visitView, compactNavigation } =
+    await import("../../src/shared/navigation");
+  let current = defaultView();
+  let history = restoreNavigation(current);
+  for (let i = 0; i < 90; i++) {
+    const next = defaultView({
+      scope: "run",
+      scopeId: String(i),
+      selected: [String(i)],
+      positions: Object.fromEntries(
+        Array.from({ length: 500 }, (_, n) => [String(n), { x: n, y: n }]),
+      ),
+    });
+    history = visitView(history, current, next);
+    current = next;
+  }
+  history = compactNavigation(history);
+  assert.equal(history.keys[history.index], "run:89");
+  assert.deepEqual(history.views["run:89"].selected, ["89"]);
+  assert(Object.keys(history.views).length <= 40);
+  assert(JSON.stringify(history).length <= 850000);
+  assert(history.keys.every((key) => history.views[key]));
+});
+
+test("exploration roots and branches stay inside their project", () =>
+  fixture(async (db) => {
+    const { runPath } = await import("../../src/shared/navigation");
+    const p = db.projects()[0].id;
+    const d = new Discovery(
+      db,
+      new OpenAlex(db, () => undefined, mockFetch),
+      () => {},
+    );
+    const search = d.start({
+      projectId: p,
+      mode: "search",
+      query: "interoception",
+      ids: [],
+      filters: DEFAULT_FILTERS,
+      parentId: "obsolete",
+    });
+    await finished(db, search.id);
+    assert.equal(search.parentId, undefined);
+    const ids = db
+      .candidates(search.id)
+      .slice(0, 3)
+      .map((c) => c.work.id);
+    const related = d.start({
+      projectId: p,
+      mode: "related",
+      query: "interoception",
+      ids,
+      filters: DEFAULT_FILTERS,
+      parentId: search.id,
+    });
+    await finished(db, related.id);
+    const cited = d.start({
+      projectId: p,
+      mode: "citedBy",
+      query: "interoception",
+      ids,
+      filters: DEFAULT_FILTERS,
+      parentId: search.id,
+    });
+    await finished(db, cited.id);
+    assert.deepEqual(
+      runPath(db.runs(p), cited.id).map((r) => r.id),
+      [search.id, cited.id],
+    );
+    assert.deepEqual(related.inputIds, cited.inputIds);
+    const second = db.createProject("Separate", "").id;
+    assert.throws(
+      () =>
+        d.start({
+          projectId: second,
+          mode: "citedBy",
+          query: "",
+          ids,
+          filters: DEFAULT_FILTERS,
+          parentId: search.id,
+        }),
+      /다른 프로젝트/,
+    );
+  }));
+
+test("reading filters apply before pagination and preserve the archived inventory", () =>
+  fixture((db) => {
+    const projectId = db.projects()[0].id;
+    const works = [1, 2, 3, 4].map(
+      (n) => db.upsert(fromOpenAlex(raw(n, `Reading fixture ${n}`))).work,
+    );
+    db.mutate(
+      projectId,
+      works.map((w) => w.id),
+      { screening: "included" },
+    );
+    db.mutate(projectId, [works[0].id, works[2].id], { reading: "reading" });
+    db.mutate(projectId, [works[1].id], { reading: "read" });
+    const args = {
+      projectId,
+      scope: "archive",
+      query: "",
+      filters: { ...DEFAULT_FILTERS, reading: "reading" as const },
+      showHidden: false,
+      offset: 0,
+      limit: 1,
+      sort: "title",
+    };
+    const first = db.list(args);
+    const second = db.list({ ...args, offset: 1 });
+    assert.equal(first.total, 2);
+    assert.equal(first.hidden, 2);
+    assert.equal(first.works[0].id, works[0].id);
+    assert.equal(second.works[0].id, works[2].id);
+    assert.equal(
+      db.list({ ...args, filters: DEFAULT_FILTERS, limit: 50 }).total,
+      4,
+    );
+    assert.equal(schemas.list.parse(args).filters.reading, "reading");
+    assert.equal(
+      schemas.list.parse({ ...args, filters: DEFAULT_FILTERS }).filters.reading,
+      undefined,
+    );
+  }));

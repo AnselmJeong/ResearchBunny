@@ -1,7 +1,7 @@
 {
   "name": "researchbunny",
   "productName": "ResearchBunny",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "A local research library and citation discovery workspace",
   "main": "dist/main.cjs",
   "author": "ResearchBunny",
@@ -18,7 +18,9 @@
     "test:live": "node scripts/live-smoke.mjs",
     "package": "npm run build && electron-forge package --arch=arm64 && node scripts/sign.mjs",
     "make": "npm run package && node scripts/make-dmg.mjs",
-    "postinstall": "electron-rebuild -f -w better-sqlite3"
+    "postinstall": "electron-rebuild -f -w better-sqlite3",
+    "test:navigation": "node tests/desktop/navigation.mjs",
+    "test:design": "node tests/desktop/design.mjs"
   },
   "config": {
     "forge": "./forge.config.cjs"

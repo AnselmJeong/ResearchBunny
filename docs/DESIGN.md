@@ -18,3 +18,19 @@ Technical decisions:
 - Candidate inspection, screen selection, anchor seeds and archived works are distinct states.
 - Recommendation weights are a versioned provisional baseline, not calibrated probabilities. GPT remains experimental until human evaluation satisfies PRD 9.3.
 - Data defaults to Electron userData/library. Managed PDF copies are content addressed. Restore opens a verified separate library and retains the previous one.
+
+Navigation and help (0.1.1):
+
+- Project-local history retains each visited screen's latest selection, filters, sort, view, graph positions, pagination and inspector state. Back/forward changes the screen; library undo changes saved data.
+- Exploration breadcrumbs follow persisted run parents. A fresh keyword/AI search starts a new root; branching retains previous runs. An old parent without a cached view defaults to the child run's input selection.
+- Preferences retain up to 40 screen snapshots and 60 visits, trimmed below 850 KB where possible. Eviction does not delete runs or papers.
+- Descriptive help is delegated across controls, appears after a short hover or on focus, and uses a native popover to remain above dialogs. Escape dismisses it; the target receives aria-describedby while visible.
+
+## Design concepts v1 implementation (2026-09-26)
+
+Reference: `design-concepts/2026-09-26-v1/` (all five screens).
+Visual thesis: warm ivory and white surfaces, charcoal text, botanical green selection, readable editorial paper rows.
+Content plan: compact discovery search, project navigation, paper workspace and tabbed inspector; dedicated history and settings workspaces.
+Interaction thesis: a single discovery menu with keyboard/outside dismissal, quiet row/selection transitions, and tab changes without losing note drafts.
+Implementation boundary: preserve existing search, graph direction, navigation snapshots, imports, backups and local storage. History branches use persisted parentId, never chronological inference. Example papers/counts in the concepts are not application data. Themes remain a user preference rather than switching automatically for graphs.
+Validation: typecheck, lint, build, integration and desktop flows with isolated fixture data, plus screenshots of the five workspaces.

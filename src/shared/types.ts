@@ -114,6 +114,7 @@ export type JobStatus =
   | "failed"
   | "interrupted";
 export interface Filters {
+  reading?: ReadState;
   strictness: "strict" | "balanced" | "broad";
   relevance: boolean;
   minCitations: number;

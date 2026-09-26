@@ -45,6 +45,14 @@ export class Discovery {
       throw new AppError("NO_SEEDS", "공통 관계는 2편 이상을 선택하세요.");
     if (["search", "ai"].includes(input.mode) && !input.query.trim())
       throw new AppError("EMPTY_QUERY", "검색어나 연구 질문을 입력하세요.");
+    const parentId = ["search", "ai"].includes(input.mode)
+      ? undefined
+      : input.parentId;
+    if (parentId && this.library.run(parentId).projectId !== input.projectId)
+      throw new AppError(
+        "INVALID_PARENT",
+        "다른 프로젝트의 탐색을 출발 단계로 사용할 수 없습니다.",
+      );
     const seed = this.library.seedHistory(input.projectId)[0];
     const run: Run = {
       id: randomUUID(),
@@ -66,7 +74,7 @@ export class Discovery {
       tasks: [],
       rankingVersion: "tfidf-topic-v1",
       phase: "hydrate",
-      parentId: input.parentId,
+      parentId,
     };
     if (input.mode === "search") {
       const identifier =

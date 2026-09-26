@@ -49,6 +49,7 @@ export function Inspector({
   onInspect: (id: string) => void;
   seed: boolean;
 }) {
+  const [tab, setTab] = useState<"abstract" | "evidence" | "notes">("abstract");
   const [attachments, setAttachments] = useState<Attachment[]>([]),
     [duplicates, setDuplicates] = useState<WorkView[] | null>(null),
     [tags, setTags] = useState(""),
@@ -118,7 +119,7 @@ export function Inspector({
         <div className="paper-actions">
           <button
             className={
-              state.screening === "included" ? "saved-button" : "primary"
+              state.screening === "included" ? "saved-button" : "save-inspector"
             }
             onClick={() =>
               onPatch({
@@ -204,314 +205,395 @@ export function Inspector({
             </button>
           )}
         </div>
-        <section>
-          <h3>초록</h3>
-          {work.abstract ? (
-            <p className="abstract">{work.abstract}</p>
-          ) : (
-            <p className="missing">
-              제공된 초록이 없습니다. 제목과 주제·인용 관계만 확인할 수
-              있습니다.
-            </p>
-          )}
-        </section>
-        {work.evidence && work.evidence.relation !== "local" && (
+        <div
+          className="inspector-tabs"
+          role="tablist"
+          aria-label="문헌 상세 보기"
+        >
+          {(
+            [
+              ["abstract", "초록"],
+              ["evidence", "발견 근거"],
+              ["notes", "노트"],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              id={`inspector-tab-${key}`}
+              role="tab"
+              aria-selected={tab === key}
+              tabIndex={tab === key ? 0 : -1}
+              onKeyDown={(event) => {
+                const keys = ["abstract", "evidence", "notes"] as const;
+                const direction =
+                  event.key === "ArrowRight"
+                    ? 1
+                    : event.key === "ArrowLeft"
+                      ? -1
+                      : 0;
+                if (!direction && event.key !== "Home" && event.key !== "End")
+                  return;
+                event.preventDefault();
+                const next =
+                  event.key === "Home"
+                    ? keys[0]
+                    : event.key === "End"
+                      ? keys[2]
+                      : keys[
+                          (keys.indexOf(tab) + direction + keys.length) %
+                            keys.length
+                        ];
+                setTab(next);
+                document.getElementById(`inspector-tab-${next}`)?.focus();
+              }}
+              aria-controls={`inspector-panel-${key}`}
+              onClick={() => setTab(key)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div
+          role="tabpanel"
+          id="inspector-panel-abstract"
+          aria-labelledby="inspector-tab-abstract"
+          hidden={tab !== "abstract"}
+        >
           <section>
-            <h3>발견 근거</h3>
-            {work.evidence.ai && (
-              <div className="ai-reason">
-                <span className="badge">{work.evidence.ai.role} · AI 추정</span>
-                <p>{work.evidence.ai.reason}</p>
-                <blockquote>{work.evidence.ai.quote}</blockquote>
-                <small>{work.evidence.ai.limitation}</small>
-              </div>
-            )}
-            <ul className="evidence-list">
-              {[...work.evidence.origins, ...work.evidence.reasons].map(
-                (reason, i) => (
-                  <li key={i}>{reason}</li>
-                ),
-              )}
-            </ul>
-            {work.evidence.hidden.length > 0 && (
-              <p className="warning-text">
-                숨긴 이유: {work.evidence.hidden.join(" · ")}
+            <h3>초록</h3>
+            {work.abstract ? (
+              <p className="abstract">{work.abstract}</p>
+            ) : (
+              <p className="missing">
+                제공된 초록이 없습니다. 제목과 주제·인용 관계만 확인할 수
+                있습니다.
               </p>
             )}
-            {work.evidence.seedIds.length > 0 && (
-              <details>
-                <summary>
-                  연결 근거 문헌 {work.evidence.seedIds.length}/
-                  {work.evidence.denominator}편
-                </summary>
-                {work.evidence.seedIds.map((id) => (
-                  <button
-                    className="evidence-paper"
-                    key={id}
-                    onClick={() => onInspect(id)}
-                  >
-                    {evidenceTitles[id] || id}
-                    <ChevronRight size={13} />
-                  </button>
-                ))}
-              </details>
-            )}
-            {work.evidence.sharedIds.length > 0 && (
-              <details>
-                <summary>공유 참고문헌 ID</summary>
-                <p className="subtle">{work.evidence.sharedIds.join(", ")}</p>
-              </details>
-            )}
-            {!!work.evidence.coCitingIds?.length && (
-              <details>
-                <summary>공동인용 근거 문헌 ID</summary>
-                <p className="subtle">{work.evidence.coCitingIds.join(", ")}</p>
-              </details>
-            )}
-            <p className="subtle">{work.evidence.scope}</p>
           </section>
-        )}
-        <section>
-          <h3>라이브러리</h3>
-          <label className="field">
-            읽기 상태
-            <select
-              value={state.reading}
-              onChange={(e) =>
-                onPatch({ reading: e.target.value as ReadState })
-              }
-            >
-              <option value="unread">미열람</option>
-              <option value="planned">읽을 예정</option>
-              <option value="reading">읽는 중</option>
-              <option value="read">읽음</option>
-            </select>
-          </label>
-          <label className="field">
-            컬렉션
-            <select
-              aria-label="문헌을 컬렉션에 추가"
-              value=""
-              onChange={(e) => {
-                if (e.target.value)
-                  void window.bunny
-                    .collectionMembers({
-                      projectId,
-                      collectionId: e.target.value,
-                      ids: [work.id],
-                    })
-                    .catch(onError);
-              }}
-            >
-              <option value="">컬렉션에 추가…</option>
-              {collections.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="collection-chips">
-            {collections
-              .filter((c) => work.collectionIds.includes(c.id))
-              .map((c) => (
-                <button
-                  key={c.id}
-                  title="컬렉션에서 제거"
-                  onClick={() =>
+        </div>
+        <div
+          role="tabpanel"
+          id="inspector-panel-evidence"
+          aria-labelledby="inspector-tab-evidence"
+          hidden={tab !== "evidence"}
+        >
+          {(!work.evidence || work.evidence.relation === "local") && (
+            <p className="subtle">이 문헌에 저장된 발견 근거가 없습니다.</p>
+          )}
+          {work.evidence && work.evidence.relation !== "local" && (
+            <section>
+              <h3>발견 근거</h3>
+              {work.evidence.ai && (
+                <div className="ai-reason">
+                  <span className="badge">
+                    {work.evidence.ai.role} · AI 추정
+                  </span>
+                  <p>{work.evidence.ai.reason}</p>
+                  <blockquote>{work.evidence.ai.quote}</blockquote>
+                  <small>{work.evidence.ai.limitation}</small>
+                </div>
+              )}
+              <ul className="evidence-list">
+                {[...work.evidence.origins, ...work.evidence.reasons].map(
+                  (reason, i) => (
+                    <li key={i}>{reason}</li>
+                  ),
+                )}
+              </ul>
+              {work.evidence.hidden.length > 0 && (
+                <p className="warning-text">
+                  숨긴 이유: {work.evidence.hidden.join(" · ")}
+                </p>
+              )}
+              {work.evidence.seedIds.length > 0 && (
+                <details>
+                  <summary>
+                    연결 근거 문헌 {work.evidence.seedIds.length}/
+                    {work.evidence.denominator}편
+                  </summary>
+                  {work.evidence.seedIds.map((id) => (
+                    <button
+                      className="evidence-paper"
+                      key={id}
+                      onClick={() => onInspect(id)}
+                    >
+                      {evidenceTitles[id] || id}
+                      <ChevronRight size={13} />
+                    </button>
+                  ))}
+                </details>
+              )}
+              {work.evidence.sharedIds.length > 0 && (
+                <details>
+                  <summary>공유 참고문헌 ID</summary>
+                  <p className="subtle">{work.evidence.sharedIds.join(", ")}</p>
+                </details>
+              )}
+              {!!work.evidence.coCitingIds?.length && (
+                <details>
+                  <summary>공동인용 근거 문헌 ID</summary>
+                  <p className="subtle">
+                    {work.evidence.coCitingIds.join(", ")}
+                  </p>
+                </details>
+              )}
+              <p className="subtle">{work.evidence.scope}</p>
+            </section>
+          )}
+        </div>
+        <div
+          role="tabpanel"
+          id="inspector-panel-notes"
+          aria-labelledby="inspector-tab-notes"
+          hidden={tab !== "notes"}
+        >
+          <section>
+            <h3>라이브러리</h3>
+            <label className="field">
+              읽기 상태
+              <select
+                value={state.reading}
+                onChange={(e) =>
+                  onPatch({ reading: e.target.value as ReadState })
+                }
+              >
+                <option value="unread">미열람</option>
+                <option value="planned">읽을 예정</option>
+                <option value="reading">읽는 중</option>
+                <option value="read">읽음</option>
+              </select>
+            </label>
+            <label className="field">
+              컬렉션
+              <select
+                aria-label="문헌을 컬렉션에 추가"
+                value=""
+                onChange={(e) => {
+                  if (e.target.value)
                     void window.bunny
                       .collectionMembers({
                         projectId,
-                        collectionId: c.id,
+                        collectionId: e.target.value,
                         ids: [work.id],
-                        remove: true,
                       })
-                      .catch(onError)
-                  }
-                >
-                  {c.name}
-                  <X size={11} />
-                </button>
-              ))}
-          </div>
-          <label className="field">
-            태그
-            <input
-              placeholder="쉼표로 구분"
-              value={tags}
-              onChange={(e) => setTags(e.target.value)}
-              onBlur={() => {
-                const values = tags
-                  .split(",")
-                  .map((s) => s.trim())
-                  .filter(Boolean);
-                if (values.join(",") !== state.tags.join(","))
-                  onPatch({ tags: values });
-              }}
-            />
-          </label>
-          <div className="note-heading">
-            <h3>노트</h3>
-            <span className="subtle" role="status">
-              {noteStatus}
-            </span>
-          </div>
-          <textarea
-            className="note-input"
-            aria-label="문헌 노트"
-            placeholder="왜 이 논문을 저장했나요?"
-            value={note}
-            onChange={(e) => onNote(e.target.value)}
-            rows={5}
-          />
-        </section>
-        <section>
-          <div className="note-heading">
-            <h3>첨부 파일</h3>
-            <button
-              className="text-button"
-              onClick={() =>
-                void window.bunny
-                  .choosePdf({ projectId, workId: work.id })
-                  .catch(onError)
-              }
-            >
-              <Plus size={14} />
-              PDF
-            </button>
-          </div>
-          {attachments.length ? (
-            attachments.map((a) => (
-              <div className="attachment" key={a.id}>
-                <FileText size={19} />
-                <div>
+                      .catch(onError);
+                }}
+              >
+                <option value="">컬렉션에 추가…</option>
+                {collections.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="collection-chips">
+              {collections
+                .filter((c) => work.collectionIds.includes(c.id))
+                .map((c) => (
                   <button
+                    key={c.id}
+                    title="컬렉션에서 제거"
                     onClick={() =>
                       void window.bunny
-                        .attachmentAction({
-                          attachmentId: a.id,
-                          action: "open",
+                        .collectionMembers({
+                          projectId,
+                          collectionId: c.id,
+                          ids: [work.id],
+                          remove: true,
                         })
                         .catch(onError)
                     }
                   >
-                    {a.name}
+                    {c.name}
+                    <X size={11} />
                   </button>
-                  <small>
-                    {a.exists
-                      ? `${(a.size / 1024 / 1024).toFixed(1)} MB · ${a.mode === "managed" ? "관리 복사" : "외부 연결"}`
-                      : "파일 연결 끊김"}{" "}
-                    · {a.status}
-                  </small>
-                  <div className="inline-actions">
-                    <button
-                      className="text-button"
-                      onClick={() =>
-                        void window.bunny
-                          .attachmentAction({
-                            attachmentId: a.id,
-                            action: "reveal",
-                          })
-                          .catch(onError)
-                      }
-                    >
-                      <FolderOpen size={12} />
-                      Finder
-                    </button>
-                    <button
-                      className="text-button"
-                      onClick={() =>
-                        void window.bunny
-                          .attachmentAction({
-                            attachmentId: a.id,
-                            action: "relink",
-                          })
-                          .then(() =>
-                            window.bunny
-                              .attachments({ workId: work.id })
-                              .then(setAttachments),
-                          )
-                          .catch(onError)
-                      }
-                    >
-                      재연결
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))
-          ) : (
-            <p className="subtle">연결된 PDF가 없습니다.</p>
-          )}
-        </section>
-        <section>
-          <h3>메타데이터 출처</h3>
-          <p className="subtle">
-            {work.source} · {new Date(work.fetchedAt).toLocaleString()}
-            <br />
-            {work.doi || work.openalex || "외부 식별자 미확인"}
-            <br />
-            Citekey: {work.citekey}
-          </p>
-          {Object.keys(work.edits).length > 0 && (
-            <details>
-              <summary>수정한 필드 {Object.keys(work.edits).length}개</summary>
-              <p className="subtle">
-                {Object.keys(work.edits).join(", ")} · 공급자 원본은 별도
-                보존됩니다.
-              </p>
-            </details>
-          )}
-          <button
-            className="text-button"
-            onClick={() =>
-              void window.bunny
-                .duplicates({ workId: work.id })
-                .then(setDuplicates)
-                .catch(onError)
-            }
-          >
-            중복 후보 확인
-          </button>
-          {duplicates && (
-            <div>
-              {!duplicates.length ? (
-                <p className="subtle">비슷한 제목의 문헌이 없습니다.</p>
-              ) : (
-                duplicates.map((d) => (
-                  <div className="duplicate" key={d.id}>
-                    <p>
-                      {d.title} ({d.year || "미상"})
-                    </p>
-                    <small>
-                      {d.doi || "DOI 없음"} · {d.type}
-                    </small>
-                    <button
-                      onClick={() => {
-                        void window.bunny
-                          .merge({ keepId: work.id, removeId: d.id })
-                          .then(() => setDuplicates(null))
-                          .catch(onError);
-                      }}
-                    >
-                      현재 문헌으로 병합
-                    </button>
-                  </div>
-                ))
-              )}
+                ))}
+            </div>
+            <label className="field">
+              태그
+              <input
+                placeholder="쉼표로 구분"
+                value={tags}
+                onChange={(e) => setTags(e.target.value)}
+                onBlur={() => {
+                  const values = tags
+                    .split(",")
+                    .map((s) => s.trim())
+                    .filter(Boolean);
+                  if (values.join(",") !== state.tags.join(","))
+                    onPatch({ tags: values });
+                }}
+              />
+            </label>
+            <div className="note-heading">
+              <h3>노트</h3>
+              <span className="subtle" role="status">
+                {noteStatus}
+              </span>
+            </div>
+            <textarea
+              className="note-input"
+              aria-label="문헌 노트"
+              placeholder="왜 이 논문을 저장했나요?"
+              value={note}
+              onChange={(e) => onNote(e.target.value)}
+              rows={5}
+            />
+          </section>
+          <section>
+            <div className="note-heading">
+              <h3>첨부 파일</h3>
               <button
                 className="text-button"
-                onClick={() => void window.bunny.undoMerge({}).catch(onError)}
+                onClick={() =>
+                  void window.bunny
+                    .choosePdf({ projectId, workId: work.id })
+                    .catch(onError)
+                }
               >
-                직전 병합 되돌리기
+                <Plus size={14} />
+                PDF
               </button>
-              <p className="subtle">
-                preprint·출판본이 다르면 병합하지 마세요. 병합 직후 다른 편집
-                전까지 되돌릴 수 있습니다.
-              </p>
             </div>
-          )}
-        </section>
+            {attachments.length ? (
+              attachments.map((a) => (
+                <div className="attachment" key={a.id}>
+                  <FileText size={19} />
+                  <div>
+                    <button
+                      onClick={() =>
+                        void window.bunny
+                          .attachmentAction({
+                            attachmentId: a.id,
+                            action: "open",
+                          })
+                          .catch(onError)
+                      }
+                    >
+                      {a.name}
+                    </button>
+                    <small>
+                      {a.exists
+                        ? `${(a.size / 1024 / 1024).toFixed(1)} MB · ${a.mode === "managed" ? "관리 복사" : "외부 연결"}`
+                        : "파일 연결 끊김"}{" "}
+                      · {a.status}
+                    </small>
+                    <div className="inline-actions">
+                      <button
+                        className="text-button"
+                        onClick={() =>
+                          void window.bunny
+                            .attachmentAction({
+                              attachmentId: a.id,
+                              action: "reveal",
+                            })
+                            .catch(onError)
+                        }
+                      >
+                        <FolderOpen size={12} />
+                        Finder
+                      </button>
+                      <button
+                        className="text-button"
+                        onClick={() =>
+                          void window.bunny
+                            .attachmentAction({
+                              attachmentId: a.id,
+                              action: "relink",
+                            })
+                            .then(() =>
+                              window.bunny
+                                .attachments({ workId: work.id })
+                                .then(setAttachments),
+                            )
+                            .catch(onError)
+                        }
+                      >
+                        재연결
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="subtle">연결된 PDF가 없습니다.</p>
+            )}
+          </section>
+        </div>
+        <details className="metadata-details">
+          <summary>메타데이터 출처 · 중복 관리</summary>
+          <section>
+            <h3>메타데이터 출처</h3>
+            <p className="subtle">
+              {work.source} · {new Date(work.fetchedAt).toLocaleString()}
+              <br />
+              {work.doi || work.openalex || "외부 식별자 미확인"}
+              <br />
+              Citekey: {work.citekey}
+            </p>
+            {Object.keys(work.edits).length > 0 && (
+              <details>
+                <summary>
+                  수정한 필드 {Object.keys(work.edits).length}개
+                </summary>
+                <p className="subtle">
+                  {Object.keys(work.edits).join(", ")} · 공급자 원본은 별도
+                  보존됩니다.
+                </p>
+              </details>
+            )}
+            <button
+              className="text-button"
+              onClick={() =>
+                void window.bunny
+                  .duplicates({ workId: work.id })
+                  .then(setDuplicates)
+                  .catch(onError)
+              }
+            >
+              중복 후보 확인
+            </button>
+            {duplicates && (
+              <div>
+                {!duplicates.length ? (
+                  <p className="subtle">비슷한 제목의 문헌이 없습니다.</p>
+                ) : (
+                  duplicates.map((d) => (
+                    <div className="duplicate" key={d.id}>
+                      <p>
+                        {d.title} ({d.year || "미상"})
+                      </p>
+                      <small>
+                        {d.doi || "DOI 없음"} · {d.type}
+                      </small>
+                      <button
+                        onClick={() => {
+                          void window.bunny
+                            .merge({ keepId: work.id, removeId: d.id })
+                            .then(() => setDuplicates(null))
+                            .catch(onError);
+                        }}
+                      >
+                        현재 문헌으로 병합
+                      </button>
+                    </div>
+                  ))
+                )}
+                <button
+                  className="text-button"
+                  onClick={() => void window.bunny.undoMerge({}).catch(onError)}
+                >
+                  직전 병합 되돌리기
+                </button>
+                <p className="subtle">
+                  preprint·출판본이 다르면 병합하지 마세요. 병합 직후 다른 편집
+                  전까지 되돌릴 수 있습니다.
+                </p>
+              </div>
+            )}
+          </section>
+        </details>
       </div>
       <div className="inspector-footer">
         <button onClick={() => onDiscover("related", [work.id])}>

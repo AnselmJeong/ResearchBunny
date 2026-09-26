@@ -67,6 +67,7 @@ try {
     })
     .first()
     .waitFor();
+  await page.getByRole("tab", { name: "노트", exact: true }).click();
   await page
     .getByRole("textbox", { name: "문헌 노트" })
     .fill("Persistent private research note");

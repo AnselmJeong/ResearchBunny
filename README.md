@@ -1,10 +1,12 @@
 # ResearchBunny
 
-관심 논문에서 출발해 참고문헌과 후속 연구를 탐색하고, 선별한 논문을 로컬 아카이브로 보관하는 macOS 앱입니다. [PRD](PRD.md)의 P0 흐름을 구현한 **0.1.0 로컬 시험판**입니다.
+관심 논문에서 출발해 참고문헌과 후속 연구를 탐색하고, 선별한 논문을 로컬 아카이브로 보관하는 macOS 앱입니다. [PRD](PRD.md)의 P0 흐름을 구현한 **0.1.2 로컬 시험판**입니다.
 
 ## 설치와 실행
 
-- Apple Silicon용 DMG: `out/make/ResearchBunny-0.1.0-arm64.dmg`
+0.1.2는 아래 개발 실행 명령으로 실행하거나 `npm run make`로 새 패키지를 만듭니다. 기존 DMG에는 이번 디자인 변경이 포함되지 않습니다.
+
+- 기존 0.1.1 Apple Silicon용 DMG: `out/make/ResearchBunny-0.1.1-arm64.dmg`
 - 앱: `out/ResearchBunny-darwin-arm64/ResearchBunny.app`
 - DMG를 열어 ResearchBunny를 Applications로 복사한 뒤 실행합니다.
 - 로컬 ad-hoc 서명입니다. Developer ID 서명·Apple 공증은 하지 않았습니다. 다른 Mac에서 내려받은 파일은 Gatekeeper의 승인이 필요할 수 있습니다.
@@ -19,6 +21,12 @@
 5. 필터에서 관련성·연도·최소 인용수 등을 조절합니다. 숨겨진 후보와 초록 부족으로 판단을 보류한 후보도 확인할 수 있습니다.
 6. 목록·그래프·연도 보기에서 문헌을 선택해 저장하고, 컬렉션·별표·태그·읽기 상태·노트를 정리합니다.
 7. 내보내기 창에서 선택·컬렉션·프로젝트·전체 범위와 편수를 확인하고 BibTeX를 저장합니다. 비공개 노트와 파일 경로는 기본 출력에서 제외합니다.
+
+상단의 **뒤로/앞으로** 버튼은 당시 선택·필터·보기 상태를 복원합니다. 결과 위의 **탐색 경로**에서 원하는 부모 단계를 바로 누를 수도 있습니다. 예를 들어 3편을 선택해 관련 논문을 탐색한 뒤 검색 단계로 돌아오면, 같은 3편으로 후속 인용을 찾을 수 있습니다. 다른 방향으로 탐색해도 기존 결과는 최근 탐색과 탐색 이력에 남습니다. 새 키워드 검색은 독립된 경로로 시작합니다.
+
+0.1.2에서는 **관련 문헌 찾기** 메뉴에 탐색 작업을 모았습니다. 상세 패널은 초록·발견 근거·노트 탭으로 나누고, 아카이브에 읽기 상태 필터를 추가했습니다. 탐색 이력과 설정은 전체 작업 화면에서 엽니다.
+
+주요 메뉴와 버튼에 마우스를 잠시 올리거나 키보드로 초점을 옮기면 기능 설명이 표시됩니다. Esc로 닫을 수 있습니다.
 
 단축키: `⌘K` 검색, 입력 중이 아닐 때 `⌘A` 현재 페이지 선택, `⌘S` 선택 저장, `⌘E` 내보내기. 목록 체크박스의 Shift 선택과 그래프의 Shift+드래그를 지원합니다.
 
@@ -71,6 +79,8 @@ npm run typecheck
 npm run lint
 npm test
 npm run test:desktop
+npm run test:navigation
+npm run test:design
 npm run test:live
 npm run make
 ```
@@ -81,10 +91,11 @@ npm run make
 
 ```sh
 RESEARCHBUNNY_APP="$PWD/out/ResearchBunny-darwin-arm64/ResearchBunny.app/Contents/MacOS/ResearchBunny" node tests/desktop/smoke.mjs
+RESEARCHBUNNY_APP="$PWD/out/ResearchBunny-darwin-arm64/ResearchBunny.app/Contents/MacOS/ResearchBunny" node tests/desktop/navigation.mjs
 RESEARCHBUNNY_APP="$PWD/out/ResearchBunny-darwin-arm64/ResearchBunny.app/Contents/MacOS/ResearchBunny" node tests/desktop/live.mjs
 node scripts/performance.mjs
 ```
 
 실제 API 테스트는 공개 문헌 조회를 수행합니다. 자동 테스트는 임시 라이브러리를 사용합니다. `RESEARCHBUNNY_DATA_DIR` 환경 변수로 개발 데이터 위치를 분리할 수 있습니다. 정상 사용자의 자료에 테스트 fixture를 넣지 않습니다.
 
-구조와 검증 근거는 [설계 결정](docs/DESIGN.md), [검증 보고서](docs/verification-report.md), [추천 평가 상태](docs/evaluation-report.md), [구현 계획](IMPLEMENTATION_PLAN.md)에 기록합니다.
+구조와 검증 근거는 [설계 결정](docs/DESIGN.md), [초기 검증 보고서](docs/verification-report.md), [0.1.1 탐색·도움말 검증](docs/NAVIGATION_QA.md), [0.1.2 디자인 검증](docs/DESIGN_CONCEPT_QA.md), [추천 평가 상태](docs/evaluation-report.md), [구현 계획](IMPLEMENTATION_PLAN.md)에 기록합니다.

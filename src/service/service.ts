@@ -51,7 +51,7 @@ export class Service {
       secureStorage: this.secrets.secureStorage ?? null,
       theme: this.db.pref<Settings["theme"]>("theme") || "system",
       dataPath: this.db.root,
-      version: "0.1.0",
+      version: "0.1.2",
       usage: this.db.usageSummary(),
     };
   }

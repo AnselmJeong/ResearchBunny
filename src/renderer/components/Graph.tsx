@@ -124,6 +124,13 @@ export function Graph({
           color: css.getPropertyValue("--text").trim(),
           "border-color": css.getPropertyValue("--panel").trim(),
         })
+        .selector(".seed")
+        .style({ "background-color": css.getPropertyValue("--accent").trim() })
+        .selector("node:selected")
+        .style({
+          "background-color": css.getPropertyValue("--accent").trim(),
+          "border-color": css.getPropertyValue("--accent").trim(),
+        })
         .update();
     };
     theme();
@@ -175,10 +182,29 @@ export function Graph({
     const limit = expanded ? 500 : 300;
     const display = works.slice(0, limit);
     const ids = new Set(display.map((w) => w.id));
+    const degree = new Map<string, number>();
+    for (const edge of edges) {
+      degree.set(edge.source, (degree.get(edge.source) || 0) + 1);
+      degree.set(edge.target, (degree.get(edge.target) || 0) + 1);
+    }
+    const labeled = new Set(
+      [...display]
+        .sort(
+          (a, b) =>
+            Number(seeds.includes(b.id)) - Number(seeds.includes(a.id)) ||
+            (degree.get(b.id) || 0) - (degree.get(a.id) || 0) ||
+            (b.citations || 0) - (a.citations || 0),
+        )
+        .slice(0, 8)
+        .map((w) => w.id),
+    );
+    const paperLabel = (w: WorkView) =>
+      `${w.authors[0]?.split(",")[0] || w.title.slice(0, 20)} · ${w.year || "연도 미상"}`;
     const definitions: ElementDefinition[] = display.map((w) => ({
       data: {
         id: w.id,
-        label: `${w.authors[0]?.split(",")[0] || w.title.slice(0, 28)} · ${w.year || "연도 미상"}`,
+        label: labeled.has(w.id) ? paperLabel(w) : "",
+        fullLabel: paperLabel(w),
       },
       position: positions[w.id],
       classes: [
@@ -250,8 +276,8 @@ export function Graph({
           name: "cose",
           animate: false,
           randomize: false,
-          nodeRepulsion: () => 15000,
-          idealEdgeLength: () => 100,
+          nodeRepulsion: () => 24000,
+          idealEdgeLength: () => 145,
           numIter: 300,
           fit: true,
           padding: 60,
@@ -296,6 +322,8 @@ export function Graph({
       ?.style()
       .selector("node")
       .style("label", label ? "data(label)" : "")
+      .selector("node.inspected, node:selected")
+      .style("label", label ? "data(fullLabel)" : "")
       .update();
   }, [label]);
   const years = [
