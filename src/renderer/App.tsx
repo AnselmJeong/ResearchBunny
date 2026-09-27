@@ -57,6 +57,7 @@ import {
   moveHistory,
   viewKey,
   runPath,
+  forgetWorks,
   type WorkspaceView,
 } from "../shared/navigation";
 import { HelpTooltip } from "./components/HelpTooltip";
@@ -109,6 +110,7 @@ type Dialog =
   | "collection"
   | "history"
   | "bulk"
+  | "deleteTrash"
   | null;
 function Bunny({ size = 27 }: { size?: number }) {
   return (
@@ -156,6 +158,10 @@ export function App() {
     [busy, setBusy] = useState(false),
     [loading, setLoading] = useState(false),
     [toast, setToast] = useState<{ text: string; error: boolean } | null>(null);
+  const [trashDeletion, setTrashDeletion] = useState<{
+    request: Input<"deleteTrashedWorks">;
+    count: number;
+  } | null>(null);
   const [name, setName] = useState(""),
     [question, setQuestion] = useState(""),
     [bulkReason, setBulkReason] = useState(""),
@@ -498,6 +504,41 @@ export function App() {
       () => window.bunny.mutateWorks({ projectId, ids, patch: update }),
       message,
     );
+  const confirmTrashDeletion = (all = false) => {
+    setTrashDeletion({
+      request: {
+        projectId,
+        target: all
+          ? { kind: "all" }
+          : { kind: "selected", ids: [...selected] },
+      },
+      count: all ? snapshot?.counts.trash || 0 : selected.length,
+    });
+    setDialog("deleteTrash");
+  };
+  const deleteTrash = () => {
+    if (!trashDeletion || busy) return;
+    void task(async () => {
+      const { ids } = await window.bunny.deleteTrashedWorks(
+        trashDeletion.request,
+      );
+      for (const id of ids) {
+        clearTimeout(noteTimers.current[id]);
+        delete noteTimers.current[id];
+      }
+      setDrafts((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([id]) => !ids.includes(id)),
+        ),
+      );
+      applyNavigation(
+        forgetWorks(rememberView(navigationRef.current, viewRef.current), ids),
+      );
+      setDialog(null);
+      setTrashDeletion(null);
+      flash(`${ids.length}편을 영구 삭제했습니다.`);
+    });
+  };
   const openRun = (run: Run, fallbackSelection: string[] = []) => {
     if (run.projectId !== projectRef.current) return;
     navigate("run", run.id, {
@@ -1180,6 +1221,25 @@ export function App() {
                   <button title="일괄 편집" onClick={() => setDialog("bulk")}>
                     <MoreHorizontal size={17} />
                   </button>
+                  {scope === "trash" && (
+                    <>
+                      <button
+                        className="danger"
+                        disabled={busy || !!active || !selected.length}
+                        onClick={() => confirmTrashDeletion()}
+                      >
+                        <Trash2 size={14} />
+                        선택 영구 삭제
+                      </button>
+                      <button
+                        className="danger"
+                        disabled={busy || !!active || !snapshot.counts.trash}
+                        onClick={() => confirmTrashDeletion(true)}
+                      >
+                        휴지통 비우기
+                      </button>
+                    </>
+                  )}
                   <button
                     className="icon-button"
                     title="선택 해제"
@@ -1828,6 +1888,49 @@ export function App() {
           </form>
         </Modal>
       )}
+      {dialog === "deleteTrash" && trashDeletion && (
+        <Modal
+          title={
+            trashDeletion.request.target.kind === "all"
+              ? "휴지통 비우기"
+              : "선택 문헌 영구 삭제"
+          }
+          onClose={() => {
+            if (!busy) {
+              setDialog(null);
+              setTrashDeletion(null);
+            }
+          }}
+        >
+          <p>
+            {trashDeletion.request.target.kind === "all"
+              ? `검색·필터와 관계없이 이 프로젝트의 휴지통에 있는 문헌 ${trashDeletion.count}편을 모두 영구 삭제합니다.`
+              : `선택한 문헌 ${trashDeletion.count}편을 이 프로젝트에서 영구 삭제합니다.`}
+          </p>
+          <p>
+            문헌의 메모와 컬렉션 연결도 삭제되며, 복원하거나 실행 취소할 수
+            없습니다. 다른 프로젝트의 문헌과 PDF 파일은 유지됩니다.
+          </p>
+          <footer className="modal-footer">
+            <button
+              disabled={busy}
+              onClick={() => {
+                setDialog(null);
+                setTrashDeletion(null);
+              }}
+            >
+              취소
+            </button>
+            <button
+              className="danger"
+              disabled={busy || !trashDeletion.count}
+              onClick={deleteTrash}
+            >
+              {busy ? "삭제 중…" : `${trashDeletion.count}편 영구 삭제`}
+            </button>
+          </footer>
+        </Modal>
+      )}
       {dialog === "bulk" && (
         <Modal
           title={`${selected.length}편 일괄 편집`}
@@ -1927,21 +2030,33 @@ export function App() {
               <Star size={14} />
               핵심 표시
             </button>
-            <button
-              className="danger"
-              onClick={() => {
-                patch(
-                  selected,
-                  { screening: "trash" },
-                  "휴지통으로 옮겼습니다.",
-                );
-                setDialog(null);
-                setSelected([]);
-              }}
-            >
-              <Trash2 size={14} />
-              휴지통
-            </button>
+            {scope !== "trash" && (
+              <button
+                className="danger"
+                onClick={() => {
+                  patch(
+                    selected,
+                    { screening: "trash" },
+                    "휴지통으로 옮겼습니다.",
+                  );
+                  setDialog(null);
+                  setSelected([]);
+                }}
+              >
+                <Trash2 size={14} />
+                휴지통
+              </button>
+            )}
+            {scope === "trash" && (
+              <button
+                className="danger"
+                disabled={busy || !!active || !selected.length}
+                onClick={() => confirmTrashDeletion()}
+              >
+                <Trash2 size={14} />
+                선택 영구 삭제
+              </button>
+            )}
             {scope === "trash" && (
               <button
                 onClick={() =>

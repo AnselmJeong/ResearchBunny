@@ -43,6 +43,32 @@ export interface NavigationHistory {
   index: number;
   views: Record<string, WorkspaceView>;
 }
+export function forgetWorks(
+  history: NavigationHistory,
+  ids: string[],
+): NavigationHistory {
+  const removed = new Set(ids);
+  return {
+    ...history,
+    views: Object.fromEntries(
+      Object.entries(history.views).map(([key, view]) => [
+        key,
+        {
+          ...view,
+          selected: view.selected.filter((id) => !removed.has(id)),
+          inspectorId:
+            view.inspectorId && removed.has(view.inspectorId)
+              ? null
+              : view.inspectorId,
+          positions: Object.fromEntries(
+            Object.entries(view.positions).filter(([id]) => !removed.has(id)),
+          ),
+          offset: 0,
+        },
+      ]),
+    ),
+  };
+}
 export const viewKey = (view: Pick<WorkspaceView, "scope" | "scopeId">) =>
   `${view.scope}:${view.scopeId}`;
 export const defaultView = (

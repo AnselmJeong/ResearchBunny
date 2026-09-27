@@ -110,6 +110,13 @@ export const schemas = {
   inspect: z.object({ projectId: id, workId: id, runId: id.optional() }),
   mutateWorks: z.object({ projectId: id, ids, patch: state }),
   restoreWorks: z.object({ projectId: id, ids }),
+  deleteTrashedWorks: z.object({
+    projectId: id,
+    target: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("selected"), ids: ids.min(1) }),
+      z.object({ kind: z.literal("all") }),
+    ]),
+  }),
   editWork: z.object({ workId: id, patch: metadata }),
   manualWork: z.object({ projectId: id, metadata }),
   setSeeds: z.object({
@@ -239,6 +246,7 @@ export interface Outputs {
   inspect: WorkView;
   mutateWorks: void;
   restoreWorks: void;
+  deleteTrashedWorks: { ids: string[] };
   editWork: Work;
   manualWork: Work;
   setSeeds: SeedProfile;

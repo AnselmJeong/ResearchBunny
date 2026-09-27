@@ -16,6 +16,7 @@ import { parseBib, exportBib, type BibEntry } from "./interchange/bibtex";
 import { PdfImports, hashFile, verifyPdf } from "./interchange/pdf";
 import { createBackup, restoreBackup } from "./interchange/backup";
 import { mergeWorks, undoMerge } from "./db/merge";
+import { deleteTrashedWorks } from "./db/trash";
 export class Service {
   db: Library;
   oa: OpenAlex;
@@ -130,6 +131,17 @@ export class Service {
           });
         }
         return;
+      case "deleteTrashedWorks":
+        if (this.busy())
+          throw new AppError(
+            "BUSY",
+            "탐색·가져오기 작업이 끝난 뒤 영구 삭제하세요.",
+          );
+        return deleteTrashedWorks(
+          this.db,
+          args.projectId,
+          args.target.kind === "selected" ? args.target.ids : undefined,
+        );
       case "editWork":
         return this.db.edit(args.workId, args.patch);
       case "manualWork": {
