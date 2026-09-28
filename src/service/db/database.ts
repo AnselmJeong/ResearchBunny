@@ -23,7 +23,7 @@ import {
   filterReasons,
 } from "../../shared/domain";
 
-const SCHEMA = 1;
+const SCHEMA = 2;
 export class Library {
   db: Database;
   constructor(public root: string) {
@@ -50,6 +50,8 @@ export class Library {
       CREATE TABLE IF NOT EXISTS project_works(project_id TEXT REFERENCES projects(id),work_id TEXT REFERENCES works(id),state TEXT NOT NULL,PRIMARY KEY(project_id,work_id));
       CREATE TABLE IF NOT EXISTS collections(id TEXT PRIMARY KEY,project_id TEXT REFERENCES projects(id),name TEXT NOT NULL,parent_id TEXT REFERENCES collections(id));
       CREATE TABLE IF NOT EXISTS collection_works(collection_id TEXT REFERENCES collections(id),work_id TEXT REFERENCES works(id),PRIMARY KEY(collection_id,work_id));
+      CREATE TABLE IF NOT EXISTS archive_topics(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),name TEXT NOT NULL,description TEXT NOT NULL,position INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS archive_topic_works(project_id TEXT NOT NULL,work_id TEXT NOT NULL,topic_id TEXT NOT NULL REFERENCES archive_topics(id) ON DELETE CASCADE,PRIMARY KEY(project_id,work_id),FOREIGN KEY(project_id,work_id) REFERENCES project_works(project_id,work_id) ON DELETE CASCADE);
       CREATE TABLE IF NOT EXISTS seed_profiles(id TEXT PRIMARY KEY,project_id TEXT REFERENCES projects(id),version INTEGER,data TEXT NOT NULL,UNIQUE(project_id,version));
       CREATE TABLE IF NOT EXISTS citations(citing_id TEXT REFERENCES works(id),cited_external TEXT NOT NULL,PRIMARY KEY(citing_id,cited_external));
       CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY,project_id TEXT REFERENCES projects(id),data TEXT NOT NULL);
@@ -66,7 +68,7 @@ export class Library {
       CREATE INDEX IF NOT EXISTS idx_candidates_rank ON candidates(run_id,rank DESC);
       CREATE INDEX IF NOT EXISTS idx_citations_target ON citations(cited_external);
       CREATE INDEX IF NOT EXISTS idx_attachments_work ON attachments(work_id);
-      PRAGMA user_version=1;
+      PRAGMA user_version=2;
     `);
     if (!this.projects().length) this.createProject("내 연구", "");
     for (const run of this.runs())
@@ -290,7 +292,7 @@ export class Library {
         "SELECT state FROM project_works WHERE project_id=? AND work_id=?",
       )
       .get(projectId, workId) as { state: string } | undefined;
-    return row ? JSON.parse(row.state) : defaultState();
+    return row ? { pendingDismissed: false, ...JSON.parse(row.state) } : defaultState();
   }
   view(projectId: string, id: string, runId?: string): WorkView {
     const w = this.get(id);
@@ -304,6 +306,8 @@ export class Library {
     return {
       ...w,
       state: this.state(projectId, id),
+      archiveTopicId: (this.db.prepare("SELECT topic_id FROM archive_topic_works WHERE project_id=? AND work_id=?")
+        .get(projectId, id) as { topic_id: string } | undefined)?.topic_id,
       evidence: row ? JSON.parse(row.evidence) : undefined,
       attachmentCount: (
         this.db
@@ -333,6 +337,8 @@ export class Library {
         this.get(id);
         this.ensureMembership(projectId, id);
         const next = { ...state, ...patch, updatedAt: now() };
+        if (patch.screening === "pending" && patch.pendingDismissed === undefined)
+          next.pendingDismissed = false;
         if (patch.screening === "trash")
           next.previousScreening = state.screening;
         this.db
@@ -350,6 +356,17 @@ export class Library {
       this.touch();
     });
   }
+  clearPending(projectId: string): { ids: string[] } {
+    return this.transaction(() => {
+      this.project(projectId);
+      const rows = this.db.prepare(
+        "SELECT work_id AS id FROM project_works WHERE project_id=? AND json_extract(state,'$.screening')='pending' AND coalesce(json_extract(state,'$.pendingDismissed'),0)=0",
+      ).all(projectId) as { id: string }[];
+      const ids = rows.map(row => row.id);
+      if (ids.length) this.mutate(projectId, ids, { pendingDismissed: true });
+      return { ids };
+    });
+  }
   undo(projectId: string): boolean {
     const row = this.db
       .prepare(
@@ -359,7 +376,7 @@ export class Library {
     if (!row) return false;
     this.transaction(() => {
       for (const item of JSON.parse(row.data))
-        this.mutate(projectId, [item.id], item.state, false);
+        this.mutate(projectId, [item.id], { pendingDismissed: false, ...item.state }, false);
       this.db.prepare("DELETE FROM changes WHERE id=?").run(row.id);
     });
     return true;
@@ -478,6 +495,10 @@ export class Library {
       )
       .run(run.id, work.id, JSON.stringify(evidence), evidence.score || 0);
     this.ensureMembership(run.projectId, work.id);
+    // Rediscovery queues a dismissed candidate again without changing screening decisions.
+    this.db.prepare(
+      "UPDATE project_works SET state=json_set(state,'$.pendingDismissed',json('false')) WHERE project_id=? AND work_id=? AND json_extract(state,'$.screening')='pending' AND json_extract(state,'$.pendingDismissed')=1",
+    ).run(run.projectId, work.id);
   }
   candidates(runId: string): { work: Work; evidence: Evidence }[] {
     return (
@@ -540,6 +561,14 @@ export class Library {
       sql +=
         " AND work_id IN(SELECT work_id FROM collection_works WHERE collection_id=?) AND json_extract(state,'$.screening')!='trash'";
       params.push(scopeId || "");
+    } else if (scope === "topic" || scope === "unclassified") {
+      sql += " AND json_extract(state,'$.screening')='included'";
+      if (scope === "topic") {
+        sql += " AND EXISTS(SELECT 1 FROM archive_topic_works tw JOIN archive_topics t ON t.id=tw.topic_id WHERE tw.project_id=pw.project_id AND tw.work_id=pw.work_id AND t.project_id=pw.project_id AND t.id=?)";
+        params.push(scopeId || "");
+      } else {
+        sql += " AND NOT EXISTS(SELECT 1 FROM archive_topic_works tw WHERE tw.project_id=pw.project_id AND tw.work_id=pw.work_id)";
+      }
     } else if (scope === "starred")
       sql +=
         " AND json_extract(state,'$.starred')=1 AND json_extract(state,'$.screening')!='trash'";
@@ -549,6 +578,8 @@ export class Library {
     else {
       sql += " AND json_extract(state,'$.screening')=?";
       params.push(scope === "archive" ? "included" : scope);
+      if (scope === "pending")
+        sql += " AND coalesce(json_extract(state,'$.pendingDismissed'),0)=0";
     }
     const rows = this.db.prepare(sql).all(...params) as { id: string }[];
     let works = rows.map((r) =>
@@ -659,7 +690,7 @@ export class Library {
       .all(projectId) as { state: string }[]) {
       const s = JSON.parse(r.state) as LibraryState;
       const k = s.screening === "included" ? "archive" : s.screening;
-      count[k]++;
+      if (k !== "pending" || !s.pendingDismissed) count[k]++;
       if (s.screening !== "trash") {
         if (s.starred) count.starred++;
         if (["planned", "reading"].includes(s.reading)) count.reading++;

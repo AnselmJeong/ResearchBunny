@@ -13,6 +13,8 @@ const viewSchema = z.object({
       "excluded",
       "run",
       "collection",
+      "topic",
+      "unclassified",
     ])
     .default("archive"),
   scopeId: z.string().default(""),
@@ -21,7 +23,8 @@ const viewSchema = z.object({
   inspectorOpen: z.boolean().default(true),
   filters: filtersSchema.default(DEFAULT_FILTERS),
   view: z.enum(["list", "graph", "timeline"]).default("list"),
-  positions: z
+  // Older `positions` mixed network and timeline coordinates. Do not restore them.
+  networkPositions: z
     .record(z.string(), z.object({ x: z.number(), y: z.number() }))
     .default({}),
   query: z.string().default(""),
@@ -31,7 +34,6 @@ const viewSchema = z.object({
     .default("rank"),
   searchSort: z.enum(["relevance", "citations", "year"]).default("relevance"),
   semantic: z.boolean().default(false),
-  showHidden: z.boolean().default(false),
   filtersOpen: z.boolean().default(false),
   limit: z.number().int().min(1).max(500).default(50),
   offset: z.number().int().min(0).default(0),
@@ -60,8 +62,8 @@ export function forgetWorks(
             view.inspectorId && removed.has(view.inspectorId)
               ? null
               : view.inspectorId,
-          positions: Object.fromEntries(
-            Object.entries(view.positions).filter(([id]) => !removed.has(id)),
+          networkPositions: Object.fromEntries(
+            Object.entries(view.networkPositions).filter(([id]) => !removed.has(id)),
           ),
           offset: 0,
         },

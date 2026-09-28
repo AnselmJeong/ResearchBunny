@@ -1,3 +1,4 @@
+import { resultWindow } from "../shared/graph";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -6,7 +7,6 @@ import {
   ArrowUpRight,
   ArrowRight,
   ArrowLeft,
-  BookOpen,
   Bookmark,
   Check,
   ChevronRight,
@@ -61,10 +61,13 @@ import {
   type WorkspaceView,
 } from "../shared/navigation";
 import { HelpTooltip } from "./components/HelpTooltip";
+import { ArchiveTree } from "./components/ArchiveTree";
+import { ResizableSidebar } from "./components/ResizableSidebar";
 import type { Input } from "../shared/contracts";
 import { Graph } from "./components/Graph";
 import { Filters } from "./components/Filters";
 import { Inspector } from "./components/Inspector";
+import { ResizableInspector } from "./components/ResizableInspector";
 import { Modal } from "./components/Modal";
 import { DiscoveryMenu } from "./components/DiscoveryMenu";
 import { HistoryWorkspace } from "./components/HistoryWorkspace";
@@ -141,7 +144,6 @@ export function App() {
     [semantic, setSemantic] = useState(false);
   const [filters, setFilters] = useState<FilterValues>({ ...DEFAULT_FILTERS }),
     [filtersOpen, setFiltersOpen] = useState(false),
-    [showHidden, setShowHidden] = useState(false),
     [limit, setLimit] = useState(50);
   const [offset, setOffset] = useState(0);
   const [list, setList] = useState<ListResult>(EMPTY),
@@ -153,10 +155,13 @@ export function App() {
     [positions, setPositions] = useState<
       Record<string, { x: number; y: number }>
     >({});
+  const graphView = view !== "list";
+  const displayWindow = resultWindow(graphView, limit, offset);
   const [dialog, setDialog] = useState<Dialog>(null),
     [revision, setRevision] = useState(0),
     [busy, setBusy] = useState(false),
     [loading, setLoading] = useState(false),
+    [startingDiscovery, setStartingDiscovery] = useState<DiscoveryMode | null>(null),
     [toast, setToast] = useState<{ text: string; error: boolean } | null>(null);
   const [trashDeletion, setTrashDeletion] = useState<{
     request: Input<"deleteTrashedWorks">;
@@ -175,6 +180,7 @@ export function App() {
     noteTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({}),
     lastIndex = useRef<number | null>(null),
     searchInput = useRef<HTMLInputElement>(null),
+    discoveryStarting = useRef(false),
     toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [navigation, setNavigation] = useState(() => restoreNavigation({}));
   const [hydratedProject, setHydratedProject] = useState("");
@@ -187,13 +193,12 @@ export function App() {
     inspectorOpen,
     view,
     filters,
-    positions,
+    networkPositions: positions,
     query,
     localQuery,
     sort,
     searchSort,
     semantic,
-    showHidden,
     filtersOpen,
     limit,
     offset,
@@ -214,13 +219,12 @@ export function App() {
     setInspectorOpen(v.inspectorOpen);
     setView(v.view);
     setFilters(v.filters);
-    setPositions(v.positions);
+    setPositions(v.networkPositions);
     setQuery(v.query);
     setLocalQuery(v.localQuery);
     setSort(v.sort);
     setSearchSort(v.searchSort);
     setSemantic(v.semantic);
-    setShowHidden(v.showHidden);
     setFiltersOpen(v.filtersOpen);
     setLimit(v.limit);
     setOffset(v.offset);
@@ -303,7 +307,7 @@ export function App() {
     let valid = true;
     setLoading(true);
     const timer = setTimeout(() => {
-      if ((scope === "run" || scope === "collection") && !scopeId) {
+      if ((scope === "run" || scope === "collection" || scope === "topic") && !scopeId) {
         setList(EMPTY);
         setLoading(false);
         return;
@@ -315,9 +319,8 @@ export function App() {
           scopeId: scopeId || undefined,
           query: localQuery,
           filters,
-          showHidden,
-          limit,
-          offset,
+          showHidden: false,
+          ...resultWindow(graphView, limit, offset),
           sort,
         })
         .then((result) => {
@@ -338,7 +341,7 @@ export function App() {
     scopeId,
     localQuery,
     filters,
-    showHidden,
+    graphView,
     limit,
     offset,
     sort,
@@ -394,7 +397,6 @@ export function App() {
     sort,
     searchSort,
     semantic,
-    showHidden,
     filtersOpen,
     limit,
     offset,
@@ -437,13 +439,26 @@ export function App() {
     };
   }, [drafts, onError]);
   const currentRun = snapshot?.runs.find((r) => r.id === scopeId);
+  const classification = snapshot?.classification;
+  const classifying = classification?.job?.status === "running";
+  const archiveScope = ["archive", "topic", "unclassified"].includes(scope);
   const active = snapshot?.runs.find(
     (r) => r.status === "running" || r.status === "queued",
   );
+  const searchPending = startingDiscovery === "search" || active?.mode === "search" ||
+    (scope === "run" && currentRun?.mode === "search" && loading);
   const seeds = useMemo(
     () => snapshot?.seeds?.ids || [],
     [snapshot?.seeds?.id],
   );
+  const graphWorks = useMemo(
+    () => [...(list.context || []), ...list.works],
+    [list.context, list.works],
+  );
+  const allPageSelected = list.works.length > 0 &&
+    list.works.every((work) => selected.includes(work.id));
+  const somePageSelected = list.works.some((work) => selected.includes(work.id));
+  const pageSelectionLabel = allPageSelected ? "이 페이지 선택 해제" : "이 페이지 전체 선택";
   const navigate = (
     next: Scope,
     id = "",
@@ -478,6 +493,10 @@ export function App() {
     }
     applyNavigation(moveHistory(navigationRef.current, viewRef.current, delta));
   };
+  useEffect(() => {
+    if (hydratedProject === projectId && classification && scope === "topic" &&
+      !classification.topics.some(topic => topic.id === scopeId)) navigate("archive");
+  }, [classification, hydratedProject, projectId, scope, scopeId]);
   const trail = scope === "run" ? runPath(snapshot?.runs || [], scopeId) : [];
   const inspect = (id: string) => {
     setInspectorId(id);
@@ -516,6 +535,18 @@ export function App() {
     });
     setDialog("deleteTrash");
   };
+  const clearPending = () => {
+    if (busy || active || classifying) return;
+    const targetProject = projectId;
+    void task(async () => {
+      const { ids } = await window.bunny.clearPending({ projectId: targetProject });
+      if (projectRef.current !== targetProject) return;
+      applyNavigation(
+        forgetWorks(rememberView(navigationRef.current, viewRef.current), ids),
+      );
+      flash(`검토 대기함 ${ids.length}편을 비웠습니다. 상단 되돌리기로 복원할 수 있습니다.`);
+    });
+  };
   const deleteTrash = () => {
     if (!trashDeletion || busy) return;
     void task(async () => {
@@ -548,44 +579,60 @@ export function App() {
     });
   };
   const discover = async (mode: DiscoveryMode, ids?: string[]) => {
-    let startIds = ids || (selected.length ? selected : seeds);
-    if (
-      ["commonReferences", "commonCiting"].includes(mode) &&
-      basis === "archive"
-    )
-      startIds = (
-        await window.bunny.list({
+    if (discoveryStarting.current || busy || active || (mode === "search" && searchPending)) return;
+    if (mode === "search" && !query.trim()) return;
+    discoveryStarting.current = true;
+    setStartingDiscovery(mode);
+    try {
+      let startIds = ids || (selected.length ? selected : seeds);
+      if (
+        ["commonReferences", "commonCiting"].includes(mode) &&
+        basis === "archive"
+      )
+        startIds = (
+          await window.bunny.list({
+            projectId,
+            scope: "archive",
+            filters: {
+              ...DEFAULT_FILTERS,
+              hideExcluded: false,
+              hideRetracted: false,
+            },
+            limit: 1,
+          })
+        ).ids;
+      const nextFilters = {
+        ...filters,
+        reading: undefined,
+        relevance: mode === "related" || mode === "ai",
+      };
+      await task(async () => {
+        const r = await window.bunny.startRun({
           projectId,
-          scope: "archive",
-          filters: {
-            ...DEFAULT_FILTERS,
-            hideExcluded: false,
-            hideRetracted: false,
-          },
-          limit: 1,
-        })
-      ).ids;
-    const nextFilters = {
-      ...filters,
-      reading: undefined,
-      relevance: mode === "related" || mode === "ai",
-    };
-    await task(async () => {
-      const r = await window.bunny.startRun({
-        projectId,
-        mode,
-        query: query || snapshot?.seeds?.question || "",
-        ids: mode === "search" || mode === "ai" ? [] : startIds,
-        filters: nextFilters,
-        sort: searchSort,
-        semantic,
-        parentId:
-          scope === "run" && !["search", "ai"].includes(mode)
-            ? scopeId || undefined
-            : undefined,
+          mode,
+          query: query || snapshot?.seeds?.question || "",
+          ids: mode === "search" || mode === "ai" ? [] : startIds,
+          filters: nextFilters,
+          sort: searchSort,
+          semantic,
+          parentId:
+            scope === "run" && !["search", "ai"].includes(mode)
+              ? scopeId || undefined
+              : undefined,
+        });
+        // Bridge the start RPC to progress snapshots so the button never goes idle
+        // between accepting the request and receiving the first progress event.
+        if (projectRef.current === r.projectId) {
+          setSnapshot(current => current && !current.runs.some(run => run.id === r.id)
+            ? { ...current, runs: [r, ...current.runs] }
+            : current);
+        }
+        openRun(r);
       });
-      openRun(r);
-    });
+    } finally {
+      discoveryStarting.current = false;
+      setStartingDiscovery(null);
+    }
   };
   const toggle = (id: string, index: number, shift = false) => {
     setSelected((prev) => {
@@ -642,8 +689,11 @@ export function App() {
         : "문헌 탐색"
       : scope === "collection"
         ? snapshot?.collections.find((c) => c.id === scopeId)?.name || "컬렉션"
+        : scope === "topic"
+          ? classification?.topics.find(t => t.id === scopeId)?.name || "소주제"
         : {
             archive: "내 아카이브",
+            unclassified: "미분류",
             pending: "검토 대기함",
             starred: "핵심 문헌",
             reading: "읽기 목록",
@@ -668,10 +718,11 @@ export function App() {
   return (
     <div
       className="app-shell"
+      style={{ gridTemplateColumns: "auto minmax(0, 1fr)" }}
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => event.preventDefault()}
     >
-      <aside className="sidebar">
+      <ResizableSidebar>
         <div className="drag-region electrobun-webkit-app-region-drag" />
         <div className="brand">
           <Bunny />
@@ -716,9 +767,16 @@ export function App() {
             문헌 탐색
           </button>
           <div className="nav-label">라이브러리</div>
+          <ArchiveTree
+            key={projectId}
+            classification={snapshot.classification}
+            count={snapshot.counts.archive || 0}
+            scope={fullPage ? "" : scope}
+            scopeId={scopeId}
+            navigate={navigate}
+          />
           {(
             [
-              { key: "archive", label: "내 아카이브", icon: BookOpen },
               { key: "pending", label: "검토 대기함", icon: Inbox },
               { key: "starred", label: "핵심 문헌", icon: Star },
               { key: "reading", label: "읽기 목록", icon: Bookmark },
@@ -729,8 +787,7 @@ export function App() {
               className={!fullPage && scope === key ? "active" : ""}
               data-help={
                 {
-                  archive: "저장한 문헌을 모아 봅니다.",
-                  pending: "아직 저장 여부를 결정하지 않은 탐색 문헌입니다.",
+                  pending: "이번 탐색에서 검토할 임시 문헌입니다. 새 검색을 시작하면 비워집니다.",
                   starred: "중요하다고 별표 표시한 문헌입니다.",
                   reading: "읽기 상태를 지정한 문헌을 모아 봅니다.",
                 }[key]
@@ -742,10 +799,11 @@ export function App() {
               <span className="nav-count">{snapshot.counts[key] || 0}</span>
             </button>
           ))}
-          <div className="nav-label">
-            컬렉션
+          <details className="manual-collections">
+          <summary>수동 컬렉션 <span className="nav-count">{snapshot.collections.length}</span></summary>
+          <div className="manual-collection-items">
             <button
-              className="icon-button"
+              className="new-collection"
               title="새 컬렉션"
               onClick={() => {
                 setName("");
@@ -753,8 +811,8 @@ export function App() {
               }}
             >
               <Plus size={14} />
+              새 컬렉션
             </button>
-          </div>
           {snapshot.collections.length ? (
             snapshot.collections.map((c) => (
               <button
@@ -772,9 +830,9 @@ export function App() {
                 <span className="nav-count">{c.count}</span>
               </button>
             ))
-          ) : (
-            <p className="nav-empty">주제별로 문헌을 묶어보세요.</p>
-          )}
+          ) : null}
+          </div>
+          </details>
           <button
             className={
               dialog === "history" ? "active history-nav" : "history-nav"
@@ -843,7 +901,7 @@ export function App() {
             로컬
           </button>
         </div>
-      </aside>
+      </ResizableSidebar>
       <div className="main-shell">
         <header className="topbar">
           <div className="navigation-buttons" aria-label="화면 이동">
@@ -888,11 +946,12 @@ export function App() {
                 <kbd>⌘ K</kbd>
                 <button
                   className="primary"
-                  disabled={busy || !!active || !query.trim()}
+                  disabled={busy || startingDiscovery !== null || !!active || searchPending || !query.trim()}
+                  aria-busy={searchPending}
                   type="submit"
                 >
-                  검색
-                  <ArrowRight size={15} />
+                  {searchPending ? "검색 중…" : "검색"}
+                  {searchPending ? <LoaderCircle size={15} className="spin" aria-hidden="true" /> : <ArrowRight size={15} aria-hidden="true" />}
                 </button>
               </form>
               <details className="search-options-menu">
@@ -1073,14 +1132,27 @@ export function App() {
               <main className="workspace-main">
                 <div className="workspace-heading">
                   <div>
-                    <div className="eyebrow">
-                      {scope === "run" ? "DISCOVER" : "LIBRARY"}
-                    </div>
+                    {scope === "topic" || scope === "unclassified" ? (
+                      <button className="text-button archive-breadcrumb" onClick={() => navigate("archive")}>내 아카이브 <ChevronRight size={13} /></button>
+                    ) : <div className="eyebrow">{scope === "run" ? "DISCOVER" : "LIBRARY"}</div>}
                     <h1>
                       {title}
                       <span>{list.total.toLocaleString()}</span>
                     </h1>
                   </div>
+                  <div className="workspace-actions">
+                  {archiveScope && <button className="secondary" disabled={busy || !!active || classifying || !snapshot.counts.archive}
+                    onClick={() => {
+                      if (!snapshot.settings.aiEnabled) { setDialog("settings"); return; }
+                      void task(async () => {
+                        const job = await window.bunny.classifyArchive({ projectId });
+                        if (projectRef.current === projectId)
+                          setSnapshot(current => current && ({ ...current, classification: { ...current.classification, job } }));
+                      });
+                    }}>
+                    {classifying ? <LoaderCircle size={15} className="spin" /> : <Sparkles size={15} />}
+                    {classifying ? "분류 중" : classification?.topics.length ? `분류 갱신${classification.unclassified ? ` · 미분류 ${classification.unclassified}편` : ""}` : "분류"}
+                  </button>}
                   <div className="view-switch">
                     {(
                       [
@@ -1100,7 +1172,12 @@ export function App() {
                       </button>
                     ))}
                   </div>
+                  </div>
                 </div>
+                {archiveScope && classification?.job && <div className={`classification-status ${classification.job.status}`} role="status">
+                  <span>{classification.job.message}</span>
+                  {classifying && <button className="icon-button" title="자동 분류 취소" aria-label="자동 분류 취소" onClick={() => void task(() => window.bunny.cancelClassification({ projectId }))}><Square size={14} /></button>}
+                </div>}
                 {scope === "run" && currentRun && (
                   <div className="run-context">
                     <div className="run-wayfinding">
@@ -1167,9 +1244,9 @@ export function App() {
                         )
                       }
                     />
-                    <strong>
+                    <strong className={selected.length ? "selection-count active" : "selection-count"}>
                       {selected.length
-                        ? `${selected.length}편 선택`
+                        ? `${selected.length}편 선택됨`
                         : seeds.length
                           ? `초기 관심 ${seeds.length}편`
                           : "문헌 선택"}
@@ -1209,6 +1286,16 @@ export function App() {
                   <button title="일괄 편집" onClick={() => setDialog("bulk")}>
                     <MoreHorizontal size={17} />
                   </button>
+                  {scope === "pending" && (
+                    <button
+                      disabled={busy || !!active || !!classifying || !snapshot.counts.pending}
+                      data-help="검색·필터와 관계없이 검토 대기함 전체를 비웁니다. 논문·PDF·메모·탐색 이력은 보존되며 상단 되돌리기로 복원할 수 있습니다."
+                      onClick={clearPending}
+                    >
+                      <Inbox size={14} />
+                      검토 대기함 비우기
+                    </button>
+                  )}
                   {scope === "trash" && (
                     <>
                       <button
@@ -1228,13 +1315,6 @@ export function App() {
                       </button>
                     </>
                   )}
-                  <button
-                    className="icon-button"
-                    title="선택 해제"
-                    onClick={() => setSelected([])}
-                  >
-                    <X size={15} />
-                  </button>
                 </div>
                 <div className="list-toolbar">
                   <div className="local-search">
@@ -1305,20 +1385,14 @@ export function App() {
                 {filtersOpen && (
                   <Filters value={filters} onChange={setFilters} />
                 )}
-                {(list.hidden > 0 || showHidden) && (
+                {list.hidden > 0 && (
                   <div className="hidden-banner">
                     <span>
-                      필터로 숨김 {list.hidden}편
+                      필터로 제외된 문헌 {list.hidden}편
                       {list.deferred
                         ? ` · 관련성 판단 보류 ${list.deferred}편`
                         : ""}
                     </span>
-                    <button
-                      className="text-button"
-                      onClick={() => setShowHidden(!showHidden)}
-                    >
-                      {showHidden ? "필터 적용" : "숨긴 결과와 이유 보기"}
-                    </button>
                   </div>
                 )}
                 {scope === "run" && !!list.context?.length && (
@@ -1381,7 +1455,7 @@ export function App() {
                       </h2>
                       <p>
                         {list.hidden
-                          ? "필터를 조정하거나 숨긴 결과를 복원하세요."
+                          ? "필터 조건을 완화하거나 초기화해 주세요."
                           : "주제나 DOI로 검색하고 관심 논문을 골라보세요. 기존 BibTeX와 PDF로도 시작할 수 있습니다."}
                       </p>
                       <div className="inline-actions">
@@ -1414,11 +1488,13 @@ export function App() {
                     <>
                       <div className="table-heading">
                         <input
-                          aria-label="이 페이지 전체 선택"
+                          id="page-selection"
+                          aria-label={pageSelectionLabel}
                           type="checkbox"
-                          checked={list.works.every((w) =>
-                            selected.includes(w.id),
-                          )}
+                          checked={allPageSelected}
+                          ref={input => {
+                            if (input) input.indeterminate = somePageSelected && !allPageSelected;
+                          }}
                           onChange={(e) =>
                             setSelected(
                               e.target.checked
@@ -1435,7 +1511,9 @@ export function App() {
                             )
                           }
                         />
-                        <span>논문</span>
+                        <label className="page-selection-label" htmlFor="page-selection">
+                          {pageSelectionLabel}
+                        </label>
                         <span>연도</span>
                         <span>{scope === "run" ? "인용" : "읽기 상태"}</span>
                         <span />
@@ -1547,7 +1625,10 @@ export function App() {
                     </>
                   ) : (
                     <Graph
-                      works={[...(list.context || []), ...list.works]}
+                      works={graphWorks}
+                      topics={snapshot.classification.topics}
+                      resultTotal={list.total}
+                      contextIds={(list.context || []).map((work) => work.id)}
                       edges={list.edges}
                       selected={selected}
                       seeds={seeds}
@@ -1562,8 +1643,8 @@ export function App() {
                 </div>
                 <div className="results-footer">
                   <span>
-                    {offset + (list.works.length ? 1 : 0)}–
-                    {offset + list.works.length} / {list.total}편
+                    {displayWindow.offset + (list.works.length ? 1 : 0)}–
+                    {displayWindow.offset + list.works.length} / {list.total}편
                     {scope === "run" &&
                     currentRun?.total !== null &&
                     currentRun?.total !== undefined
@@ -1581,7 +1662,7 @@ export function App() {
                         현재 필터 결과 {list.total}편 선택
                       </button>
                     )}
-                    {offset + list.works.length < list.total && limit < 500 && (
+                    {!graphView && offset + list.works.length < list.total && limit < 500 && (
                       <button
                         disabled={loading || limit >= 500}
                         onClick={() => setLimit(Math.min(500, limit + 50))}
@@ -1589,7 +1670,7 @@ export function App() {
                         50편 더 표시
                       </button>
                     )}
-                    {offset > 0 && (
+                    {!graphView && offset > 0 && (
                       <button
                         disabled={loading}
                         onClick={() => {
@@ -1600,7 +1681,7 @@ export function App() {
                         이전 페이지
                       </button>
                     )}
-                    {limit >= 500 &&
+                    {!graphView && limit >= 500 &&
                       offset + list.works.length < list.total && (
                         <button
                           disabled={loading}
@@ -1632,6 +1713,7 @@ export function App() {
                 </div>
               </main>
               {inspectorOpen && (
+                <ResizableInspector>
                 <Inspector
                   work={inspected}
                   projectId={projectId}
@@ -1665,6 +1747,7 @@ export function App() {
                   onInspect={inspect}
                   seed={!!inspected && seeds.includes(inspected.id)}
                 />
+                </ResizableInspector>
               )}
             </div>
           </>
@@ -1726,6 +1809,12 @@ export function App() {
               </>
             )}
           </span>
+          {!fullPage && (
+            <span className={`status-selection${selected.length ? " active" : ""}`} role="status" aria-live="polite" aria-atomic="true">
+              선택한 논문 {selected.length}편
+              {hiddenSelected > 0 && ` · 현재 목록 밖 ${hiddenSelected}편 포함`}
+            </span>
+          )}
           <span>
             {failedNotes.length > 0 && (
               <button

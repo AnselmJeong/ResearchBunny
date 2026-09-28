@@ -108,7 +108,11 @@ export class Discovery {
             origin: "서지 확인",
           });
       }
-    this.library.saveRun(run);
+    this.library.transaction(() => {
+      if (input.mode === "search" || input.mode === "ai")
+        this.library.clearPending(input.projectId);
+      this.library.saveRun(run);
+    });
     void this.execute(run.id);
     return run;
   }

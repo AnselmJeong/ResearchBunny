@@ -145,7 +145,7 @@ export async function restoreBackup(source: string, destination: string) {
     const db = new Database(join(staging, "library.sqlite"));
     try {
       if (
-        db.pragma("user_version", { simple: true }) !== 1 ||
+        ![1, 2].includes(db.pragma("user_version", { simple: true }) as number) ||
         db.pragma("quick_check", { simple: true }) !== "ok"
       )
         throw new AppError(

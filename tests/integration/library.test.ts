@@ -1,3 +1,4 @@
+import { resultWindow } from "../../src/shared/graph";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
@@ -635,7 +636,7 @@ test("backtracking preserves selections, view state, branches and restart state"
     view: "timeline",
     sort: "year",
     inspectorId: "b",
-    positions: { a: { x: 3, y: 7 } },
+    networkPositions: { a: { x: 3, y: 7 } },
   });
   const related = defaultView({
     scope: "run",
@@ -649,7 +650,7 @@ test("backtracking preserves selections, view state, branches and restart state"
   assert.deepEqual(restored.selected, ["a", "b", "c"]);
   assert.equal(restored.view, "timeline");
   assert.equal(restored.localQuery, "topic");
-  assert.deepEqual(restored.positions, { a: { x: 3, y: 7 } });
+  assert.deepEqual(restored.networkPositions, { a: { x: 3, y: 7 } });
   const forward = moveHistory(history, restored, 1);
   assert.deepEqual(forward.views[forward.keys[forward.index]].selected, ["d"]);
   const cited = defaultView({ scope: "run", scopeId: "cited" });
@@ -680,7 +681,7 @@ test("long navigation histories keep the current stage and bound preference stor
       scope: "run",
       scopeId: String(i),
       selected: [String(i)],
-      positions: Object.fromEntries(
+      networkPositions: Object.fromEntries(
         Array.from({ length: 500 }, (_, n) => [String(n), { x: n, y: n }]),
       ),
     });
@@ -795,3 +796,22 @@ test("reading filters apply before pagination and preserve the archived inventor
       undefined,
     );
   }));
+
+
+test("archive graph loads all 76 papers and their edges without pending papers", () => fixture((db) => {
+  const projectId = db.projects()[0].id;
+  const papers = Array.from({ length: 76 }, (_, n) => db.upsert(fromOpenAlex(raw(n + 500, `Graph archive ${n}`))).work);
+  db.mutate(projectId, papers.map((work) => work.id), { screening: "included" });
+  const pending = db.upsert(fromOpenAlex(raw(999, "Pending should not appear"))).work;
+  db.ensureMembership(projectId, pending.id);
+  db.db.prepare("INSERT OR IGNORE INTO citations VALUES(?,?)").run(papers[75].id, papers[0].openalex);
+  const args = { projectId, scope: "archive", query: "", filters: DEFAULT_FILTERS, showHidden: false, sort: "rank", ...resultWindow(true, 50, 50) };
+  const graph = db.list(args);
+  assert.equal(graph.total, 76);
+  assert.equal(graph.works.length, 76);
+  assert.equal(graph.context?.length, 0);
+  assert(graph.works.every((work) => work.state.screening === "included"));
+  assert(!graph.ids.includes(pending.id));
+  assert(graph.edges.some((edge) => edge.source === papers[75].id && edge.target === papers[0].id));
+  assert.equal(db.list({ ...args, ...resultWindow(false, 50, 0) }).works.length, 50);
+}));

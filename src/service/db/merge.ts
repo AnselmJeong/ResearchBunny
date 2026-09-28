@@ -15,6 +15,8 @@ const TABLES = [
   "project_works",
   "collections",
   "collection_works",
+  "archive_topics",
+  "archive_topic_works",
   "seed_profiles",
   "citations",
   "runs",
@@ -55,6 +57,7 @@ export function mergeWorks(db: Library, keepId: string, removeId: string) {
         false,
       );
     }
+    db.db.prepare("INSERT OR IGNORE INTO archive_topic_works(project_id,work_id,topic_id) SELECT project_id,?,topic_id FROM archive_topic_works WHERE work_id=?").run(keepId, removeId);
     db.db.prepare("DELETE FROM project_works WHERE work_id=?").run(removeId);
     for (const row of db.db
       .prepare("SELECT collection_id FROM collection_works WHERE work_id=?")
@@ -150,7 +153,7 @@ export function undoMerge(db: Library): boolean {
       for (const t of [...TABLES].reverse())
         db.db.prepare(`DELETE FROM ${t}`).run();
       for (const t of TABLES)
-        for (const r of snapshot[t])
+        for (const r of snapshot[t] || [])
           db.db
             .prepare(
               `INSERT INTO ${t}(${Object.keys(r).join(",")}) VALUES(${Object.keys(

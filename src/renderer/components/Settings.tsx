@@ -1,7 +1,11 @@
 import { CodexConnection } from "./CodexConnection";
 import { useState } from "react";
-import { ExternalLink, ShieldCheck, Database, RefreshCw } from "lucide-react";
+import { ExternalLink, ShieldCheck, Database, RefreshCw, LoaderCircle, CircleCheck, CircleAlert } from "lucide-react";
 import type { Settings as SettingsValue } from "../../shared/types";
+
+type ConnectionCheck =
+  | { state: "idle" | "checking" }
+  | { state: "success" | "error"; message: string };
 
 export function Settings({
   settings,
@@ -23,6 +27,7 @@ export function Settings({
     [status, setStatus] = useState(""),
     [attachments, setAttachments] = useState(true),
     [linked, setLinked] = useState(false);
+  const [openalexCheck, setOpenalexCheck] = useState<ConnectionCheck>({ state: "idle" });
   const run = async (fn: () => Promise<void>) => {
     setBusy(true);
     try {
@@ -83,26 +88,34 @@ export function Settings({
                 autoComplete="off"
                 placeholder="변경할 때만 입력"
                 value={oa ?? ""}
-                onChange={(e) => setOa(e.target.value)}
+                disabled={busy}
+                onChange={(e) => {
+                  setOa(e.target.value);
+                  setOpenalexCheck({ state: "idle" });
+                }}
               />
             </label>
             <div className="inline-actions">
               <button
                 onClick={() =>
                   void run(async () => {
-                    await save();
-                    setStatus(
-                      (
-                        await window.bunny.testConnection({
+                    setOpenalexCheck({ state: "checking" });
+                    try {
+                      await save();
+                      const result = await window.bunny.testConnection({
                           provider: "openalex",
-                        })
-                      ).message,
-                    );
+                      });
+                      setOpenalexCheck({ state: "success", message: result.message });
+                    } catch (error) {
+                      setOpenalexCheck({ state: "error", message: error instanceof Error ? error.message : "연결을 확인하지 못했습니다. 다시 시도해 주세요." });
+                    }
                   })
                 }
                 disabled={busy}
+                aria-busy={openalexCheck.state === "checking"}
               >
-                연결 확인
+                {openalexCheck.state === "checking" && <LoaderCircle size={15} className="spin" aria-hidden="true" />}
+                {openalexCheck.state === "checking" ? "확인 중…" : "연결 확인"}
               </button>
               <button
                 className="text-button"
@@ -114,14 +127,22 @@ export function Settings({
               >
                 무료 키 발급 <ExternalLink size={12} />
               </button>
-              <button className="text-button" onClick={() => setOa("")}>
+              <button className="text-button" disabled={busy} onClick={() => {
+                setOa("");
+                setOpenalexCheck({ state: "idle" });
+              }}>
                 키 삭제 예약
               </button>
+            </div>
+            <div className={`connection-feedback ${openalexCheck.state}`} role="status" aria-live="polite" aria-atomic="true">
+              {openalexCheck.state === "checking" && <span>OpenAlex 연결을 확인하고 있습니다.</span>}
+              {openalexCheck.state === "success" && <><CircleCheck size={16} aria-hidden="true" /><span>연결 성공 · {openalexCheck.message}</span></>}
+              {openalexCheck.state === "error" && <><CircleAlert size={16} aria-hidden="true" /><span>연결 확인 실패 · {openalexCheck.message}</span></>}
             </div>
           </section>
           <section className="settings-group">
             <h3>
-              AI 추천 <span className="badge">선택 기능</span>
+              AI 추천·분류 <span className="badge">선택 기능</span>
             </h3>
             <label className="check ai-toggle">
               <input
@@ -132,10 +153,10 @@ export function Settings({
                   setValue({ ...value, aiEnabled: e.target.checked })
                 }
               />
-              AI 추천 사용
+              AI 추천·분류 사용
             </label>
             <p className="subtle">
-              실행하면 연구 질문과 확인된 후보의 제목·초록을 OpenAI에
+              실행하면 연구 질문과 대상 논문의 제목·초록·주제 정보를 선택한 AI 연결로
               전송합니다. PDF 전문과 비공개 노트는 전송하지 않습니다.
             </p>
             <label className="field">AI 연결 방식

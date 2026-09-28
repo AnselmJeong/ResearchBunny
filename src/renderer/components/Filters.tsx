@@ -1,5 +1,54 @@
+import { useEffect, useId, useState } from "react";
+import { filtersSchema } from "../../shared/contracts";
 import type { Filters as FilterValues } from "../../shared/types";
 import { DEFAULT_FILTERS } from "../../shared/types";
+// Keep incomplete numeric edits out of list requests and saved navigation.
+function NumericFilter({ field, value, onChange, label, min, max, placeholder, step = 1 }: {
+  field: "yearFrom" | "yearTo" | "minCitations" | "minShared";
+  value: number | null;
+  onChange: (value: number | null) => void;
+  label: string;
+  min: number;
+  max: number;
+  placeholder?: string;
+  step?: number | "any";
+}) {
+  const [draft, setDraft] = useState(String(value ?? ""));
+  const [invalid, setInvalid] = useState(false);
+  const hintId = useId();
+  useEffect(() => {
+    setDraft(String(value ?? ""));
+    setInvalid(false);
+  }, [value]);
+  const parse = (input: HTMLInputElement) => {
+    const parsed = filtersSchema.shape[field].safeParse(input.value === "" ? null : Number(input.value));
+    return input.validity.valid && parsed.success ? parsed : null;
+  };
+  return <span className="numeric-filter">
+    <input type="number" aria-label={label} min={min} max={max} step={step}
+      placeholder={placeholder} value={draft} aria-invalid={invalid}
+      aria-describedby={invalid ? hintId : undefined}
+      onChange={e => {
+        setDraft(e.currentTarget.value);
+        setInvalid(false);
+        const parsed = parse(e.currentTarget);
+        if (parsed) onChange(parsed.data);
+      }}
+      onBlur={e => setInvalid(!parse(e.currentTarget))}
+      onKeyDown={e => {
+        if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setDraft(String(value ?? ""));
+          setInvalid(false);
+        }
+      }}
+    />
+    {invalid && <span id={hintId} className="filter-input-error" role="status">
+      {min}–{max} 범위로 입력하세요. 이 값은 아직 적용되지 않았습니다.
+    </span>}
+  </span>;
+}
 export function Filters({
   value,
   onChange,
@@ -7,6 +56,7 @@ export function Filters({
   value: FilterValues;
   onChange: (value: FilterValues) => void;
 }) {
+  const [resetVersion, setResetVersion] = useState(0);
   const set = (key: keyof FilterValues, v: unknown) =>
     onChange({ ...value, [key]: v });
   return (
@@ -31,39 +81,19 @@ export function Filters({
         </select>
         <label>
           최소 피인용수{" "}
-          <input
-            aria-label="최소 피인용수"
-            type="number"
-            min="0"
-            value={value.minCitations}
-            onChange={(e) =>
-              set("minCitations", Math.max(0, Number(e.target.value)))
-            }
-          />
+          <NumericFilter key={`citations-${resetVersion}`} field="minCitations"
+            label="최소 피인용수" min={0} max={1e9} step="any"
+            value={value.minCitations} onChange={v => set("minCitations", v)} />
         </label>
         <label>
           출판 기간{" "}
-          <input
-            type="number"
-            min="1000"
-            max="2200"
-            placeholder="시작"
-            value={value.yearFrom ?? ""}
-            onChange={(e) =>
-              set("yearFrom", e.target.value ? Number(e.target.value) : null)
-            }
-          />
+          <NumericFilter key={`from-${resetVersion}`} field="yearFrom"
+            label="출판 시작 연도" min={1000} max={2200} placeholder="시작"
+            value={value.yearFrom} onChange={v => set("yearFrom", v)} />
           <span>–</span>
-          <input
-            type="number"
-            min="1000"
-            max="2200"
-            placeholder="끝"
-            value={value.yearTo ?? ""}
-            onChange={(e) =>
-              set("yearTo", e.target.value ? Number(e.target.value) : null)
-            }
-          />
+          <NumericFilter key={`to-${resetVersion}`} field="yearTo"
+            label="출판 끝 연도" min={1000} max={2200} placeholder="끝"
+            value={value.yearTo} onChange={v => set("yearTo", v)} />
         </label>
         <label className="check">
           <input
@@ -89,14 +119,9 @@ export function Filters({
         />
         <label>
           공통 연결{" "}
-          <input
-            type="number"
-            min="1"
-            value={value.minShared}
-            onChange={(e) =>
-              set("minShared", Math.max(1, Number(e.target.value)))
-            }
-          />
+          <NumericFilter key={`shared-${resetVersion}`} field="minShared"
+            label="공통 연결" min={1} max={10000}
+            value={value.minShared} onChange={v => set("minShared", v)} />
         </label>
         <select
           aria-label="문헌 유형"
@@ -139,7 +164,10 @@ export function Filters({
         ))}
         <button
           className="text-button"
-          onClick={() => onChange({ ...DEFAULT_FILTERS })}
+          onClick={() => {
+            setResetVersion(v => v + 1);
+            onChange({ ...DEFAULT_FILTERS });
+          }}
         >
           필터 초기화
         </button>

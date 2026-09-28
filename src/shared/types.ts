@@ -47,6 +47,7 @@ export interface Work {
 }
 export interface LibraryState {
   screening: Screening;
+  pendingDismissed?: boolean;
   previousScreening?: Screening;
   reading: ReadState;
   starred: boolean;
@@ -74,6 +75,7 @@ export interface WorkView extends Work {
   evidence?: Evidence;
   attachmentCount: number;
   collectionIds: string[];
+  archiveTopicId?: string;
 }
 export interface Project {
   id: string;
@@ -87,6 +89,23 @@ export interface Collection {
   name: string;
   parentId: string | null;
   count: number;
+}
+export interface ArchiveTopic {
+  id: string;
+  name: string;
+  description: string;
+  count: number;
+  color: string;
+}
+export interface ClassificationJob {
+  status: "running" | "completed" | "failed" | "cancelled" | "interrupted";
+  message: string;
+  updatedAt: string;
+}
+export interface ArchiveClassification {
+  topics: ArchiveTopic[];
+  unclassified: number;
+  job: ClassificationJob | null;
 }
 export interface SeedProfile {
   id: string;
@@ -239,6 +258,7 @@ export interface Settings {
 export interface Snapshot {
   projects: Project[];
   collections: Collection[];
+  classification: ArchiveClassification;
   seeds: SeedProfile | null;
   seedHistory: SeedProfile[];
   runs: Run[];
@@ -291,6 +311,7 @@ export class AppError extends Error {
 export const now = () => new Date().toISOString();
 export const defaultState = (): LibraryState => ({
   screening: "pending",
+  pendingDismissed: false,
   reading: "unread",
   starred: false,
   tags: [],

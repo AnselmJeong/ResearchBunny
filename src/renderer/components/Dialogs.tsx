@@ -9,6 +9,7 @@ import type {
   Run,
 } from "../../shared/types";
 import { Modal } from "./Modal";
+import type { Input } from "../../shared/contracts";
 type Common = { onClose: () => void; onError: (error: unknown) => void };
 export function ImportDialog({
   projectId,
@@ -544,29 +545,38 @@ export function ExportDialog({
       collectionId || collections[0]?.id || "",
     ),
     [busy, setBusy] = useState(false);
-  const [previewIds, setPreviewIds] = useState<string[] | null>(null);
+  // Compare the actual export target, not array identities replaced by list refreshes.
+  const previewRequest = JSON.stringify({
+    projectId,
+    scope: scope === "filtered" ? "selected" : scope,
+    ids: scope === "filtered" ? visibleIds : scope === "selected" ? selected : [],
+    collectionId: scope === "collection" ? collection || undefined : undefined,
+  } satisfies Input<"exportPreview">);
+  const [preview, setPreview] = useState<{
+    request: string;
+    ids: string[];
+  } | null>(null);
+  const onError = common.onError;
   useEffect(() => {
     let valid = true;
-    setPreviewIds(null);
-    if (scope === "collection" && !collection) {
-      setPreviewIds([]);
+    const request = JSON.parse(previewRequest) as Input<"exportPreview">;
+    if (request.scope === "collection" && !request.collectionId) {
+      setPreview({ request: previewRequest, ids: [] });
       return;
     }
     void window.bunny
-      .exportPreview({
-        projectId,
-        scope: scope === "filtered" ? "selected" : scope,
-        ids: scope === "filtered" ? visibleIds : selected,
-        collectionId: collection || undefined,
-      })
+      .exportPreview(request)
       .then((r) => {
-        if (valid) setPreviewIds(r.ids);
+        if (valid) setPreview({ request: previewRequest, ids: r.ids });
       })
-      .catch(common.onError);
+      .catch((error: unknown) => {
+        if (valid) onError(error);
+      });
     return () => {
       valid = false;
     };
-  }, [projectId, scope, collection, selected, visibleIds]);
+  }, [previewRequest, onError]);
+  const previewIds = preview?.request === previewRequest ? preview.ids : null;
   const count = previewIds?.length ?? null;
   return (
     <Modal title="BibTeX 내보내기" onClose={common.onClose}>
@@ -596,11 +606,11 @@ export function ExportDialog({
           ))}
         </select>
       )}
-      <p className="export-count">
+      <p className="export-count" role="status" aria-live="polite">
         {count !== null ? (
-          <>
-            <strong>{count ?? 0}</strong>편
-          </>
+          <span>
+            <strong>{count}</strong>편
+          </span>
         ) : (
           "내보낼 문헌 확인 중…"
         )}

@@ -11,6 +11,7 @@ import type {
   Settings,
   Project,
   Collection,
+  ClassificationJob,
   SeedProfile,
   AppEvent,
   Result,
@@ -66,6 +67,8 @@ const state = z
   .strict();
 export const schemas = {
   snapshot: z.object({ projectId: id.optional() }),
+  classifyArchive: z.object({ projectId: id }),
+  cancelClassification: z.object({ projectId: id }),
   createProject: z.object({
     name: z.string().trim().min(1).max(160),
     question: text.default(""),
@@ -97,6 +100,8 @@ export const schemas = {
       "excluded",
       "run",
       "collection",
+      "topic",
+      "unclassified",
     ]),
     scopeId: id.optional(),
     query: z.string().max(1000).default(""),
@@ -111,6 +116,7 @@ export const schemas = {
   inspect: z.object({ projectId: id, workId: id, runId: id.optional() }),
   mutateWorks: z.object({ projectId: id, ids, patch: state }),
   restoreWorks: z.object({ projectId: id, ids }),
+  clearPending: z.object({ projectId: id }),
   deleteTrashedWorks: z.object({
     projectId: id,
     target: z.discriminatedUnion("kind", [
@@ -241,6 +247,8 @@ export interface Outputs {
   }[];
   exportPreview: { ids: string[]; count: number };
   snapshot: Snapshot;
+  classifyArchive: ClassificationJob;
+  cancelClassification: void;
   createProject: Project;
   updateProject: void;
   createCollection: Collection;
@@ -249,6 +257,7 @@ export interface Outputs {
   inspect: WorkView;
   mutateWorks: void;
   restoreWorks: void;
+  clearPending: { ids: string[] };
   deleteTrashedWorks: { ids: string[] };
   editWork: Work;
   manualWork: Work;

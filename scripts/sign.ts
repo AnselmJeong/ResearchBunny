@@ -18,6 +18,12 @@ if (!target)
   throw new Error(
     `App bundle not found for signing: ${JSON.stringify({ directory, name, wrapper })}`,
   );
+// The standard macOS About panel reads this line from the bundle metadata.
+const aboutCredit = spawnSync("/usr/bin/plutil", [
+  "-replace", "NSHumanReadableCopyright", "-string",
+  "developed by Anselm Jeong", join(target, "Contents", "Info.plist"),
+], { stdio: "inherit" });
+if (aboutCredit.status !== 0) process.exit(1);
 for (const args of [
   ["--force", "--deep", "--sign", "-", resolve(target)],
   ["--verify", "--deep", "--strict", resolve(target)],

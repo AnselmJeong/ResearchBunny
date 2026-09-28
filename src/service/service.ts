@@ -19,6 +19,7 @@ import { PdfImports, hashFile, verifyPdf } from "./interchange/pdf";
 import { createBackup, restoreBackup } from "./interchange/backup";
 import { mergeWorks, undoMerge } from "./db/merge";
 import { deleteTrashedWorks } from "./db/trash";
+import { ArchiveClassifier, classificationSnapshot } from "./archive-classification";
 export class Service {
   db: Library;
   oa: OpenAlex;
@@ -26,6 +27,7 @@ export class Service {
   codex: CodexClient;
   discovery: Discovery;
   pdf: PdfImports;
+  classifier: ArchiveClassifier;
   secrets: {
     openalex?: string;
     openai?: string;
@@ -51,9 +53,10 @@ export class Service {
     );
     this.discovery = new Discovery(this.db, this.oa, emit, this.ai);
     this.pdf = new PdfImports(this.db, this.oa, workerPath, emit);
+    this.classifier = new ArchiveClassifier(this.db, this.ai, emit);
   }
   busy() {
-    return this.discovery.active.size > 0 || this.pdf.active.size > 0;
+    return this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.classifier.active.size > 0;
   }
   settings(): Settings {
     return {
@@ -81,6 +84,7 @@ export class Service {
         return {
           projects: this.db.projects(),
           collections: this.db.collections(projectId),
+          classification: classificationSnapshot(this.db, projectId),
           seeds: history[0] || null,
           seedHistory: history,
           runs: this.db.runs(projectId),
@@ -131,6 +135,12 @@ export class Service {
       }
       case "list":
         return this.db.list(args);
+      case "classifyArchive":
+        if (this.busy()) throw new AppError("BUSY", "진행 중인 작업이 끝난 뒤 자동 분류하세요.");
+        return this.classifier.start(args.projectId);
+      case "cancelClassification":
+        this.classifier.cancel(args.projectId);
+        return;
       case "inspect":
         return this.db.view(args.projectId, args.workId, args.runId);
       case "mutateWorks":
@@ -144,6 +154,10 @@ export class Service {
           });
         }
         return;
+      case "clearPending":
+        if (this.busy())
+          throw new AppError("BUSY", "진행 중인 작업이 끝난 뒤 검토 대기함을 비우세요.");
+        return this.db.clearPending(args.projectId);
       case "deleteTrashedWorks":
         if (this.busy())
           throw new AppError(
@@ -365,6 +379,7 @@ export class Service {
         for (const control of [
           ...this.discovery.active.values(),
           ...this.pdf.active.values(),
+          ...this.classifier.active.values(),
         ])
           control.abort();
         return;

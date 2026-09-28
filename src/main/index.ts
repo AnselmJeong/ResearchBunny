@@ -208,6 +208,7 @@ const hostRpc = BrowserView.defineRPC<BunnyRPC>({
               "attachments",
               "saveUi",
               "duplicates",
+              "exportPreview",
             ].includes(name)
           )
             emit({ type: "changed" });
