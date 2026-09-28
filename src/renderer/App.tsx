@@ -668,23 +668,11 @@ export function App() {
   return (
     <div
       className="app-shell"
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        const paths = window.bunny.droppedPaths(
-          Array.from(e.dataTransfer.files),
-        );
-        if (paths.length)
-          void task(async () =>
-            openRun(await window.bunny.importDropped({ projectId, paths })),
-          );
-      }}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => event.preventDefault()}
     >
       <aside className="sidebar">
-        <div className="drag-region" />
+        <div className="drag-region electrobun-webkit-app-region-drag" />
         <div className="brand">
           <Bunny />
           <strong>ResearchBunny</strong>
@@ -950,11 +938,11 @@ export function App() {
                     onClick={() => {
                       if (
                         !snapshot.settings.aiEnabled ||
-                        !snapshot.settings.openaiConfigured
+                        (snapshot.settings.aiProvider === "openai" && !snapshot.settings.openaiConfigured)
                       ) {
                         setDialog("settings");
                         flash(
-                          "핵심 논문 추천은 설정에서 OpenAI 키와 사용 여부를 등록하세요.",
+                          "설정에서 AI 연결을 선택하고 AI 추천을 켜 주세요.",
                         );
                       } else void discover("ai").catch(onError);
                     }}

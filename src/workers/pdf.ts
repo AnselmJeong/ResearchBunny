@@ -1,9 +1,9 @@
-import { parentPort, workerData } from "node:worker_threads";
+
 import { readFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 async function extract() {
   const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const data = new Uint8Array(await readFile(workerData.path));
+  const data = new Uint8Array(await readFile(process.argv[2]));
   const loading = getDocument({
     data,
     useSystemFonts: false,
@@ -50,7 +50,7 @@ async function extract() {
         ),
       ),
     ].slice(0, 5);
-    parentPort!.postMessage({
+    process.send?.({
       title: title.slice(0, 1000),
       authors: typeof info.Author === "string" ? info.Author : "",
       dois,
@@ -63,7 +63,7 @@ async function extract() {
   }
 }
 extract().catch(() =>
-  parentPort!.postMessage({
+  process.send?.({
     title: "",
     authors: "",
     dois: [],

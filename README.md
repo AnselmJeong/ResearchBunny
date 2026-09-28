@@ -1,16 +1,21 @@
 # ResearchBunny
 
-관심 논문에서 출발해 참고문헌과 후속 연구를 탐색하고, 선별한 논문을 로컬 아카이브로 보관하는 macOS 앱입니다. [PRD](PRD.md)의 P0 흐름을 구현한 **0.1.2 로컬 시험판**입니다.
+관심 논문에서 출발해 참고문헌과 후속 연구를 탐색하고, 선별한 논문을 로컬 아카이브로 보관하는 macOS 앱입니다. [PRD](PRD.md)의 P0 흐름을 구현한 **0.2.0 로컬 시험판**입니다.
+
+화면과 함께 주요 작업 흐름을 따라가려면 [사용 가이드](Usage.md)를 참고하세요.
 
 ## 설치와 실행
 
-0.1.2는 아래 개발 실행 명령으로 실행하거나 `npm run make`로 새 패키지를 만듭니다. 기존 DMG에는 이번 디자인 변경이 포함되지 않습니다.
+0.2.0은 Electrobun 1.18.1 + Bun 1.3.8 + macOS 기본 WebKit으로 실행합니다. Chromium/CEF를 포함하지 않습니다.
 
-- 기존 0.1.1 Apple Silicon용 DMG: `out/make/ResearchBunny-0.1.1-arm64.dmg`
-- 앱: `out/ResearchBunny-darwin-arm64/ResearchBunny.app`
-- DMG를 열어 ResearchBunny를 Applications로 복사한 뒤 실행합니다.
-- 로컬 ad-hoc 서명입니다. Developer ID 서명·Apple 공증은 하지 않았습니다. 다른 Mac에서 내려받은 파일은 Gatekeeper의 승인이 필요할 수 있습니다.
-- 번들의 최소 OS는 macOS 13입니다. 실제 검증 환경은 macOS 27.2, Apple M2 Max, 64GB입니다. macOS 13·16GB 기기 및 Intel은 미검증입니다.
+- 배포 DMG: `out/electrobun/stable-macos-arm64-ResearchBunny.dmg`
+- 앱: `build/stable-macos-arm64/ResearchBunny.app`
+- DMG의 앱을 Applications로 복사한 뒤 실행하세요. 첫 실행은 번들 압축을 풉니다.
+- 로컬 ad-hoc 서명입니다. Developer ID 서명과 Apple 공증은 하지 않았습니다.
+- macOS Apple Silicon에서 검증했습니다. Intel과 다른 OS는 이번 전환 범위에 포함하지 않습니다.
+- Electron 버전은 종료하고 새 앱을 실행하세요. 기존 라이브러리 경로와 SQLite 형식은 유지합니다.
+- 파일 드롭은 지원하지 않습니다. 가져오기 창에서 여러 PDF 또는 여러 폴더를 선택하세요.
+
 
 ## 첫 아카이브 만들기
 
@@ -36,9 +41,13 @@
 
 설정에서 OpenAlex 키와 연결 상태를 관리합니다. 현재 익명 검색도 동작하지만 공급자의 인증·사용 한도 정책에 따라 키가 필요할 수 있습니다. 키는 Authorization 헤더로 전달합니다.
 
-GPT 추천은 별도의 OpenAI API 키와 `OpenAI 추천 사용` 설정이 필요한 **실험 기능**입니다. 사용자가 실행하면 연구 질문과 검색한 후보의 제목·초록·관계 메타데이터를 OpenAI에 보냅니다. PDF 전문과 개인 노트는 보내지 않습니다. API 사용에는 공급자 비용이 발생할 수 있으며 앱에서 모델·요금·호출·토큰·금액 상한을 설정합니다. 요금 입력값은 사용자가 확인하는 예상 비용 기준입니다.
+AI 추천은 **실험 기능**입니다. 기본 연결은 `Codex (ChatGPT subscription)`이며, 설정에서 `ChatGPT로 로그인`한 뒤 `AI 추천 사용`을 켜고 저장합니다. 설치된 공식 Codex CLI를 사용하며 0.154.0에서 프로토콜을 확인했습니다. ResearchBunny 전용 로그인은 `~/Library/Application Support/ResearchBunny/codex`에 저장하고 라이브러리 백업에는 넣지 않습니다. 계정 기본 모델 또는 계정에서 제공하는 모델을 선택할 수 있습니다.
 
-키는 macOS `safeStorage`로 암호화한 별도 파일에 보관합니다. 키 저장 또는 기존 키 읽기 시 macOS 키체인 확인 창이 나타날 수 있습니다. 암호화가 불가능하면 평문 저장으로 전환하지 않습니다. 키가 없는 첫 실행은 키체인 접근 없이 로컬 기능을 엽니다.
+사용자가 실행하면 연구 질문과 검색한 후보의 제목·초록을 OpenAI에 보냅니다. PDF 전문과 개인 노트는 보내지 않습니다. 구독 연결은 호출마다 포함 사용 허용 상태와 한도를 확인하며, 확인 실패·한도 소진 시 중단합니다. 유료 API로 자동 전환하지 않습니다. 여러 앱이 계정 한도를 공유하므로 이 사전 확인은 서버 차원의 추가 과금 차단을 보장하지 않습니다. Codex에는 실행당 3회 호출 및 입력 예산을 적용하며 API의 응답 토큰·달러 상한은 지원하지 않습니다.
+
+기존 키와 API 모델·예산은 보존되며 `OpenAI API · 별도 API 과금`을 직접 선택했을 때만 사용합니다. API 요금 입력값은 사용자가 확인하는 예상 비용 기준입니다. 구현 범위와 검증 기록은 [마이그레이션 문서](docs/codex-subscription-migration.md)를 참고하세요.
+
+새 API 키는 macOS 키체인에 저장하며 평문 DB·renderer·백업에 포함하지 않습니다. Electron의 기존 `credentials.json`은 그대로 보존합니다. 기존 키가 있는 경우 설정 화면 안내에 따라 한 번 다시 입력하세요. 키체인 접근이 실패하면 저장을 차단합니다.
 
 실제 OpenAI 호출과 사람이 판정하는 추천 품질 평가는 아직 수행하지 않았습니다. 식별자·인용문 검증은 의미적 타당성이나 논문의 중요도를 보증하지 않습니다. AI를 설정하지 않아도 검색·탐색·아카이브·내보내기를 사용할 수 있습니다.
 
@@ -50,15 +59,15 @@ GPT 추천은 별도의 OpenAI API 키와 `OpenAI 추천 사용` 설정이 필�
 | ------------------------ | --------------------------------------- |
 | `library/library.sqlite` | 문헌·프로젝트 상태·노트·관계·작업 기록  |
 | `library/attachments/`   | SHA-256으로 식별한 관리 PDF 사본        |
-| `credentials.json`       | OS 보호 암호화 키. 백업에 포함하지 않음 |
+| `credentials.json`       | 보존된 Electron 암호화 키 파일. 새 키는 macOS 키체인에 저장 |
 | `library-location.json`  | 복원 후 현재 라이브러리 위치            |
 | `libraries/restored-…/`  | 기존 라이브러리와 분리해 검증한 복원본  |
 
-PDF 기본값은 앱 관리 폴더로 복사입니다. 기존 위치 연결과 서지정보만 가져오기도 지원합니다. 원본 파일은 수정·이동·삭제하지 않습니다. 파일 해시가 같으면 중복 첨부를 만들지 않습니다. 메타데이터·첫 페이지 추출은 파일당 15초, worker 메모리 384MB로 제한하며 100MB 초과 파일은 텍스트 추출을 생략합니다. 스캔·암호화·부정확한 서지는 대기함에서 직접 수정하거나 기존 문헌에 연결하세요. OCR은 포함하지 않습니다.
+PDF 기본값은 앱 관리 폴더로 복사입니다. 기존 위치 연결과 서지정보만 가져오기도 지원합니다. 원본 파일은 수정·이동·삭제하지 않습니다. 파일 해시가 같으면 중복 첨부를 만들지 않습니다. 메타데이터·첫 페이지 추출은 별도 프로세스에서 파일당 15초로 제한하며 100MB 초과 파일은 텍스트 추출을 생략합니다. 스캔·암호화·부정확한 서지는 대기함에서 직접 수정하거나 기존 문헌에 연결하세요. OCR은 포함하지 않습니다.
 
 가져오기 기록의 `파일별 결과 보기`에서 실패 이유를 확인하고 실패 파일을 재시도할 수 있습니다. 외부 연결 파일을 옮겼으면 상세 패널의 재연결을 사용합니다. 휴지통 이동은 복구 가능하며 자동 영구 삭제는 하지 않습니다.
 
-설정의 백업은 SQLite 온라인 백업과 선택한 첨부를 **백업 폴더**로 만듭니다. 외부 연결 파일 포함 여부도 선택할 수 있습니다. manifest와 SHA-256 검증 후 별도 공간에 복원하고 현재 라이브러리를 전환합니다. 기존 라이브러리는 남습니다. 누락 첨부는 보고하고 재연결이 필요한 상태로 표시합니다. 실행 중인 `.sqlite` 파일만 임의로 복사하면 WAL 변경을 빠뜨릴 수 있으므로 앱 백업을 사용하세요.
+설정의 백업은 SQLite의 일관된 스냅샷(`VACUUM INTO`)과 선택한 첨부를 **백업 폴더**로 만듭니다. 외부 연결 파일 포함 여부도 선택할 수 있습니다. manifest와 SHA-256 검증 후 별도 공간에 복원하고 현재 라이브러리를 전환합니다. 기존 라이브러리는 남습니다. 누락 첨부는 보고하고 재연결이 필요한 상태로 표시합니다. 실행 중인 `.sqlite` 파일만 임의로 복사하면 WAL 변경을 빠뜨릴 수 있으므로 앱 백업을 사용하세요.
 
 ## 작업 범위와 한도
 
@@ -70,31 +79,31 @@ PDF 기본값은 앱 관리 폴더로 복사입니다. 기존 위치 연결과 �
 
 ## 개발과 검증
 
-Node.js 22 이상과 macOS 개발 도구가 있는 환경에서:
+Bun 1.3.8, npm, Xcode Command Line Tools가 있는 macOS 환경에서:
 
 ```sh
 npm ci
-npm run start
-npm run typecheck
-npm run lint
-npm test
-npm run test:desktop
-npm run test:navigation
-npm run test:design
-npm run test:live
-npm run make
+bun run start
+bun run typecheck
+bun run lint
+bun run test
+bun run package
+bun run test:desktop
+bun run test:live
 ```
 
-`npm ci`는 Electron ABI에 맞게 SQLite 네이티브 모듈을 준비합니다. `npm run make`는 `.app` 패키징·로컬 서명·DMG 생성·DMG 무결성 검증을 수행합니다. Node/Python을 설치하지 않은 사용자의 PATH에 의존하지 않습니다.
+개발에는 Bun 1.3.8, npm, Xcode Command Line Tools가 필요합니다. `npm ci`는 고정된 의존성을 설치합니다. `bun run package`는 WebKit 앱·로컬 서명·DMG를 생성합니다. 배포 앱은 Bun·SQLite·PDF 처리 리소스를 포함하므로 사용자의 Node/Python/PATH에 의존하지 않습니다.
 
-패키지 앱 검증과 성능 측정:
+`test:desktop`은 패키지의 압축이 풀린 상태에서 번들 런타임·PDF 추출·저장·내보내기·백업/복원을 검사합니다. WKWebView와 macOS 파일 대화상자는 별도로 실제 앱에서 확인합니다. 전환 내용과 검증 범위는 [마이그레이션 기록](docs/electrobun-migration.md)을 참고하세요.
+
+별도의 QA 데이터로 UI를 확인하려면 다음처럼 전용 앱을 빌드합니다. QA 경로는 패키징 결과 폴더(`out/electrobun`) 밖에 두세요.
 
 ```sh
-RESEARCHBUNNY_APP="$PWD/out/ResearchBunny-darwin-arm64/ResearchBunny.app/Contents/MacOS/ResearchBunny" node tests/desktop/smoke.mjs
-RESEARCHBUNNY_APP="$PWD/out/ResearchBunny-darwin-arm64/ResearchBunny.app/Contents/MacOS/ResearchBunny" node tests/desktop/navigation.mjs
-RESEARCHBUNNY_APP="$PWD/out/ResearchBunny-darwin-arm64/ResearchBunny.app/Contents/MacOS/ResearchBunny" node tests/desktop/live.mjs
-node scripts/performance.mjs
+RESEARCHBUNNY_BUILD_QA_ROOT="$PWD/.qa/ui" bun run build
+open build/dev-macos-arm64/ResearchBunny-QA-dev.app
 ```
+
+일반 배포 빌드에는 `RESEARCHBUNNY_BUILD_QA_ROOT`를 지정하지 않습니다. `test:desktop`은 `bun tests/desktop/electrobun-smoke.ts /absolute/path/ResearchBunny.app`처럼 다른 위치의 압축 해제된 앱도 검사할 수 있습니다.
 
 실제 API 테스트는 공개 문헌 조회를 수행합니다. 자동 테스트는 임시 라이브러리를 사용합니다. `RESEARCHBUNNY_DATA_DIR` 환경 변수로 개발 데이터 위치를 분리할 수 있습니다. 정상 사용자의 자료에 테스트 fixture를 넣지 않습니다.
 

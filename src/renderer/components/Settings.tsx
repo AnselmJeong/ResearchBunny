@@ -1,3 +1,4 @@
+import { CodexConnection } from "./CodexConnection";
 import { useState } from "react";
 import { ExternalLink, ShieldCheck, Database, RefreshCw } from "lucide-react";
 import type { Settings as SettingsValue } from "../../shared/types";
@@ -35,6 +36,8 @@ export function Settings({
   const save = async () => {
     await window.bunny.saveSettings({
       model: value.model,
+      aiProvider: value.aiProvider,
+      codexModel: value.codexModel,
       aiEnabled: value.aiEnabled,
       theme: value.theme,
       aiMaxInputTokens: value.aiMaxInputTokens,
@@ -129,13 +132,25 @@ export function Settings({
                   setValue({ ...value, aiEnabled: e.target.checked })
                 }
               />
-              OpenAI 추천 사용
+              AI 추천 사용
             </label>
             <p className="subtle">
               실행하면 연구 질문과 확인된 후보의 제목·초록을 OpenAI에
               전송합니다. PDF 전문과 비공개 노트는 전송하지 않습니다.
             </p>
-            <details className="settings-advanced">
+            <label className="field">AI 연결 방식
+              <select value={value.aiProvider} onChange={e => setValue({ ...value, aiProvider: e.target.value === "openai" ? "openai" : "codex" })}>
+                <option value="codex">Codex (ChatGPT subscription)</option>
+                <option value="openai">OpenAI API · 별도 API 과금</option>
+              </select>
+            </label>
+            {value.aiProvider === "codex" ? <>
+              <CodexConnection model={value.codexModel} onModel={codexModel => setValue(current => ({ ...current, codexModel }))} />
+              <label className="field">실행당 입력 토큰 예산
+                <input type="number" min="1000" max="100000" value={value.aiMaxInputTokens} onChange={e => setValue({ ...value, aiMaxInputTokens: Number(e.target.value) })} />
+              </label>
+              <p className="subtle">실행당 최대 3회 호출. Codex 연결은 응답 토큰 상한·달러 예산을 지원하지 않으며, 구독 허용 상태를 매번 확인합니다.</p>
+            </> : <details className="settings-advanced">
               <summary>모델과 사용 한도 · API 키</summary>
               <label className="field">
                 OpenAI API 키{" "}
@@ -271,7 +286,7 @@ export function Settings({
                 최대 3회 호출. 금액 제한은 입력한 단가로 보수적으로 계산합니다.
                 모델을 바꾸면 공식 요금에 맞춰 단가를 수정하세요.
               </p>
-            </details>
+            </details>}
           </section>
           <section id="settings-library" className="settings-group">
             <h3>
@@ -398,6 +413,9 @@ export function Settings({
             </p>
           </section>
         </div>
+        {settings.credentialMigrationRequired && <p className="notice" role="status">
+          Electron 버전의 API 키는 다시 입력해 주세요. 기존 암호화 파일과 문헌은 보존되어 있으며, 새 키는 macOS 키체인에 저장됩니다.
+        </p>}
         {status && (
           <p className="notice" role="status">
             {status}

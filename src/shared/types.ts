@@ -216,6 +216,9 @@ export interface Settings {
   openalexConfigured: boolean;
   openaiConfigured: boolean;
   secureStorage: boolean | null;
+  credentialMigrationRequired?: boolean;
+  aiProvider: "codex" | "openai";
+  codexModel: string;
   model: string;
   aiEnabled: boolean;
   aiMaxInputTokens: number;

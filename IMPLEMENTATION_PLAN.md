@@ -4,6 +4,8 @@ _v0.1 · 2026-09-26 · macOS arm64 로컬 시험판 구현 및 검증 기록_
 
 ---
 
+> 2026-09-27 변경: Electrobun/WebKit으로 전환하고 파일 드롭을 제외한다. 현재 실행·빌드 구조와 검증은 [마이그레이션 기록](docs/electrobun-migration.md)을 따른다. 아래 Electron 관련 세부 기록은 최초 구현 이력이다.
+
 ## 🎯 1. 범위와 기본 기술 선택
 
 ### 1.1 구현 목표와 경계
@@ -18,18 +20,18 @@ _v0.1 · 2026-09-26 · macOS arm64 로컬 시험판 구현 및 검증 기록_
 
 | 영역 | 기본안 | 선택 이유·검증할 점 |
 | --- | --- | --- |
-| 데스크톱 셸 | Electron | 그래프·파일·PDF·백그라운드 프로세스를 TypeScript 중심으로 구성. 설치 용량·메모리는 실제 앱에서 확인 |
+| 데스크톱 셸 | Electrobun + macOS WebKit | 그래프·파일·PDF·백그라운드 프로세스를 TypeScript 중심으로 구성. 설치 용량·메모리는 실제 앱에서 확인 |
 | 화면 | React + TypeScript + Vite | 검색·표·그래프·상세 패널을 분리하고 빠르게 UI 반복 개발 |
-| 로컬 DB | SQLite + `better-sqlite3` | 단일 사용자 데이터·관계·작업 이력·검색 인덱스를 로컬 저장. native module 패키징을 0단계에 먼저 검증 |
-| DB 접근 | 전용 utility process, 버전별 SQL migration | 동기 DB 호출을 renderer/main 이벤트 루프 밖으로 분리. 쓰기는 한 서비스가 소유 |
+| 로컬 DB | SQLite + `bun:sqlite` | 단일 사용자 데이터·관계·작업 이력·검색 인덱스를 로컬 저장. native module 패키징을 0단계에 먼저 검증 |
+| DB 접근 | 전용 Bun child process, 버전별 SQL migration | 동기 DB 호출을 renderer/main 이벤트 루프 밖으로 분리. 쓰기는 한 서비스가 소유 |
 | 작업 큐 | SQLite `jobs` + 체크포인트·재시도 시각 | 외부 큐 서버 없이 재실행·취소·중복 방지. 도메인 작업 기록과 같은 DB에서 관리 |
 | 그래프 | Cytoscape.js | 노드·edge 스타일과 선택·이동·뷰포트 제어 활용. 500노드·3,000선 측정으로 채택 확인 |
 | PDF 추출 | PDF.js (`pdfjs-dist`)의 텍스트·메타데이터 추출 | 로컬 처리, 첫 페이지 중심 식별. 복잡한 레이아웃·스캔은 보류 또는 후속 OCR |
 | P0 PDF 열기 | OS 기본 PDF 앱 | 내부 독서·하이라이트는 P1. P0도 파일 열기·Finder 보기·다중 첨부 선택은 제공 |
 | BibTeX | 유지보수되는 parser/serializer를 adapter 뒤에 배치 | 정규식만으로 파싱하지 않음. 엔트리·원본 필드 보존 요구를 fixture로 먼저 검증하고 라이브러리 확정 |
 | LLM | OpenAI Responses API + 구조화된 출력 | 질문 계획과 후보 평가에 사용. 모델 ID·입력 예산은 설정값, 내용 검증은 앱 책임 |
-| 키 보관 | Electron `safeStorage` 기반 OS 보호 저장 | 암호화 가능 여부 확인. 평문 DB·renderer·백업에는 key를 저장하지 않음 |
-| 검증·배포 | 단위/통합 테스트, 실제 Electron 자동화·수동 QA, macOS 앱/DMG | 개발 모드와 설치된 산출물의 동작을 별도로 확인 |
+| 키 보관 | macOS Keychain (이전 safeStorage 파일 보존·키 재입력) | 암호화 가능 여부 확인. 평문 DB·renderer·백업에는 key를 저장하지 않음 |
+| 검증·배포 | 단위/통합 테스트, 패키지 런타임 검사·WebKit 수동 QA, macOS 앱/DMG | 개발 모드와 설치된 산출물의 동작을 별도로 확인 |
 
 Electron의 프로세스·보안 경계, SQLite worker/backup 방식, PDF.js 추출은 공식 문서와 Context7을 확인했다. 그래프 조작은 Cytoscape.js 공식 API를 참고한다. 버전은 구현 0단계에 호환되는 안정판으로 고정하고 lockfile에 기록한다. [Electron 보안](https://www.electronjs.org/docs/latest/tutorial/security), [utility process](https://www.electronjs.org/docs/latest/api/utility-process), [SQLite](https://github.com/WiseLibs/better-sqlite3), [PDF.js](https://mozilla.github.io/pdf.js/), [Cytoscape.js](https://js.cytoscape.org/).[^electron-security][^electron-process][^sqlite][^pdfjs][^cytoscape]
 
@@ -246,7 +248,7 @@ LLM은 DB 쓰기·파일 접근·임의 검색 도구 권한을 갖지 않는다
 
 **연결 요구:** P0-10/11/12, AC-01/07/08/12. 단계 1의 저장·중복 기준을 재사용한다.
 
-- [x] 파일·폴더 선택과 드롭, 하위 폴더/컬렉션 매핑, 관리 복사/외부 연결
+- [x] 여러 파일·폴더 대화상자 선택 (드롭 제외), 하위 폴더/컬렉션 매핑, 관리 복사/외부 연결
 - [x] 파일 해시·metadata·첫 페이지 제목·저자·DOI 추출을 별도 worker에서 수행
 - [ ] 식별자 exact match와 제목·저자·연도 후보 비교, 명백한 충돌의 수동 확인
 - [x] 기존 문헌에 첨부 연결, 미확인·암호화·스캔·손상 파일의 대기함

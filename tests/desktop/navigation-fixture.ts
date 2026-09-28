@@ -20,7 +20,7 @@ const graph = Array.from({ length: 35 }, (_, i) => ({
   ).map((n) => `https://openalex.org/W${n}`),
   abstract_inverted_index: { navigation: [0], research: [1] },
 }));
-const fetcher: typeof fetch = async (input) => {
+const fetcher: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch> = async (input) => {
   const url = new URL(String(input));
   const filter = url.searchParams.get("filter") || "";
   const results = filter.startsWith("cites:")

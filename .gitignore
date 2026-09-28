@@ -6,3 +6,5 @@ artifacts/
 *.log
 .env*
 !.env.example
+build/
+.qa/

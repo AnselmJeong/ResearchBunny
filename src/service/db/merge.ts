@@ -127,7 +127,7 @@ export function mergeWorks(db: Library, keepId: string, removeId: string) {
     db.touch();
     db.db
       .prepare("INSERT OR REPLACE INTO merge_history VALUES(1,?,?)")
-      .run(JSON.stringify(snapshot), db.pref("revision"));
+      .run(JSON.stringify(snapshot), db.pref<number>("revision") ?? 0);
   });
 }
 export function undoMerge(db: Library): boolean {
@@ -142,7 +142,7 @@ export function undoMerge(db: Library): boolean {
     );
   const snapshot = JSON.parse(row.data) as Record<
     string,
-    Record<string, unknown>[]
+    Record<string, string | number | null>[]
   >;
   db.db.pragma("foreign_keys=OFF");
   try {

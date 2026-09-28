@@ -1,16 +1,11 @@
-import {
-  app,
+import Electrobun, {
   BrowserWindow,
-  dialog,
-  ipcMain,
-  Menu,
-  safeStorage,
-  shell,
-  utilityProcess,
-  nativeTheme,
-  type UtilityProcess,
-} from "electron";
-import { join, extname, resolve } from "node:path";
+  BrowserView,
+  ApplicationMenu,
+  Utils,
+} from "electrobun/bun";
+import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 import {
   mkdirSync,
   readFileSync,
@@ -19,194 +14,38 @@ import {
   existsSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { pathToFileURL } from "node:url";
 import { schemas, type Command } from "../shared/contracts";
-import { AppError, type Result, type Settings } from "../shared/types";
-
-app.setName("ResearchBunny");
-if (process.env.RESEARCHBUNNY_DATA_DIR)
-  app.setPath("userData", resolve(process.env.RESEARCHBUNNY_DATA_DIR));
-if (!app.requestSingleInstanceLock()) {
-  app.quit();
+import { AppError, type Result, type AppEvent } from "../shared/types";
+import type { BunnyRPC } from "../shared/rpc";
+import { dialog, resources } from "../platform/native";
+import { Credentials } from "../platform/credentials";
+import { ServiceHost } from "../platform/service-host";
+import { acquireInstance } from "../platform/instance";
+const root = () =>
+  resolve(
+    process.env.RESEARCHBUNNY_DATA_DIR ??
+      join(homedir(), "Library", "Application Support", "ResearchBunny"),
+  );
+mkdirSync(root(), { recursive: true });
+const credentials = new Credentials(root());
+let libraryRoot = join(root(), "library");
+let window: BrowserWindow | null = null;
+const emit = (event: AppEvent) => {
+  if (window) hostRpc.send.event(event);
+};
+const service = new ServiceHost(
+  join(resources, "runtime", "service.js"),
+  join(resources, "runtime", "pdf-worker.cjs"),
+  emit,
+);
+const rpc = service.call.bind(service);
+async function startService() {
+  await service.start(libraryRoot, credentials.secrets);
 }
-let window: BrowserWindow | null = null,
-  worker: UtilityProcess | null = null,
-  quitting = false;
-let nextId = 0;
-const pending = new Map<
-  number,
-  {
-    resolve: (value: any) => void;
-    reject: (error: unknown) => void;
-    timer: ReturnType<typeof setTimeout>;
-  }
->();
-let libraryRoot = "";
-const droppedFiles = new Map<string, string>();
-const secrets: { openalex?: string; openai?: string; secureStorage?: boolean } =
-  {};
-const root = () => app.getPath("userData");
 function atomicJson(path: string, value: unknown) {
   const temp = path + ".staging";
   writeFileSync(temp, JSON.stringify(value), { mode: 0o600 });
   renameSync(temp, path);
-}
-function loadSecrets() {
-  const path = join(root(), "credentials.json");
-  if (!existsSync(path)) return;
-  let encrypted: Record<string, string>;
-  try {
-    const saved = JSON.parse(readFileSync(path, "utf8"));
-    if (!saved || typeof saved !== "object") return;
-    encrypted = saved;
-  } catch {
-    // An unreadable credential file must not prevent opening the local library.
-    // The original file stays untouched until the user saves replacement keys.
-    return;
-  }
-  if (!encrypted.openalex && !encrypted.openai) return;
-  secrets.secureStorage = safeStorage.isEncryptionAvailable();
-  if (!secrets.secureStorage) return;
-  for (const key of ["openalex", "openai"] as const)
-    if (encrypted[key])
-      try {
-        secrets[key] = safeStorage.decryptString(
-          Buffer.from(encrypted[key], "base64"),
-        );
-      } catch {
-        /* User can replace an inaccessible OS-protected key in settings. */
-      }
-}
-function saveSecrets(input: { openalexKey?: string; openaiKey?: string }) {
-  if (input.openalexKey === undefined && input.openaiKey === undefined) return;
-  if (!safeStorage.isEncryptionAvailable())
-    throw new AppError(
-      "SECURE_STORAGE",
-      "macOS 보안 저장소를 사용할 수 없어 키를 저장하지 않았습니다.",
-    );
-  secrets.secureStorage = true;
-  const next = { ...secrets };
-  if (input.openalexKey !== undefined)
-    next.openalex = input.openalexKey.trim() || undefined;
-  if (input.openaiKey !== undefined)
-    next.openai = input.openaiKey.trim() || undefined;
-  const encrypted = Object.fromEntries(
-    (["openalex", "openai"] as const)
-      .filter((k) => next[k])
-      .map((k) => [k, safeStorage.encryptString(next[k]!).toString("base64")]),
-  );
-  atomicJson(join(root(), "credentials.json"), encrypted);
-  Object.assign(secrets, next);
-}
-function rpc(command: string, args: unknown = {}): Promise<any> {
-  if (!worker)
-    return Promise.reject(
-      new AppError(
-        "SERVICE_DOWN",
-        "자료 서비스가 다시 시작 중입니다. 잠시 후 재시도하세요.",
-        true,
-      ),
-    );
-  return new Promise((resolve, reject) => {
-    const id = ++nextId;
-    const timer = setTimeout(() => {
-      pending.delete(id);
-      reject(
-        new AppError(
-          "TIMEOUT",
-          "작업 응답을 기다리는 시간이 초과되었습니다. 현재 상태를 확인하세요.",
-          true,
-        ),
-      );
-    }, 300000);
-    pending.set(id, { resolve, reject, timer });
-    worker!.postMessage({ id, command, args });
-  });
-}
-async function startService() {
-  await new Promise<void>((ready, reject) => {
-    const child = utilityProcess.fork(
-      join(__dirname, "service.cjs"),
-      [libraryRoot, join(__dirname, "pdf-worker.cjs")],
-      {
-        serviceName: "ResearchBunny Library",
-        stdio: "pipe",
-        cwd: root(),
-      },
-    );
-    worker = child;
-    const timer = setTimeout(
-      () =>
-        reject(
-          new AppError("SERVICE_START", "자료 서비스를 시작하지 못했습니다."),
-        ),
-      20000,
-    );
-    child.on("message", (message) => {
-      if (message.ready) {
-        clearTimeout(timer);
-        ready();
-        return;
-      }
-      if (message.event) {
-        window?.webContents.send("bunny:event", message.event);
-        return;
-      }
-      const p = pending.get(message.id);
-      if (p) {
-        clearTimeout(p.timer);
-        pending.delete(message.id);
-        if (message.result.ok) p.resolve(message.result.data);
-        else
-          p.reject(
-            new AppError(
-              message.result.error.code,
-              message.result.error.message,
-              message.result.error.retryable,
-            ),
-          );
-      }
-    });
-    child.on("exit", () => {
-      clearTimeout(timer);
-      if (worker !== child) return;
-      worker = null;
-      for (const p of pending.values()) {
-        clearTimeout(p.timer);
-        p.reject(
-          new AppError(
-            "SERVICE_DOWN",
-            "자료 서비스가 중단되었습니다. 저장된 자료는 재시작 후 확인할 수 있습니다.",
-            true,
-          ),
-        );
-      }
-      pending.clear();
-      reject(new AppError("SERVICE_DOWN", "자료 서비스가 종료되었습니다."));
-      if (!quitting) {
-        window?.webContents.send("bunny:event", {
-          type: "service-error",
-          message: "자료 서비스가 중단되어 다시 시작합니다.",
-        });
-        setTimeout(
-          () =>
-            void startService().catch(() =>
-              window?.webContents.send("bunny:event", {
-                type: "service-error",
-                message:
-                  "자료 서비스를 시작하지 못했습니다. 앱을 다시 실행하세요.",
-              }),
-            ),
-          1000,
-        );
-      }
-    });
-    child.stderr?.on("data", () => {
-      /* Provider records and secrets never enter application logs. */
-    });
-  });
-  await rpc("init", secrets);
-  window?.webContents.send("bunny:event", { type: "changed" });
 }
 async function command(name: Command, input: any): Promise<any> {
   const args = (schemas[name] as any).parse(input);
@@ -223,7 +62,7 @@ async function command(name: Command, input: any): Promise<any> {
     case "choosePdf": {
       const result = await dialog.showOpenDialog(window!, {
         properties: args.folder
-          ? ["openDirectory"]
+          ? ["openDirectory", "multiSelections"]
           : ["openFile", "multiSelections"],
         filters: [{ name: "PDF", extensions: ["pdf"] }],
       });
@@ -240,35 +79,6 @@ async function command(name: Command, input: any): Promise<any> {
             },
           });
     }
-    case "importDropped": {
-      const approved = args.paths.map((token: string) =>
-        droppedFiles.get(token),
-      );
-      if (approved.some((path: string | undefined) => !path))
-        throw new AppError(
-          "FORBIDDEN",
-          "드롭한 파일만 가져올 수 있습니다. 파일을 다시 놓으세요.",
-        );
-      for (const token of args.paths) droppedFiles.delete(token);
-      args.paths = approved;
-      if (
-        args.paths.some(
-          (p: string) =>
-            ![".pdf", ".bib", ".bibtex", ""].includes(extname(p).toLowerCase()),
-        )
-      )
-        throw new AppError("FILE_TYPE", "PDF 또는 BibTeX 파일을 가져오세요.");
-      if (args.paths.some((p: string) => /\.bib(?:tex)?$/i.test(p)))
-        throw new AppError(
-          "FILE_TYPE",
-          "BibTeX 파일은 가져오기 창의 파일 선택을 사용하세요.",
-        );
-      return rpc("pdfImport", {
-        projectId: args.projectId,
-        paths: args.paths,
-        options: { mode: args.mode },
-      });
-    }
     case "attachmentAction": {
       if (args.action === "relink") {
         const result = await dialog.showOpenDialog(window!, {
@@ -281,11 +91,11 @@ async function command(name: Command, input: any): Promise<any> {
             path: result.filePaths[0],
           });
       } else {
-        const path = await rpc("attachmentPath", args);
-        if (args.action === "reveal") shell.showItemInFolder(path);
+        const path = await rpc<string>("attachmentPath", args);
+        if (args.action === "reveal") Utils.showItemInFolder(path);
         else {
-          const error = await shell.openPath(path);
-          if (error)
+          const opened = Utils.openPath(path);
+          if (!opened)
             throw new AppError(
               "OPEN_FILE",
               "PDF를 열지 못했습니다. 파일 연결을 확인하세요.",
@@ -319,31 +129,40 @@ async function command(name: Command, input: any): Promise<any> {
         properties: ["openDirectory"],
       });
       if (result.canceled) return null;
-      const restored = await rpc("restore", {
-        path: result.filePaths[0],
-        destination: join(root(), "libraries", "restored-" + randomUUID()),
-      });
-      await rpc("shutdown");
-      const old = worker;
-      worker = null;
-      old?.kill();
+      const restored = await rpc<{ path: string; missing: string[] }>(
+        "restore",
+        {
+          path: result.filePaths[0],
+          destination: join(root(), "libraries", "restored-" + randomUUID()),
+        },
+      );
+      await service.stop();
       libraryRoot = restored.path;
       atomicJson(join(root(), "library-location.json"), { path: libraryRoot });
       await startService();
       return restored;
     }
+    case "codexLogin": {
+      const url = await rpc<string>("codexLogin", {});
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== "https:" || !["auth.openai.com", "chatgpt.com"].includes(parsed.hostname) || parsed.username || parsed.password)
+          throw new AppError("CODEX_LOGIN", "올바르지 않은 로그인 주소입니다.");
+        await Utils.openExternal(parsed.toString());
+      } catch (error) { await rpc("codexCancelLogin", {}).catch(() => {}); throw error; }
+      return;
+    }
     case "saveSettings":
-      saveSecrets(args);
-      await rpc("init", secrets);
+      await credentials.save(args);
+      await rpc("init", credentials.secrets);
       {
         const { openalexKey: _oa, openaiKey: _ai, ...settings } = args;
         const result = await rpc(name, settings);
-        nativeTheme.themeSource = result.theme;
         return result;
       }
     case "openExternal": {
       if (args.kind === "data-folder") {
-        await shell.openPath(libraryRoot);
+        await Utils.openPath(libraryRoot);
         return;
       }
       const url =
@@ -352,193 +171,152 @@ async function command(name: Command, input: any): Promise<any> {
           : args.kind === "openai-settings"
             ? "https://platform.openai.com/api-keys"
             : args.workId
-              ? await rpc("externalUrl", args)
+              ? await rpc<string>("externalUrl", args)
               : null;
       if (!url) throw new AppError("NO_URL", "이 문헌의 링크가 없습니다.");
-      await shell.openExternal(url);
+      await Utils.openExternal(url);
       return;
     }
     default:
       return rpc(name, args);
   }
 }
-function createWindow() {
-  window = new BrowserWindow({
-    title: "ResearchBunny",
-    width: 1510,
-    height: 960,
-    minWidth: 980,
-    minHeight: 660,
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 20, y: 22 },
-    backgroundColor: "#f8f9f6",
-    show: false,
-    webPreferences: {
-      preload: join(__dirname, "preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      webSecurity: true,
-      spellcheck: false,
+
+const hostRpc = BrowserView.defineRPC<BunnyRPC>({
+  maxRequestTime: 300000,
+  handlers: {
+    messages: {},
+    requests: {
+      command: async ({ name, input }): Promise<Result<unknown>> => {
+        try {
+          if (!Object.hasOwn(schemas, name))
+            throw new AppError("FORBIDDEN", "허용되지 않은 명령입니다.");
+          if (process.env.RESEARCHBUNNY_TEST === "1")
+            writeFileSync(join(root(), "commands.log"), `${name}:start\n`, {
+              flag: "a",
+            });
+          const data: unknown = await command(name as Command, input);
+          if (process.env.RESEARCHBUNNY_TEST === "1")
+            writeFileSync(join(root(), "commands.log"), `${name}:done\n`, {
+              flag: "a",
+            });
+          if (
+            ![
+              "snapshot",
+              "list",
+              "inspect",
+              "attachments",
+              "saveUi",
+              "duplicates",
+            ].includes(name)
+          )
+            emit({ type: "changed" });
+          return { ok: true, data };
+        } catch (error) {
+          return {
+            ok: false,
+            error: {
+              code: error instanceof AppError ? error.code : "INVALID_REQUEST",
+              message:
+                error instanceof AppError
+                  ? error.message
+                  : "입력 형식 또는 파일 접근을 확인하세요. 작업을 완료하지 못했습니다.",
+              retryable: error instanceof AppError ? error.retryable : false,
+            },
+          };
+        }
+      },
     },
-  });
-  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  window.webContents.on("will-navigate", (event) => event.preventDefault());
-  window.webContents.session.setPermissionRequestHandler(
-    (_wc, _permission, callback) => callback(false),
-  );
-  window.webContents.session.setPermissionCheckHandler(() => false);
-  window.webContents.on("will-attach-webview", (event) =>
-    event.preventDefault(),
-  );
-  window.once("ready-to-show", () => window?.show());
-  window.on("closed", () => {
-    window = null;
-  });
-  void window.loadFile(join(__dirname, "renderer", "index.html"));
-}
-ipcMain.on("bunny:register-drop", (event, paths: unknown) => {
-  if (
-    !window ||
-    event.sender !== window.webContents ||
-    event.senderFrame !== window.webContents.mainFrame ||
-    !Array.isArray(paths) ||
-    paths.length > 1000
-  ) {
-    event.returnValue = [];
+  },
+});
+let shuttingDown = false;
+Electrobun.events.on("before-quit", (event) => {
+  if (shuttingDown) return;
+  event.response = { allow: false };
+  shuttingDown = true;
+  void service.stop().finally(() => Utils.quit());
+});
+async function main() {
+  if (!(await acquireInstance(root(), () => window?.show()))) {
+    Utils.quit();
     return;
   }
-  if (droppedFiles.size > 2000) droppedFiles.clear();
-  event.returnValue = paths
-    .filter((p) => typeof p === "string" && p.length < 4000)
-    .map((path) => {
-      const token = randomUUID();
-      droppedFiles.set(token, path);
-      return token;
-    });
-});
-ipcMain.handle(
-  "bunny:command",
-  async (event, name: unknown, input: unknown): Promise<Result<unknown>> => {
-    try {
-      const expected = pathToFileURL(
-        join(__dirname, "renderer", "index.html"),
-      ).href;
-      if (
-        !window ||
-        event.sender !== window.webContents ||
-        event.senderFrame !== window.webContents.mainFrame ||
-        event.senderFrame.url.split("#")[0] !== expected
-      )
-        throw new AppError("FORBIDDEN", "허용되지 않은 요청입니다.");
-      if (typeof name !== "string" || !Object.hasOwn(schemas, name))
-        throw new AppError("FORBIDDEN", "허용되지 않은 명령입니다.");
-      const data = await command(name as Command, input);
-      if (
-        ![
-          "snapshot",
-          "list",
-          "inspect",
-          "attachments",
-          "saveUi",
-          "duplicates",
-        ].includes(name)
-      )
-        window?.webContents.send("bunny:event", { type: "changed" });
-      return { ok: true, data };
-    } catch (error) {
-      return {
-        ok: false,
-        error: {
-          code: error instanceof AppError ? error.code : "INVALID_REQUEST",
-          message:
-            error instanceof AppError
-              ? error.message
-              : "입력 형식 또는 파일 접근을 확인하세요. 작업을 완료하지 못했습니다.",
-          retryable: error instanceof AppError ? error.retryable : false,
-        },
-      };
+  const location = join(root(), "library-location.json");
+  if (existsSync(location)) {
+    const saved: unknown = JSON.parse(readFileSync(location, "utf8"));
+    if (
+      saved &&
+      typeof saved === "object" &&
+      "path" in saved &&
+      typeof saved.path === "string"
+    ) {
+      if (!existsSync(saved.path))
+        throw new AppError(
+          "LIBRARY_MISSING",
+          "기존 라이브러리 경로에 접근할 수 없습니다. 외장 디스크 연결을 확인하세요.",
+        );
+      libraryRoot = saved.path;
     }
-  },
-);
-app.on("second-instance", () => {
-  if (window) {
-    window.show();
-    window.focus();
-  } else createWindow();
-});
-app
-  .whenReady()
-  .then(async () => {
-    mkdirSync(root(), { recursive: true });
-    libraryRoot = join(root(), "library");
-    const location = join(root(), "library-location.json");
-    if (existsSync(location))
-      try {
-        const saved = JSON.parse(readFileSync(location, "utf8"));
-        if (typeof saved.path === "string" && existsSync(saved.path))
-          libraryRoot = saved.path;
-      } catch {
-        /* Use the original preserved library. */
-      }
-    loadSecrets();
-    await startService();
-    const snapshot = await rpc("snapshot", {});
-    nativeTheme.themeSource = (snapshot.settings as Settings).theme;
-    Menu.setApplicationMenu(
-      Menu.buildFromTemplate([
-        {
-          label: "ResearchBunny",
-          submenu: [
-            { role: "about" },
-            { type: "separator" },
-            { role: "hide" },
-            { role: "hideOthers" },
-            { role: "unhide" },
-            { type: "separator" },
-            { role: "quit" },
-          ],
-        },
-        {
-          label: "편집",
-          submenu: [
-            { role: "undo" },
-            { role: "redo" },
-            { type: "separator" },
-            { role: "cut" },
-            { role: "copy" },
-            { role: "paste" },
-            { role: "selectAll" },
-          ],
-        },
-        {
-          label: "보기",
-          submenu: [
-            { role: "reload" },
-            { role: "togglefullscreen" },
-            ...(!app.isPackaged ? [{ role: "toggleDevTools" as const }] : []),
-          ],
-        },
-        {
-          label: "창",
-          submenu: [{ role: "minimize" }, { role: "zoom" }, { role: "front" }],
-        },
-      ]),
-    );
-    createWindow();
-  })
-  .catch(() => {
-    dialog.showErrorBox(
-      "ResearchBunny",
-      "로컬 자료 서비스를 시작하지 못했습니다. 기존 데이터는 유지됩니다. 앱을 다시 실행하세요.",
-    );
-    app.quit();
+  }
+  await credentials.load();
+  await startService();
+  ApplicationMenu.setApplicationMenu([
+    {
+      label: "ResearchBunny",
+      submenu: [
+        { role: "about" },
+        { type: "divider" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "showAll" },
+        { type: "divider" },
+        { label: "종료", action: "quit", accelerator: "CmdOrCtrl+Q" },
+      ],
+    },
+    {
+      label: "편집",
+      submenu: [
+        { role: "undo" },
+        { role: "redo" },
+        { type: "divider" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "selectAll" },
+      ],
+    },
+    {
+      label: "창",
+      submenu: [
+        { role: "minimize" },
+        { role: "zoom" },
+        { role: "toggleFullScreen" },
+        { role: "bringAllToFront" },
+      ],
+    },
+  ]);
+  ApplicationMenu.on("application-menu-clicked", () => Utils.quit());
+  const url = "views://main/index.html";
+  window = new BrowserWindow({
+    title: "ResearchBunny",
+    url,
+    renderer: "native",
+    rpc: hostRpc,
+    titleBarStyle: "hiddenInset",
+    trafficLightOffset: { x: 20, y: 22 },
+    frame: { x: 80, y: 60, width: 1510, height: 960 },
+    navigationRules: JSON.stringify(["^*", url]),
   });
-app.on("activate", () => {
-  if (!window && worker) createWindow();
+  window.webview.setNavigationRules(["^*", url]);
+}
+main().catch(async (error: unknown) => {
+  await Utils.showMessageBox({
+    type: "error",
+    title: "ResearchBunny",
+    message:
+      error instanceof AppError
+        ? error.message
+        : "로컬 자료 서비스를 시작하지 못했습니다. 기존 데이터는 유지됩니다.",
+  });
+  Utils.quit();
 });
-app.on("before-quit", () => {
-  quitting = true;
-  worker?.postMessage({ id: 0, command: "shutdown", args: {} });
-});
-app.on("will-quit", () => worker?.kill());

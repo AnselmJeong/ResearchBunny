@@ -1,4 +1,5 @@
-import { Worker } from "node:worker_threads";
+import { z } from "zod";
+import { fork } from "node:child_process";
 import { createReadStream } from "node:fs";
 import {
   stat,
@@ -59,23 +60,21 @@ async function scan(paths: string[]): Promise<string[]> {
   for (const p of paths) await visit(p);
   return [...new Set(output)];
 }
-interface Extracted {
-  title: string;
-  authors: string;
-  dois: string[];
-  pages: number | null;
-  text: string;
-  status: string;
-}
+const extractedSchema = z.object({
+  title: z.string(), authors: z.string(), dois: z.array(z.string()),
+  pages: z.number().nullable(), text: z.string(), status: z.string(),
+});
+type Extracted = z.infer<typeof extractedSchema>;
 function extract(
   path: string,
   workerPath: string,
   signal: AbortSignal,
 ): Promise<Extracted> {
   return new Promise((resolve, reject) => {
-    const worker = new Worker(workerPath, {
-      workerData: { path },
-      resourceLimits: { maxOldGenerationSizeMb: 384 },
+    const worker = fork(workerPath, [path], {
+      execPath: process.execPath,
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+      serialization: "json",
     });
     let settled = false;
     const done = (result?: Extracted, error?: Error) => {
@@ -83,7 +82,7 @@ function extract(
       settled = true;
       clearTimeout(timer);
       signal.removeEventListener("abort", abort);
-      void worker.terminate();
+      worker.kill();
       if (error) reject(error);
       else resolve(result!);
     };
@@ -100,7 +99,10 @@ function extract(
     const abort = () =>
       done(undefined, new AppError("CANCELLED", "취소되었습니다."));
     signal.addEventListener("abort", abort, { once: true });
-    worker.once("message", (data) => done(data));
+    worker.once("message", (data) => {
+      const parsed = extractedSchema.safeParse(data);
+      if (parsed.success) done(parsed.data); else fallback();
+    });
     worker.once("error", fallback);
     worker.once("exit", () => {
       if (!settled) fallback();

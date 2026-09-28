@@ -1,7 +1,11 @@
 {
   "compilerOptions": {
     "target": "ES2023",
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2023",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
@@ -10,7 +14,15 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "types": ["node", "vite/client"]
+    "types": [
+      "bun",
+      "vite/client"
+    ]
   },
-  "include": ["src", "tests/**/*.ts"]
+  "include": [
+    "src",
+    "tests/**/*.ts",
+    "electrobun.config.ts",
+    "scripts/**/*.ts"
+  ]
 }

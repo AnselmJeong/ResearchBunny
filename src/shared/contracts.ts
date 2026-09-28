@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { CodexStatus, CodexModel } from "./codex";
 import type {
   Snapshot,
   ListResult,
@@ -162,11 +163,6 @@ export const schemas = {
     mapFolders: z.boolean().default(false),
     workId: id.optional(),
   }),
-  importDropped: z.object({
-    projectId: id,
-    paths: z.array(z.string().max(4000)).max(1000),
-    mode: z.enum(["managed", "linked", "metadata"]).default("managed"),
-  }),
   attachments: z.object({ workId: id }),
   importItems: z.object({ runId: id }),
   attachmentAction: z.object({
@@ -192,7 +188,14 @@ export const schemas = {
     includeLinked: z.boolean(),
   }),
   restoreBackup: z.object({}),
+  codexStatus: z.object({}),
+  codexModels: z.object({}),
+  codexLogin: z.object({}),
+  codexCancelLogin: z.object({}),
+  codexLogout: z.object({}),
   saveSettings: z.object({
+    aiProvider: z.enum(["codex", "openai"]).default("codex"),
+    codexModel: z.string().trim().max(120).default(""),
     openalexKey: z.string().max(1000).optional(),
     openaiKey: z.string().max(1000).optional(),
     model: z.string().trim().min(1).max(120),
@@ -256,7 +259,6 @@ export interface Outputs {
   importBib: ImportResult;
   chooseBib: ImportPreview | null;
   choosePdf: Run | null;
-  importDropped: Run;
   attachments: Attachment[];
   attachmentAction: void;
   exportBib: {
@@ -266,6 +268,11 @@ export interface Outputs {
   } | null;
   backup: { path: string; missing: string[] } | null;
   restoreBackup: { path: string; missing: string[] } | null;
+  codexStatus: CodexStatus;
+  codexModels: CodexModel[];
+  codexLogin: void;
+  codexCancelLogin: void;
+  codexLogout: void;
   saveSettings: Settings;
   testConnection: { message: string };
   openExternal: void;
@@ -279,7 +286,6 @@ export type API = {
   [C in Command]: (input: Input<C>) => Promise<Outputs[C]>;
 } & {
   onEvent: (callback: (event: AppEvent) => void) => () => void;
-  droppedPaths: (files: File[]) => string[];
 };
 export type PayloadPatch = Partial<LibraryState>;
 export type WireResult<C extends Command> = Result<Outputs[C]>;

@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import Database from "./sqlite";
 import { mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -25,7 +25,7 @@ import {
 
 const SCHEMA = 1;
 export class Library {
-  db: Database.Database;
+  db: Database;
   constructor(public root: string) {
     mkdirSync(root, { recursive: true });
     mkdirSync(join(root, "attachments"), { recursive: true });
@@ -526,20 +526,20 @@ export class Library {
     const { projectId, scope, scopeId } = args;
     let sql =
       "SELECT pw.work_id AS id FROM project_works pw WHERE pw.project_id=?";
-    const params: unknown[] = [projectId];
+    const params: string[] = [projectId];
     if (scope === "run") {
       const run = this.run(scopeId || "");
       if (run.projectId !== projectId)
         throw new AppError("INVALID", "다른 프로젝트의 탐색입니다.");
       sql =
         "SELECT work_id AS id FROM candidates WHERE run_id=? ORDER BY rank DESC";
-      params[0] = scopeId;
+      params[0] = scopeId || "";
     } else if (scope === "collection") {
       if (!this.collections(projectId).some((c) => c.id === scopeId))
         throw new AppError("INVALID", "컬렉션을 찾을 수 없습니다.");
       sql +=
         " AND work_id IN(SELECT work_id FROM collection_works WHERE collection_id=?) AND json_extract(state,'$.screening')!='trash'";
-      params.push(scopeId);
+      params.push(scopeId || "");
     } else if (scope === "starred")
       sql +=
         " AND json_extract(state,'$.starred')=1 AND json_extract(state,'$.screening')!='trash'";

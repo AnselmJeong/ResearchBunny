@@ -1,4 +1,3 @@
-import "./trash.test";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
@@ -79,7 +78,7 @@ const graph = [
   raw(9, "Interoception new study", [1, 3]),
   raw(10, "Interoception another joint followup", [1, 2, 3]),
 ];
-const mockFetch: typeof fetch = async (input) => {
+const mockFetch: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch> = async (input) => {
   const u = new URL(String(input));
   if (u.pathname.startsWith("/works/")) {
     const id = decodeURIComponent(u.pathname.slice(7));
@@ -347,7 +346,7 @@ test("interrupted jobs reopen as resumable; cancellation retains existing librar
     const p = db.projects()[0].id;
     const w = db.upsert(fromOpenAlex(graph[0])).work;
     db.mutate(p, [w.id], { note: "persisted note", screening: "included" });
-    const delayed: typeof fetch = async (_u, options) =>
+    const delayed: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch> = async (_u, options) =>
       new Promise((_res, reject) =>
         options?.signal?.addEventListener("abort", () =>
           reject(new Error("abort")),
@@ -382,7 +381,7 @@ test("interrupted jobs reopen as resumable; cancellation retains existing librar
 test("OpenAlex budgets/429 are surfaced without zero-filled metadata and secrets are headers only", () =>
   fixture(async (db) => {
     let calls = 0;
-    const fetcher: typeof fetch = async (url, options) => {
+    const fetcher: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch> = async (url, options) => {
       assert(!String(url).includes("secret"));
       assert.equal((options?.headers as any).Authorization, "Bearer secret");
       return new Response("{}", {
@@ -466,6 +465,7 @@ test("PDF worker imports twice without duplication and preserves the original by
     assert.equal((await finished(db, r.id)).count, 1);
     const candidates = db.candidates(r.id);
     assert.equal(candidates.length, 1);
+    assert.equal(candidates[0].work.title, "Local research fixture");
     const a = db.attachments(candidates[0].work.id)[0];
     assert.equal(await hashFile(a.path), before);
     assert.equal(await hashFile(source), before);
@@ -545,7 +545,7 @@ test("candidate budget checkpoints retain the unprocessed part of an API page", 
   fixture(async (db) => {
     const projectId = db.projects()[0].id;
     let calls = 0;
-    const counted: typeof fetch = async (...args) => {
+    const counted: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch> = async (...args) => {
       calls++;
       return mockFetch(...args);
     };

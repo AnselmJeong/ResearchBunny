@@ -96,7 +96,7 @@ export class OpenAlex {
   constructor(
     private library: Library,
     private key: () => string | undefined,
-    private fetcher: typeof fetch = fetch,
+    private fetcher: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch> = fetch,
   ) {}
   async request(
     path: string,

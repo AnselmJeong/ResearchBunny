@@ -1,3 +1,5 @@
+import { CodexClient } from "./codex/client";
+import { version } from "../../package.json";
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile, rename, stat } from "node:fs/promises";
 import type {
@@ -21,21 +23,31 @@ export class Service {
   db: Library;
   oa: OpenAlex;
   ai: AIProvider;
+  codex: CodexClient;
   discovery: Discovery;
   pdf: PdfImports;
-  secrets: { openalex?: string; openai?: string; secureStorage?: boolean } = {};
+  secrets: {
+    openalex?: string;
+    openai?: string;
+    secureStorage?: boolean;
+    credentialMigrationRequired?: boolean;
+  } = {};
   previews = new Map<string, BibEntry[]>();
   constructor(
     root: string,
     workerPath: string,
     private emit: (event: AppEvent) => void,
+    codex = new CodexClient(),
   ) {
+    this.codex = codex;
     this.db = new Library(root);
     this.oa = new OpenAlex(this.db, () => this.secrets.openalex);
     this.ai = new AIProvider(
       this.db,
       () => this.secrets.openai,
       () => ({ ...DEFAULT_AI, ...this.db.pref<AIConfig>("ai") }),
+      fetch,
+      this.codex,
     );
     this.discovery = new Discovery(this.db, this.oa, emit, this.ai);
     this.pdf = new PdfImports(this.db, this.oa, workerPath, emit);
@@ -50,9 +62,10 @@ export class Service {
       openalexConfigured: !!this.secrets.openalex,
       openaiConfigured: !!this.secrets.openai,
       secureStorage: this.secrets.secureStorage ?? null,
+      credentialMigrationRequired: this.secrets.credentialMigrationRequired,
       theme: this.db.pref<Settings["theme"]>("theme") || "system",
       dataPath: this.db.root,
-      version: "0.1.2",
+      version,
       usage: this.db.usageSummary(),
     };
   }
@@ -238,9 +251,26 @@ export class Service {
         if (this.busy())
           throw new AppError("BUSY", "진행 중인 작업이 끝난 뒤 복원하세요.");
         return restoreBackup(args.path, args.destination);
+      case "codexStatus": return this.codex.status();
+      case "codexModels":
+      case "codexLogin":
+      case "codexCancelLogin":
+      case "codexLogout": {
+        try {
+          if (command === "codexModels") return await this.codex.models();
+          if (command === "codexLogin") return await this.codex.login();
+          if (command === "codexCancelLogin") return await this.codex.cancelLogin();
+          if (this.busy()) throw new AppError("BUSY", "AI 작업을 취소한 뒤 로그아웃하세요.");
+          return await this.codex.logout();
+        } catch (error) {
+          throw new AppError("CODEX_CONNECTION", error instanceof Error ? error.message : "Codex 연결에 실패했습니다.");
+        }
+      }
       case "saveSettings": {
         const {
           model,
+          aiProvider,
+          codexModel,
           aiEnabled,
           aiMaxInputTokens,
           aiMaxOutputTokens,
@@ -250,6 +280,8 @@ export class Service {
         } = args;
         this.db.pref("ai", {
           model,
+          aiProvider,
+          codexModel,
           aiEnabled,
           aiMaxInputTokens,
           aiMaxOutputTokens,
@@ -329,6 +361,7 @@ export class Service {
         if (this.busy()) throw new AppError("BUSY", "작업 종료 후 되돌리세요.");
         return undoMerge(this.db);
       case "shutdown":
+        this.codex.close();
         for (const control of [
           ...this.discovery.active.values(),
           ...this.pdf.active.values(),

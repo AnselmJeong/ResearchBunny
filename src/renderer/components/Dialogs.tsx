@@ -250,7 +250,7 @@ export function ImportDialog({
           </label>
           <div className="pdf-drop-hint">
             <FileText size={38} strokeWidth={1} />
-            <p>파일을 선택하거나 작업 화면에 PDF를 놓으세요.</p>
+            <p>여러 PDF 파일 또는 폴더를 선택하세요. 폴더 안의 PDF도 함께 가져옵니다.</p>
             <div className="inline-actions">
               {[false, true].map((folder) => (
                 <button
