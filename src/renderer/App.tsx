@@ -71,6 +71,7 @@ import { ResizableInspector } from "./components/ResizableInspector";
 import { Modal } from "./components/Modal";
 import { DiscoveryMenu } from "./components/DiscoveryMenu";
 import { HistoryWorkspace } from "./components/HistoryWorkspace";
+import { DownloadDialog } from "./components/DownloadDialog";
 import { Settings } from "./components/Settings";
 import {
   ImportDialog,
@@ -103,6 +104,7 @@ const EMPTY: ListResult = {
 };
 type Scope = Input<"list">["scope"];
 type Dialog =
+  | "download"
   | "settings"
   | "import"
   | "manual"
@@ -129,6 +131,7 @@ function Bunny({ size = 27 }: { size?: number }) {
   );
 }
 export function App() {
+  const [downloadRunId, setDownloadRunId] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null),
     [projectId, setProjectId] = useState(""),
     [scope, setScope] = useState<Scope>("archive"),
@@ -445,7 +448,7 @@ export function App() {
   const active = snapshot?.runs.find(
     (r) => r.status === "running" || r.status === "queued",
   );
-  const searchPending = startingDiscovery === "search" || active?.mode === "search" ||
+  const searchPending = startingDiscovery === "search" || (active?.mode === "search" && !active.import && !active.download) ||
     (scope === "run" && currentRun?.mode === "search" && loading);
   const seeds = useMemo(
     () => snapshot?.seeds?.ids || [],
@@ -572,6 +575,7 @@ export function App() {
   };
   const openRun = (run: Run, fallbackSelection: string[] = []) => {
     if (run.projectId !== projectRef.current) return;
+    if (run.download) { setDownloadRunId(run.id); setDialog("download"); return; }
     navigate("run", run.id, {
       filters: { ...run.filters },
       query: run.query,
@@ -1141,6 +1145,9 @@ export function App() {
                     </h1>
                   </div>
                   <div className="workspace-actions">
+                  {(archiveScope || scope === "collection") && <button className="secondary" onClick={() => { setDownloadRunId(""); setDialog("download"); }} disabled={!snapshot.counts.archive}>
+                    <Download size={15} /> PDF 원문 찾기
+                  </button>}
                   {archiveScope && <button className="secondary" disabled={busy || !!active || classifying || !snapshot.counts.archive}
                     onClick={() => {
                       if (!snapshot.settings.aiEnabled) { setDialog("settings"); return; }
@@ -1869,6 +1876,9 @@ export function App() {
           onRun={openRun}
         />
       )}
+      {dialog === "download" && <DownloadDialog key={projectId} projectId={projectId} selected={selected} scope={scope} scopeId={scopeId}
+        runs={snapshot.runs} busy={busy || !!active || !!classifying} initialRunId={downloadRunId}
+        onClose={() => setDialog(null)} onError={onError} />}
       {(dialog === "manual" || dialog === "edit") && (
         <WorkEditor
           work={dialog === "edit" ? inspected || undefined : undefined}

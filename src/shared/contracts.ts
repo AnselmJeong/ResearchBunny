@@ -10,6 +10,7 @@ import type {
   Attachment,
   Settings,
   Project,
+  PdfDownloadPreview,
   Collection,
   ClassificationJob,
   SeedProfile,
@@ -21,6 +22,13 @@ import type {
 const id = z.string().min(1).max(160);
 const ids = z.array(id).max(10000);
 const text = z.string().max(20000);
+const downloadTarget = z.object({
+  projectId: id,
+  scope: z.enum(["archive", "selected", "topic", "unclassified", "collection"]),
+  ids: ids.default([]),
+  scopeId: id.optional(),
+  includeBooks: z.boolean().default(false),
+});
 export const filtersSchema = z.object({
   reading: z.enum(["unread", "planned", "reading", "read"]).optional(),
   strictness: z.enum(["strict", "balanced", "broad"]),
@@ -170,6 +178,8 @@ export const schemas = {
     workId: id.optional(),
   }),
   attachments: z.object({ workId: id }),
+  pdfDownloadPreview: downloadTarget,
+  downloadPdfs: downloadTarget,
   importItems: z.object({ runId: id }),
   attachmentAction: z.object({
     attachmentId: id,
@@ -269,6 +279,8 @@ export interface Outputs {
   chooseBib: ImportPreview | null;
   choosePdf: Run | null;
   attachments: Attachment[];
+  pdfDownloadPreview: PdfDownloadPreview;
+  downloadPdfs: Run;
   attachmentAction: void;
   exportBib: {
     path: string;

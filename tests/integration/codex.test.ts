@@ -1,11 +1,12 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { CodexClient, parseQuotas } from "../../src/service/codex/client";
 import {
   CodexTransport,
   codexEnvironment,
+  findCodexCommand,
   object,
 } from "../../src/service/codex/transport";
 import { codexQuotaError, type CodexStatus } from "../../src/shared/codex";
@@ -16,6 +17,23 @@ import { schemas } from "../../src/shared/contracts";
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const fn of cleanups.splice(0)) await fn();
+});
+test("CLI discovery selects the newest installed version regardless of path priority", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "researchbunny-cli-discovery-"));
+  cleanups.push(() => rm(directory, { recursive: true, force: true }));
+  const cli = async (name: string, version: string) => {
+    const path = join(directory, name);
+    await writeFile(path, `#!/bin/sh\nprintf '%s\\n' 'codex-cli ${version}'\n`);
+    await chmod(path, 0o700);
+    return path;
+  };
+  const older = await cli("standalone", "0.154.0");
+  const newer = await cli("desktop", "0.159.2");
+  const future = await cli("future-standalone", "0.160.0");
+  expect(await findCodexCommand([join(directory, "missing"), older, newer, older])).toEqual([newer]);
+  expect(await findCodexCommand([newer, future])).toEqual([future]);
+  expect(await findCodexCommand([older])).toEqual([older]);
+  await expect(findCodexCommand([join(directory, "missing")])).rejects.toThrow("Codex CLI");
 });
 async function fixture(scenario: string) {
   const home = await mkdtemp(join(tmpdir(), "researchbunny-codex-test-"));

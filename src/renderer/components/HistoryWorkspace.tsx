@@ -3,6 +3,7 @@ import { ChevronRight, History } from "lucide-react";
 import type { DiscoveryMode, Run, WorkView } from "../../shared/types";
 import { runPath, type WorkspaceView } from "../../shared/navigation";
 import { ImportResults } from "./ImportResults";
+import { DownloadResults } from "./DownloadResults";
 
 export function HistoryWorkspace({
   runs,
@@ -83,7 +84,7 @@ export function HistoryWorkspace({
           >
             <span className="stage-number">{depth}</span>
             <span className="stage-content">
-              <strong>{r.import ? "PDF 가져오기" : labels[r.mode]}</strong>
+              <strong>{r.download ? "PDF 원문 확보" : r.import ? "PDF 가져오기" : labels[r.mode]}</strong>
               {r.id === currentId && (
                 <span className="current-label">현재 단계</span>
               )}
@@ -91,7 +92,7 @@ export function HistoryWorkspace({
                 {r.query || `출발 문헌 ${r.inputIds.length}편`}
               </span>
               <span className="subtle">
-                {r.count}편 발견{selected ? ` · ${selected.length}편 선택` : ""}
+                {r.count}편 {r.download ? "PDF 보관" : "발견"}{selected ? ` · ${selected.length}편 선택` : ""}
               </span>
               <time>
                 {new Date(r.createdAt).toLocaleString("ko-KR", {
@@ -153,7 +154,7 @@ export function HistoryWorkspace({
               <span className="stage-number">
                 {runPath(runs, focused.id).length}
               </span>
-              {focused.import ? "PDF 가져오기" : labels[focused.mode]}
+              {focused.download ? "PDF 원문 확보" : focused.import ? "PDF 가져오기" : labels[focused.mode]}
             </h2>
             <p className="subtle">{focused.message}</p>
             <section>
@@ -219,6 +220,7 @@ export function HistoryWorkspace({
                 onResume={() => onResume(focused.id)}
               />
             )}
+            {focused.download && <DownloadResults run={focused} busy={busy} onError={onError} onResume={() => onResume(focused.id)} />}
             <details className="history-details">
               <summary>조회·필터 상세</summary>
               <p className="subtle">

@@ -20,6 +20,7 @@ import { createBackup, restoreBackup } from "./interchange/backup";
 import { mergeWorks, undoMerge } from "./db/merge";
 import { deleteTrashedWorks } from "./db/trash";
 import { ArchiveClassifier, classificationSnapshot } from "./archive-classification";
+import { PdfDownloads } from "./fulltext/jobs";
 export class Service {
   db: Library;
   oa: OpenAlex;
@@ -27,6 +28,7 @@ export class Service {
   codex: CodexClient;
   discovery: Discovery;
   pdf: PdfImports;
+  downloads: PdfDownloads;
   classifier: ArchiveClassifier;
   secrets: {
     openalex?: string;
@@ -53,10 +55,11 @@ export class Service {
     );
     this.discovery = new Discovery(this.db, this.oa, emit, this.ai);
     this.pdf = new PdfImports(this.db, this.oa, workerPath, emit);
+    this.downloads = new PdfDownloads(this.db, workerPath, emit);
     this.classifier = new ArchiveClassifier(this.db, this.ai, emit);
   }
   busy() {
-    return this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.classifier.active.size > 0;
+    return this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0;
   }
   settings(): Settings {
     return {
@@ -184,11 +187,16 @@ export class Service {
           args.groups,
         );
       case "startRun":
-        if (this.pdf.active.size)
+        if (this.pdf.active.size || this.downloads.active.size)
           throw new AppError("BUSY", "PDF 가져오기 완료 후 탐색하세요.");
         return this.discovery.start(args);
       case "controlRun": {
         const run = this.db.run(args.runId);
+        if (run.download) {
+          if (args.action !== "cancel" && this.busy()) throw new AppError("BUSY", "진행 중인 작업을 완료하거나 취소하세요.");
+          return this.downloads.control(args.runId, args.action);
+        }
+        if (args.action !== "cancel" && this.downloads.active.size) throw new AppError("BUSY", "원문 확보 작업을 완료하거나 취소하세요.");
         if (
           run.retryAt &&
           Date.parse(run.retryAt) > Date.now() &&
@@ -218,6 +226,11 @@ export class Service {
         return this.pdf.start(args.projectId, args.paths, args.options);
       case "attachments":
         return this.db.attachments(args.workId);
+      case "pdfDownloadPreview":
+        return this.downloads.preview(args);
+      case "downloadPdfs":
+        if (this.busy()) throw new AppError("BUSY", "진행 중인 작업을 완료하거나 취소하세요.");
+        return this.downloads.start(args);
       case "importItems":
         return this.db.db
           .prepare(
@@ -379,6 +392,7 @@ export class Service {
         for (const control of [
           ...this.discovery.active.values(),
           ...this.pdf.active.values(),
+          ...this.downloads.active.values(),
           ...this.classifier.active.values(),
         ])
           control.abort();

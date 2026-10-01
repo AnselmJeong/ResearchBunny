@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { access, mkdir, chmod } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir } from "node:os";
@@ -19,8 +19,10 @@ export const CODEX_HOME_DIR = join(
   "codex",
 );
 
-export async function findCodexCommand(): Promise<string[]> {
-  const candidates = [
+export async function findCodexCommand(
+  candidates: string[] = [
+    "/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
+    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
     join(homedir(), ".local/bin/codex"),
     "/opt/homebrew/bin/codex",
     "/usr/local/bin/codex",
@@ -30,15 +32,33 @@ export async function findCodexCommand(): Promise<string[]> {
       .split(":")
       .filter(Boolean)
       .map((dir) => join(dir, "codex")),
-  ];
-  for (const path of new Set(candidates)) {
+  ],
+): Promise<string[]> {
+  // Catalogs depend on CLI version. An older standalone CLI must not mask a
+  // newer desktop CLI; discover both current and legacy desktop bundle paths.
+  const installed = await Promise.all([...new Set(candidates)].map(async (path) => {
     try {
       await access(path, constants.X_OK);
-      return [path];
+      const version = await new Promise<number[] | null>((resolve) => {
+        execFile(path, ["--version"], { timeout: 2000, maxBuffer: 4096, env: codexEnvironment(CODEX_HOME_DIR) }, (error, stdout) => {
+          const match = !error && /^codex-cli (\d+)\.(\d+)\.(\d+)(?:\S*)\s*$/.exec(stdout.trim());
+          resolve(match ? match.slice(1, 4).map(Number) : null);
+        });
+      });
+      return { path, version };
     } catch {
-      /* Try next installed location. */
+      return null;
     }
-  }
+  }));
+  const available = installed.filter((entry) => entry !== null);
+  available.sort((a, b) => {
+    if (!a.version || !b.version) return Number(!!b.version) - Number(!!a.version);
+    for (let i = 0; i < 3; i++) {
+      if (a.version[i] !== b.version[i]) return b.version[i] - a.version[i];
+    }
+    return 0;
+  });
+  if (available[0]) return [available[0].path];
   throw new Error(
     "Codex CLI를 찾을 수 없습니다. Codex CLI를 설치한 뒤 연결 상태를 새로고침해 주세요.",
   );

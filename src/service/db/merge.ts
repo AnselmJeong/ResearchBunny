@@ -104,8 +104,21 @@ export function mergeWorks(db: Library, keepId: string, removeId: string) {
         .prepare("UPDATE seed_profiles SET data=? WHERE id=?")
         .run(JSON.stringify(p), row.id);
     }
-    for (const run of db.runs()) {
+    for (const { data } of db.db.prepare("SELECT data FROM runs").all() as { data: string }[]) {
+      const run = JSON.parse(data) as Run;
       run.inputIds = replace(run.inputIds);
+      if (run.download) {
+        const items = new Map<string, (typeof run.download.items)[number]>();
+        for (const item of run.download.items) {
+          const workId = item.workId === removeId ? keepId : item.workId;
+          const prior = items.get(workId);
+          if (!prior || ["completed", "existing"].includes(item.status))
+            items.set(workId, { ...item, workId, title: workId === keepId ? keep.title : item.title });
+        }
+        run.download.items = [...items.values()];
+        run.total = run.download.items.length;
+        run.count = run.download.items.filter(i => ["completed", "existing"].includes(i.status)).length;
+      }
       for (const task of run.tasks)
         if (task.seedId === removeId) task.seedId = keepId;
       db.saveRun(run as Run);

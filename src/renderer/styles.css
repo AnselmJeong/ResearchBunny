@@ -3328,3 +3328,11 @@ html[data-theme="dark"] .selection-bar .primary {
 .graph-warnings ul { padding-left: 20px; }
 .graph-warnings li { margin: 12px 0; }
 .graph-warnings .text-button { display: inline; white-space: normal; text-align: left; padding: 0; }
+.download-options { display: flex; align-items: end; gap: 18px; flex-wrap: wrap; margin: 18px 0 8px; }
+.download-options label:first-child, .download-history { display: grid; gap: 7px; }
+.download-history { margin-top: 20px; }
+.download-results { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.download-results progress { width: 100%; height: 8px; accent-color: var(--accent); }
+.download-items { list-style: none; padding: 0; max-height: 340px; overflow: auto; margin: 14px 0; }
+.download-items li { padding: 12px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.download-items li p { margin: 6px 0; }

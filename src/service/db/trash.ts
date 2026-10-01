@@ -85,6 +85,14 @@ export function deleteTrashedWorks(
         continue;
       }
       run.inputIds = keep(run.inputIds);
+      if (run.download) {
+        for (const item of run.download.items) {
+          if (removed.has(item.workId)) {
+            item.status = "skipped";
+            item.message = "아카이브에서 영구 삭제된 문헌";
+          }
+        }
+      }
       run.tasks = run.tasks.filter(
         (task) => !task.seedId || !removed.has(task.seedId),
       );

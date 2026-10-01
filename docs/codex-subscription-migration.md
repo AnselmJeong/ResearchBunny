@@ -1,5 +1,31 @@
 # Codex subscription migration
 
+## Model discovery repair (2026-10-01)
+
+Boundary: repair installed CLI discovery and clarify the existing input budget.
+Recognize desktop `Resources/codex-cli/bin/codex` paths and choose the newest
+installed version, retaining legacy locations and isolated app authentication.
+Add a regression test for competing CLI versions, validate the live account
+catalog without inference, then build and replace the installed bundle with a
+recoverable backup. Keep library data and unrelated work intact.
+
+Diagnosis: standalone CLI 0.154.0 returned five models without gpt-6.1-sol;
+desktop CLI 0.159.2 returned eight models including default gpt-6.1-sol through
+the same ResearchBunny CodexClient and private auth home. Input budgets accumulate
+UTF-8 bytes plus overhead across calls, not measured tokenizer usage.
+Keep the saved input limit and place its control under advanced settings, with
+an explanation of candidate/abstract trimming and usage/time tradeoffs.
+
+Validation: typecheck, ESLint, 28 Codex integration tests, stable packaging and
+git diff --check passed. Generated CLI 0.159.2 experimental schemas confirm
+environments, dynamicTools, outputSchema and serviceTierForTurn compatibility.
+The packaged service with restricted PATH returned eight account models with
+gpt-6.1-sol as default; no inference turn was needed. Replaced the installed
+bundle after signature verification, preserving its previous copy at
+`~/Library/Application Support/ResearchBunny/app-backups/20261001-195659/ResearchBunny.app`.
+Native installed-app UI verified gpt-6.1-sol in the dropdown and account-default
+label, and the advanced input control retained 100000. Signing remains ad hoc.
+
 ## Boundary and delivery
 
 ResearchBunny is a local Electrobun/Bun + React app. Move both AI entry points

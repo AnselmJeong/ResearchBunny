@@ -219,6 +219,24 @@ export interface Run {
     workId?: string;
     index: number;
   };
+  download?: {
+    items: PdfDownloadItem[];
+    includeBooks: boolean;
+  };
+}
+export type PdfDownloadScope = "archive" | "selected" | "topic" | "unclassified" | "collection";
+export interface PdfDownloadItem {
+  workId: string;
+  title: string;
+  status: "pending" | "running" | "completed" | "existing" | "skipped" | "failed";
+  message: string;
+  sourceUrl?: string;
+}
+export interface PdfDownloadPreview {
+  total: number;
+  existing: number;
+  books: number;
+  eligible: number;
 }
 export interface Attachment {
   id: string;
@@ -230,6 +248,9 @@ export interface Attachment {
   size: number;
   status: string;
   exists: boolean;
+  sourceUrl?: string;
+  fetchedAt?: string;
+  version?: string;
 }
 export interface Settings {
   openalexConfigured: boolean;

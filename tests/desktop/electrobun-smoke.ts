@@ -32,6 +32,13 @@ try {
       assert(items[0].message.includes("extracted"),JSON.stringify(items));
       const workId=items[0].workId;
       await request("mutateWorks",{projectId,ids:[workId],patch:{screening:"included",note:"packaged"}});
+      const preview=await request("pdfDownloadPreview",{projectId,scope:"selected",ids:[workId]});
+      assert.deepEqual(preview,{total:1,existing:1,books:0,eligible:0});
+      const download=await request("downloadPdfs",{projectId,scope:"selected",ids:[workId]});
+      let downloaded;
+      for(let i=0;i<100;i++){const s=await request("snapshot",{projectId});downloaded=s.runs.find(r=>r.id===download.id);if(downloaded?.status==="completed")break;await Bun.sleep(50);}
+      assert.equal(downloaded.status,"completed");assert.equal(downloaded.download.items[0].status,"existing");
+      assert.equal((await request("inspect",{projectId,workId})).state.note,"packaged");
       const output=await request("performExport",{projectId,scope:"selected",ids:[workId],path:process.argv[5]+"/out.bib"});
       assert.equal(output.count,1); assert(readFileSync(process.argv[5]+"/out.bib","utf8").includes("@"));
       const backup=await request("backup",{path:process.argv[5]+"/backup",includeAttachments:true,includeLinked:false});

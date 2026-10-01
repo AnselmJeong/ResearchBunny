@@ -167,9 +167,13 @@ export function Settings({
             </label>
             {value.aiProvider === "codex" ? <>
               <CodexConnection model={value.codexModel} onModel={codexModel => setValue(current => ({ ...current, codexModel }))} />
-              <label className="field">실행당 입력 토큰 예산
-                <input type="number" min="1000" max="100000" value={value.aiMaxInputTokens} onChange={e => setValue({ ...value, aiMaxInputTokens: Number(e.target.value) })} />
-              </label>
+              <details className="settings-advanced">
+                <summary>AI 입력량 제한 · 고급 설정</summary>
+                <label className="field">실행당 AI 입력량 상한 · 보수적 추정
+                  <input type="number" min="1000" max="100000" value={value.aiMaxInputTokens} onChange={e => setValue({ ...value, aiMaxInputTokens: Number(e.target.value) })} />
+                </label>
+                <p className="subtle">검색·분류 한 번에서 AI에 보내는 연구 질문, 논문 제목·초록, 지시문의 누적량을 제한합니다. 실제 토큰 수와 다른 보수적 추정치입니다. 낮추면 검토할 후보 수나 초록 길이가 줄어들 수 있고, 높이면 구독 사용량과 대기 시간이 늘 수 있습니다.</p>
+              </details>
               <p className="subtle">실행당 최대 3회 호출. Codex 연결은 응답 토큰 상한·달러 예산을 지원하지 않으며, 구독 허용 상태를 매번 확인합니다.</p>
             </> : <details className="settings-advanced">
               <summary>모델과 사용 한도 · API 키</summary>

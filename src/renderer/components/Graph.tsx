@@ -3,7 +3,7 @@ import cytoscape, { type Core, type ElementDefinition } from "cytoscape";
 import { Focus, ZoomIn, ZoomOut, Waypoints, RotateCcw } from "lucide-react";
 import type { WorkView, ArchiveTopic } from "../../shared/types";
 import { archiveNodeColor, UNCLASSIFIED_COLOR } from "../../shared/classification";
-import { citationWarnings, GRAPH_LIMIT } from "../../shared/graph";
+import { citationWarnings, citationNodeDiameter, incomingCitationCounts, GRAPH_LIMIT } from "../../shared/graph";
 import { similarityEdges } from "../../shared/domain";
 import {
   capturePositions,
@@ -77,6 +77,14 @@ export function Graph({
     () => citationWarnings(display, visibleEdges),
     [display, visibleEdges],
   );
+  const incomingCitations = useMemo(
+    () => incomingCitationCounts(
+      display.map((work) => work.id),
+      visibleEdges.filter((edge) => !warnings.has(`${edge.source}:${edge.target}`)),
+    ),
+    [display, visibleEdges, warnings],
+  );
+  const maximumCitations = Math.max(0, ...incomingCitations.values());
   const workById = new Map(display.map((work) => [work.id, work]));
   const extraCount = display.filter((work) =>
     contextIds.includes(work.id),
@@ -100,8 +108,8 @@ export function Graph({
           selector: "node",
           style: {
             "background-color": "#bbc4be",
-            width: 24,
-            height: 24,
+            width: "data(diameter)",
+            height: "data(diameter)",
             label: "data(label)",
             "font-family": "-apple-system, sans-serif",
             "font-size": 11,
@@ -127,8 +135,6 @@ export function Graph({
           style: {
             "background-color": "#28644e",
             shape: "diamond",
-            width: 32,
-            height: 32,
           },
         },
         {
@@ -299,6 +305,7 @@ export function Graph({
         id: w.id,
         label: labeled.has(w.id) ? paperLabel(w) : "",
         fullLabel: paperLabel(w),
+        diameter: citationNodeDiameter(incomingCitations.get(w.id) ?? 0, maximumCitations),
         topicColor: archiveNodeColor(w, topics) || UNCLASSIFIED_COLOR,
       },
       position: positions[w.id],
@@ -363,6 +370,8 @@ export function Graph({
     display,
     visibleEdges,
     warnings,
+    incomingCitations,
+    maximumCitations,
     seeds,
     timeline,
     showQuestionable,
@@ -561,6 +570,9 @@ export function Graph({
         <span>
           <i className="graph-edge-key citation" />
           인용 기록 → 인용된 문헌
+        </span>
+        <span title="현재 표시된 논문 사이에서 받은 인용 수를 로그 척도로 반영합니다. 관련 문헌 연결과 확인 필요 인용은 제외합니다.">
+          노드 크기 · 그래프 내 피인용 수 (로그 척도)
         </span>
         {similarity && (
           <span>

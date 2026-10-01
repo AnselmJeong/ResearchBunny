@@ -65,7 +65,7 @@ const extractedSchema = z.object({
   pages: z.number().nullable(), text: z.string(), status: z.string(),
 });
 type Extracted = z.infer<typeof extractedSchema>;
-function extract(
+export function extractPdf(
   path: string,
   workerPath: string,
   signal: AbortSignal,
@@ -73,6 +73,7 @@ function extract(
   return new Promise((resolve, reject) => {
     const worker = fork(workerPath, [path], {
       execPath: process.execPath,
+      execArgv: [],
       stdio: ["ignore", "ignore", "ignore", "ipc"],
       serialization: "json",
     });
@@ -192,7 +193,7 @@ export class PdfImports {
                     text: "",
                     status: "100MB 초과 · 추출 생략",
                   }
-                : await extract(path, this.workerPath, signal);
+                : await extractPdf(path, this.workerPath, signal);
             status = result.status;
             if (
               result.dois.length === 1 &&

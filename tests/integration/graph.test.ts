@@ -1,4 +1,4 @@
-import { citationWarnings, resultWindow } from "../../src/shared/graph";
+import { citationWarnings, citationNodeDiameter, incomingCitationCounts, resultWindow } from "../../src/shared/graph";
 import { restoreNavigation } from "../../src/shared/navigation";
 import { test, expect } from "bun:test";
 import cytoscape from "cytoscape";
@@ -20,6 +20,63 @@ const definitions = works.map(({ id }) => ({
   data: { id, label: id },
   classes: "saved",
 }));
+
+test("node sizes count incoming citations from distinct visible papers", () => {
+  const counts = incomingCitationCounts(["hub", "a", "b", "isolated"], [
+    { source: "a", target: "hub" },
+    { source: "b", target: "hub" },
+    { source: "a", target: "hub" },
+    { source: "hub", target: "a" },
+    { source: "hub", target: "hub" },
+    { source: "hidden", target: "hub" },
+    { source: "hub", target: "hidden" },
+  ]);
+  expect(Object.fromEntries(counts)).toEqual({ hub: 2, a: 1, b: 0, isolated: 0 });
+  expect(citationNodeDiameter(counts.get("hub")!, 2)).toBeGreaterThan(citationNodeDiameter(counts.get("a")!, 2));
+});
+
+test("log scaling keeps empty and sparse graphs usable and compresses citation outliers", () => {
+  expect(citationNodeDiameter(0, 0)).toBe(24);
+  expect(citationNodeDiameter(1, 1)).toBeLessThan(40);
+  const diameters = [0, 1, 10, 100, 10000].map((count) => citationNodeDiameter(count, 10000));
+  expect(diameters[4]).toBe(64);
+  for (let i = 1; i < diameters.length; i++) {
+    expect(diameters[i]).toBeGreaterThan(diameters[i - 1]);
+    expect(diameters[i]).toBeLessThanOrEqual(64);
+  }
+  expect(citationNodeDiameter(10, 10000) - diameters[0]).toBeGreaterThan((64 - 24) * 10 / 10000);
+  for (const count of [null, -1, NaN, Infinity]) {
+    expect(citationNodeDiameter(count as number, 0)).toBe(24);
+  }
+});
+
+test("seed and saved nodes resize on refresh while retaining shape, selection and position", () => {
+  const cy = cytoscape({ headless: true, styleEnabled: true, style: [
+    { selector: "node", style: { width: "data(diameter)", height: "data(diameter)" } },
+    { selector: "node.saved", style: { shape: "round-rectangle" } },
+    { selector: "node.seed", style: { shape: "diamond" } },
+  ] });
+  try {
+    const definitions = [
+      { data: { id: "seed", diameter: citationNodeDiameter(0, 20) }, classes: "saved seed" },
+      { data: { id: "saved", diameter: citationNodeDiameter(20, 20) }, classes: "saved" },
+    ];
+    reconcileGraph(cy, definitions);
+    const node = cy.getElementById("seed").position({ x: 44, y: 55 }).select();
+    expect(node.width()).toBe(24);
+    expect(cy.getElementById("saved").width()).toBe(64);
+    reconcileGraph(cy, [
+      { ...definitions[0], data: { id: "seed", diameter: citationNodeDiameter(20, 20) } },
+      definitions[1],
+    ]);
+    expect(node.width()).toBe(64);
+    expect(node.height()).toBe(64);
+    expect(node.style("shape")).toBe("diamond");
+    expect(cy.getElementById("saved").style("shape")).toBe("round-rectangle");
+    expect(node.position()).toEqual({ x: 44, y: 55 });
+    expect(node.selected()).toBe(true);
+  } finally { cy.destroy(); }
+});
 
 test("topic colors distinguish classified, unclassified and unsaved works without changing node positions", () => {
   const topics = [{ id: "t", name: "Topic", description: "", color: TOPIC_COLORS[0], count: 1 }];
