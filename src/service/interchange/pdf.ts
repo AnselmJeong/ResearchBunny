@@ -23,6 +23,7 @@ import {
 import { blankWork, normalizeDoi, titleSimilarity } from "../../shared/domain";
 import type { Library } from "../db/database";
 import type { OpenAlex } from "../providers/openalex";
+import { isAuxiliaryPdf, matchesDownloadedPdf } from "./pdf-identity";
 export async function hashFile(
   path: string,
   signal?: AbortSignal,
@@ -42,6 +43,15 @@ export async function verifyPdf(path: string) {
   } finally {
     await file.close();
   }
+}
+export async function hasValidPdf(db: Library, workId: string, signal?: AbortSignal) {
+  for (const attachment of db.attachments(workId)) {
+    try {
+      await verifyPdf(attachment.path);
+      if (await hashFile(attachment.path, signal) === attachment.hash) return true;
+    } catch { signal?.throwIfAborted(); }
+  }
+  return false;
 }
 async function scan(paths: string[]): Promise<string[]> {
   const output: string[] = [];
@@ -126,6 +136,9 @@ export class PdfImports {
   ): Promise<Run> {
     if (this.active.size)
       throw new AppError("BUSY", "PDF 가져오기가 진행 중입니다.");
+    this.db.project(projectId);
+    if (options.matchExistingOnly && (options.mode !== "managed" || options.workId))
+      throw new AppError("INVALID", "폴더 연결은 기존 아카이브에 관리 PDF로 저장합니다.");
     const files = await scan(paths);
     if (!files.length)
       throw new AppError("NO_PDF", "PDF 파일을 찾지 못했습니다.");
@@ -133,7 +146,7 @@ export class PdfImports {
       id: randomUUID(),
       projectId,
       mode: "search",
-      query: `PDF 가져오기 (${files.length}개)`,
+      query: `${options.matchExistingOnly ? "PDF 폴더 연결" : "PDF 가져오기"} (${files.length}개)`,
       seedProfileId: null,
       inputIds: [],
       filters: { ...DEFAULT_FILTERS },
@@ -141,11 +154,11 @@ export class PdfImports {
       createdAt: now(),
       updatedAt: now(),
       calls: 0,
-      maxCalls: 40,
+      maxCalls: options.matchExistingOnly ? 0 : 40,
       maxCandidates: files.length,
       total: files.length,
       count: 0,
-      message: "PDF 가져오기 준비",
+      message: options.matchExistingOnly ? "기존 아카이브 PDF 연결 준비" : "PDF 가져오기 준비",
       tasks: [],
       rankingVersion: "pdf-v1",
       import: { paths: files, index: 0, ...options },
@@ -153,6 +166,15 @@ export class PdfImports {
     this.db.saveRun(run);
     void this.execute(run.id);
     return run;
+  }
+  private skipMatch(run: Run, path: string, index: number, message: string, workId: string | null = null) {
+    this.db.transaction(() => {
+      this.db.db.prepare("INSERT INTO import_items VALUES(?,?,?,?,?,?)")
+        .run(randomUUID(), run.id, path, "skipped", message, workId);
+      run.import!.index = index + 1;
+      this.db.saveRun(run);
+    });
+    this.emit({ type: "changed", runId: run.id });
   }
   async execute(id: string) {
     const control = new AbortController();
@@ -183,7 +205,28 @@ export class PdfImports {
               ? this.db.get(JSON.parse(existing.data).workId)
               : null;
           let status = "연결됨";
-          if (!work) {
+          if (job.matchExistingOnly) {
+            const result = size > 100 * 1024 * 1024 ? null : await extractPdf(path, this.workerPath, signal);
+            if (!result?.pages || isAuxiliaryPdf(result)) {
+              this.skipMatch(run, path, i, !result ? "100MB 초과 · 직접 확인 후 연결하세요." : !result.pages ? "내용 추출 불가 · 직접 확인 후 연결하세요." : "보충자료·정오표 · 본문 연결 제외");
+              continue;
+            }
+            const works = (this.db.db.prepare("SELECT work_id FROM project_works WHERE project_id=? AND json_extract(state,'$.screening')='included'")
+              .all(run.projectId) as { work_id: string }[]).map(row => this.db.get(row.work_id));
+            // Include already attached works when testing uniqueness: a duplicate
+            // title must not become unambiguous simply because one was attached.
+            const matches = works.filter(candidate => matchesDownloadedPdf(result, candidate));
+            if (matches.length !== 1) {
+              this.skipMatch(run, path, i, matches.length ? "여러 항목과 일치 · 직접 확인 후 연결하세요." : "일치하는 아카이브 항목 없음 · 직접 확인 후 연결하세요.");
+              continue;
+            }
+            work = matches[0];
+            if (await hasValidPdf(this.db, work.id, signal)) {
+              this.skipMatch(run, path, i, "이미 검증한 PDF가 연결되어 있음", work.id);
+              continue;
+            }
+            status = "폴더 PDF · DOI·제목 일치 확인";
+          } else if (!work) {
             const result =
               size > 100 * 1024 * 1024
                 ? {
@@ -244,9 +287,7 @@ export class PdfImports {
             const temporary = target + "." + randomUUID() + ".staging";
             try {
               await mkdir(dirname(target), { recursive: true });
-              try {
-                await stat(target);
-              } catch {
+              if (await hashFile(target, signal).catch(() => null) !== hash) {
                 await copyFile(path, temporary);
                 if ((await hashFile(temporary, signal)) !== hash)
                   throw new AppError(
@@ -262,13 +303,14 @@ export class PdfImports {
             attachmentPath = target;
           }
           this.db.transaction(() => {
+            if (job.matchExistingOnly && this.db.state(run.projectId, work!.id).screening !== "included")
+              throw new AppError("ARCHIVE_REMOVED", "연결 중 아카이브에서 제거된 문헌입니다.");
             this.db.ensureMembership(run.projectId, work!.id);
-            if (
-              job.mode !== "metadata" &&
-              !this.db.attachments(work!.id).some((a) => a.hash === hash)
-            )
+            if (job.mode !== "metadata") {
+              const attachment = this.db.attachments(work!.id).find(a => a.hash === hash);
               this.db.saveAttachment({
-                id: randomUUID(),
+                ...attachment,
+                id: attachment?.id || randomUUID(),
                 workId: work!.id,
                 name: basename(path),
                 hash,
@@ -278,6 +320,7 @@ export class PdfImports {
                 status,
                 exists: true,
               });
+            }
             let collectionId = job.collectionId;
             if (job.mapFolders) {
               const name = basename(dirname(path));
@@ -289,7 +332,7 @@ export class PdfImports {
               this.db.db
                 .prepare("INSERT OR IGNORE INTO collection_works VALUES(?,?)")
                 .run(collectionId, work!.id);
-            this.db.candidate(run, work!, {
+            if (!job.matchExistingOnly) this.db.candidate(run, work!, {
               origins: ["로컬 PDF"],
               seedIds: [],
               sharedIds: [],
@@ -306,7 +349,7 @@ export class PdfImports {
               .run(
                 randomUUID(),
                 id,
-                basename(path),
+                job.matchExistingOnly ? path : basename(path),
                 "completed",
                 status,
                 work!.id,
@@ -322,7 +365,7 @@ export class PdfImports {
             .run(
               randomUUID(),
               id,
-              basename(path),
+              job.matchExistingOnly ? path : basename(path),
               "failed",
               error instanceof AppError
                 ? error.message
@@ -342,7 +385,8 @@ export class PdfImports {
           )
           .get(id) as { n: number }
       ).n;
-      run.message = `${run.count}개 가져옴${failures ? ` · 실패 ${failures}개 (재개로 실패 파일 재시도)` : ""}`;
+      const skipped = (this.db.db.prepare("SELECT count(*) AS n FROM import_items WHERE run_id=? AND status='skipped'").get(id) as { n: number }).n;
+      run.message = job.matchExistingOnly ? `새 연결 ${run.count}편 · 연결 제외 ${skipped}개 · 실패 ${failures}개` : `${run.count}개 가져옴${failures ? ` · 실패 ${failures}개 (재개로 실패 파일 재시도)` : ""}`;
     } catch {
       run.status = signal.aborted ? "cancelled" : "failed";
       run.message = "PDF 가져오기 중단 · 처리된 파일은 보존됩니다.";
@@ -369,7 +413,7 @@ export class PdfImports {
           .all(id) as { name: string }[]
       ).map((x) => x.name);
       run.import!.paths = run.import!.paths.filter((p) =>
-        names.includes(basename(p)),
+        names.includes(run.import!.matchExistingOnly ? p : basename(p)),
       );
       run.import!.index = 0;
       this.db.db

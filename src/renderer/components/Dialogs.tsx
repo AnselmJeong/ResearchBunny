@@ -7,6 +7,7 @@ import type {
   Work,
   SeedProfile,
   Run,
+  PdfExportPreview,
 } from "../../shared/types";
 import { Modal } from "./Modal";
 import type { Input } from "../../shared/contracts";
@@ -536,7 +537,8 @@ export function ExportDialog({
   archiveCount: number;
   onDone: (message: string) => void;
 }) {
-  const [scope, setScope] = useState<
+  const [format, setFormat] = useState<"bib" | "pdf">("bib"),
+    [scope, setScope] = useState<
       "selected" | "project" | "all" | "collection" | "filtered"
     >(selected.length ? "selected" : "project"),
     [notes, setNotes] = useState(false),
@@ -547,43 +549,59 @@ export function ExportDialog({
     [busy, setBusy] = useState(false);
   // Compare the actual export target, not array identities replaced by list refreshes.
   const previewRequest = JSON.stringify({
+    format,
     projectId,
     scope: scope === "filtered" ? "selected" : scope,
     ids: scope === "filtered" ? visibleIds : scope === "selected" ? selected : [],
     collectionId: scope === "collection" ? collection || undefined : undefined,
-  } satisfies Input<"exportPreview">);
-  const [preview, setPreview] = useState<{
-    request: string;
-    ids: string[];
-  } | null>(null);
+  } satisfies Input<"exportPreview"> & {format: "bib" | "pdf"});
+  const [preview, setPreview] = useState<
+    {kind: "bib"; request: string; ids: string[]} |
+    {kind: "pdf"; request: string; data: PdfExportPreview} | null
+  >(null);
   const onError = common.onError;
   useEffect(() => {
     let valid = true;
-    const request = JSON.parse(previewRequest) as Input<"exportPreview">;
+    const {format: selectedFormat, ...request} = JSON.parse(previewRequest) as Input<"exportPreview"> & {format: "bib" | "pdf"};
     if (request.scope === "collection" && !request.collectionId) {
-      setPreview({ request: previewRequest, ids: [] });
+      setPreview(selectedFormat === "bib" ? {kind: "bib", request: previewRequest, ids: []} :
+        {kind: "pdf", request: previewRequest, data: {targets: [], workCount: 0, pdfCount: 0, withoutPdf: 0, unavailable: 0, folders: []}});
       return;
     }
-    void window.bunny
-      .exportPreview(request)
-      .then((r) => {
-        if (valid) setPreview({ request: previewRequest, ids: r.ids });
-      })
-      .catch((error: unknown) => {
-        if (valid) onError(error);
-      });
+    void (async () => {
+      if (selectedFormat === "pdf") {
+        const data = await window.bunny.pdfExportPreview(request);
+        if (valid) setPreview({kind: "pdf", request: previewRequest, data});
+      } else {
+        const data = await window.bunny.exportPreview(request);
+        if (valid) setPreview({kind: "bib", request: previewRequest, ids: data.ids});
+      }
+    })().catch((error: unknown) => { if (valid) onError(error); });
     return () => {
       valid = false;
     };
   }, [previewRequest, onError]);
-  const previewIds = preview?.request === previewRequest ? preview.ids : null;
-  const count = previewIds?.length ?? null;
+  const previewIds = preview?.request === previewRequest && preview.kind === "bib" ? preview.ids : null;
+  const pdfPreview = preview?.request === previewRequest && preview.kind === "pdf" ? preview.data : null;
+  const count = format === "bib" ? previewIds?.length ?? null : pdfPreview?.workCount ?? null;
   return (
-    <Modal title="BibTeX 내보내기" onClose={common.onClose}>
+    <Modal title="아카이브 내보내기" onClose={busy ? () => {} : common.onClose}>
+      <label className="field">
+        형식
+        <select aria-label="내보내기 형식" value={format} disabled={busy} onChange={e => {
+          const value = e.target.value === "pdf" ? "pdf" : "bib";
+          setFormat(value);
+          if (value === "pdf") setScope("project");
+        }}>
+          <option value="bib">BibTeX (.bib)</option>
+          <option value="pdf">PDF 폴더 · 소주제별 분류 유지</option>
+        </select>
+      </label>
       <label className="field">
         범위
         <select
           value={scope}
+          disabled={busy}
           onChange={(e) => setScope(e.target.value as typeof scope)}
         >
           <option value="selected">선택한 문헌 · 숨겨진 선택 포함</option>
@@ -596,6 +614,7 @@ export function ExportDialog({
       {scope === "collection" && (
         <select
           aria-label="내보낼 컬렉션"
+          disabled={busy}
           value={collection}
           onChange={(e) => setCollection(e.target.value)}
         >
@@ -610,11 +629,13 @@ export function ExportDialog({
         {count !== null ? (
           <span>
             <strong>{count}</strong>편
+            {pdfPreview && <> · PDF <strong>{pdfPreview.pdfCount}</strong>개 · PDF 없는 문헌 {pdfPreview.withoutPdf}편</>}
           </span>
         ) : (
           "내보낼 문헌 확인 중…"
         )}
       </p>
+      {format === "bib" ? <>
       <label className="check">
         <input
           type="checkbox"
@@ -635,13 +656,35 @@ export function ExportDialog({
         기본 내보내기는 서지정보만 포함합니다. 선택한 후보는 저장하지 않고도
         내보낼 수 있습니다.
       </p>
+      </> : <>
+        <p className="subtle">
+          아카이브에 저장된 문헌의 첨부 PDF를 프로젝트·소주제 폴더로 복사합니다.
+          미분류 문헌은 미분류 폴더에 넣고, PDF가 없거나 복사하지 못한 항목은 내보내기 결과.csv에 남깁니다.
+          저장 위치 안에 새 폴더를 만들며 같은 이름이 있으면 번호를 붙입니다.
+        </p>
+        {pdfPreview && <details>
+          <summary>폴더 구조 · {pdfPreview.folders.length}개</summary>
+          <ul className="pdf-export-folders">
+            {pdfPreview.folders.map(folder => <li key={folder.path}><span>{folder.path}</span><small>PDF {folder.pdfCount}개</small></li>)}
+          </ul>
+        </details>}
+      </>}
       <footer className="modal-footer">
-        <button onClick={common.onClose}>취소</button>
+        <button disabled={busy} onClick={common.onClose}>취소</button>
         <button
           className="primary"
-          disabled={busy || !previewIds || count === 0}
+          disabled={busy || count === null || count === 0 || (format === "pdf" && !pdfPreview?.pdfCount)}
           onClick={() => {
             setBusy(true);
+            if (format === "pdf" && pdfPreview) {
+              void window.bunny.exportPdfs({targets: pdfPreview.targets})
+                .then(result => { if (result) {
+                  onDone(`PDF ${result.pdfCount}개 내보냄 · PDF 없는 문헌 ${result.withoutPdf}편 · ${result.path}`);
+                  common.onClose();
+                } })
+                .catch(common.onError).finally(() => setBusy(false));
+              return;
+            }
             void window.bunny
               .exportBib({
                 projectId,
@@ -662,7 +705,7 @@ export function ExportDialog({
           }}
         >
           <Download size={15} />
-          파일 저장
+          {busy ? "내보내는 중…" : format === "pdf" ? "폴더로 내보내기" : "파일 저장"}
         </button>
       </footer>
     </Modal>

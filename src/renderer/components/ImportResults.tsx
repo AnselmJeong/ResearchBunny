@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Outputs } from "../../shared/contracts";
 
 export function ImportResults({
@@ -6,13 +6,25 @@ export function ImportResults({
   busy,
   onResume,
   onError,
+  refreshKey,
+  autoShow = false,
 }: {
   runId: string;
   busy: boolean;
   onResume: () => Promise<unknown>;
   onError: (error: unknown) => void;
+  refreshKey?: string;
+  autoShow?: boolean;
 }) {
   const [items, setItems] = useState<Outputs["importItems"] | null>(null);
+  useEffect(() => {
+    let valid = true;
+    if (autoShow) void window.bunny.importItems({ runId })
+      .then(result => { if (valid) setItems(result); })
+      .catch(error => { if (valid) onError(error); });
+    else setItems(null);
+    return () => { valid = false; };
+  }, [runId, refreshKey, autoShow, onError]);
   const load = async () => {
     try {
       setItems(await window.bunny.importItems({ runId }));
@@ -35,7 +47,7 @@ export function ImportResults({
             {items.slice(-100).map((item, i) => (
               <li key={i}>
                 <strong>{item.name}</strong> ·{" "}
-                {item.status === "failed" ? "실패" : "완료"} · {item.message}
+                {item.status === "failed" ? "실패" : item.status === "skipped" ? "연결 제외" : "완료"} · {item.message}
               </li>
             ))}
           </ul>

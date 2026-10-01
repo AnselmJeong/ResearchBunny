@@ -215,6 +215,8 @@ export function HistoryWorkspace({
             {focused.import && (
               <ImportResults
                 runId={focused.id}
+                refreshKey={focused.updatedAt}
+                autoShow={focused.import.matchExistingOnly}
                 busy={busy}
                 onError={onError}
                 onResume={() => onResume(focused.id)}

@@ -21,6 +21,8 @@ import { mergeWorks, undoMerge } from "./db/merge";
 import { deleteTrashedWorks } from "./db/trash";
 import { ArchiveClassifier, classificationSnapshot } from "./archive-classification";
 import { PdfDownloads } from "./fulltext/jobs";
+import { planPdfExport, pdfExportTargets, previewPdfExport, exportPdfFolders } from "./interchange/pdf-export";
+import { schemas } from "../shared/contracts";
 export class Service {
   db: Library;
   oa: OpenAlex;
@@ -86,6 +88,7 @@ export class Service {
       case "snapshot": {
         const projectId = args.projectId || this.db.projects()[0].id;
         this.db.project(projectId);
+        await this.downloads.syncHistory();
         const history = this.db.seedHistory(projectId);
         return {
           projects: this.db.projects(),
@@ -228,6 +231,9 @@ export class Service {
         if (this.busy())
           throw new AppError("BUSY", "진행 중인 작업을 완료하거나 취소하세요.");
         return this.pdf.start(args.projectId, args.paths, args.options);
+      case "pdfMatch":
+        if (this.busy()) throw new AppError("BUSY", "진행 중인 작업을 완료하거나 취소하세요.");
+        return this.pdf.start(args.projectId, args.paths, { mode: "managed", matchExistingOnly: true });
       case "attachments":
         return this.db.attachments(args.workId);
       case "pdfDownloadPreview":
@@ -268,6 +274,16 @@ export class Service {
       case "exportPreview": {
         const ids = this.exportIds(args);
         return { ids, count: ids.length };
+      }
+      case "pdfExportPreview":
+        return previewPdfExport(planPdfExport(this.db, pdfExportTargets(this.db, schemas.pdfExportPreview.parse(args))));
+      case "performPdfExport": {
+        const { targets } = schemas.exportPdfs.parse(args);
+        const result = await exportPdfFolders(planPdfExport(this.db, targets), args.parent);
+        this.db.db.prepare("INSERT INTO export_records VALUES(?,?,?)").run(
+          randomUUID(), JSON.stringify({ format: "pdf-folders", targets, ...result }), new Date().toISOString(),
+        );
+        return result;
       }
       case "backup":
         if (this.busy())

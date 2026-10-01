@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { schemas, type Command } from "../shared/contracts";
-import { AppError, type Result, type AppEvent } from "../shared/types";
+import { AppError, type Result, type AppEvent, type PdfExportResult } from "../shared/types";
 import type { BunnyRPC } from "../shared/rpc";
 import { dialog, resources } from "../platform/native";
 import { Credentials } from "../platform/credentials";
@@ -50,6 +50,13 @@ function atomicJson(path: string, value: unknown) {
 async function command(name: Command, input: any): Promise<any> {
   const args = (schemas[name] as any).parse(input);
   switch (name) {
+    case "choosePdfMatch": {
+      const result = await dialog.showOpenDialog(window!, {
+        title: "기존 아카이브에 연결할 PDF 폴더 선택",
+        properties: ["openDirectory"],
+      });
+      return result.canceled ? null : rpc("pdfMatch", { projectId: args.projectId, paths: result.filePaths });
+    }
     case "chooseDownloadDirectory": {
       const result = await dialog.showOpenDialog(window!, {
         title: "Chrome이 PDF를 저장하는 다운로드 폴더 선택",
@@ -121,6 +128,16 @@ async function command(name: Command, input: any): Promise<any> {
       return result.canceled
         ? null
         : rpc("performExport", { ...args, path: result.filePath });
+    }
+    case "exportPdfs": {
+      const result = await dialog.showOpenDialog(window!, {
+        title: "PDF 분류 폴더를 내보낼 위치 선택",
+        properties: ["openDirectory"],
+      });
+      if (result.canceled) return null;
+      const exported = await rpc<PdfExportResult>("performPdfExport", { ...args, parent: result.filePaths[0] });
+      Utils.showItemInFolder(exported.path);
+      return exported;
     }
     case "backup": {
       const result = await dialog.showSaveDialog(window!, {
@@ -218,6 +235,7 @@ const hostRpc = BrowserView.defineRPC<BunnyRPC>({
               "saveUi",
               "duplicates",
               "exportPreview",
+              "pdfExportPreview",
               "pdfDownloadPreview",
             ].includes(name)
           )

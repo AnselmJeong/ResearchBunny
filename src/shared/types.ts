@@ -217,6 +217,7 @@ export interface Run {
     collectionId?: string;
     mapFolders?: boolean;
     workId?: string;
+    matchExistingOnly?: boolean;
     index: number;
   };
   download?: {
@@ -259,6 +260,26 @@ export interface Attachment {
   retrievalMethod?: "chrome" | "http";
   fetchedAt?: string;
   version?: string;
+}
+export interface PdfExportTarget {
+  projectId: string;
+  ids: string[];
+}
+export interface PdfExportPreview {
+  targets: PdfExportTarget[];
+  workCount: number;
+  pdfCount: number;
+  withoutPdf: number;
+  unavailable: number;
+  folders: { path: string; pdfCount: number }[];
+}
+export interface PdfExportResult {
+  path: string;
+  reportPath: string;
+  workCount: number;
+  pdfCount: number;
+  withoutPdf: number;
+  unavailable: number;
 }
 export interface Settings {
   openalexConfigured: boolean;

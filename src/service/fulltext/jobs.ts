@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { Library } from "../db/database";
-import { extractPdf, hashFile, verifyPdf } from "../interchange/pdf";
+import { extractPdf, hashFile, verifyPdf, hasValidPdf } from "../interchange/pdf";
 import { cleanDoi, FulltextEngine, isBook } from "./engine";
 import { ChromeDownloads, chromeDownloadDirectories, type BrowserRetrieval } from "./chrome";
 import { LocalDownloads, isAuxiliaryPdf } from "./local-downloads";
@@ -25,6 +25,7 @@ export class PdfDownloads {
   private local: LocalDownloads;
   private recoveryTimer?: ReturnType<typeof setInterval>;
   private stopping = false;
+  private historySync?: Promise<void>;
   constructor(
     private db: Library,
     private workerPath: string,
@@ -85,6 +86,7 @@ export class PdfDownloads {
       delete item.errorCode;
       this.save(run, 'changed');
     });
+    await this.syncHistory();
   }
   private async reconcile(run: Run, staging: string, signal: AbortSignal) {
     if (!run.download!.useBrowser) return 0;
@@ -119,6 +121,7 @@ export class PdfDownloads {
   }
   async recoverCompleted() {
     if (this.active.size || this.stopping) return;
+    await this.syncHistory();
     for (const run of this.db.runs()) {
       if (!run.download?.useBrowser) continue;
       if (!['completed', 'failed'].includes(run.status) || !run.download.items.some(i => i.status === 'failed' || i.status === 'pending')) continue;
@@ -131,6 +134,42 @@ export class PdfDownloads {
         if (recovered) { this.summarize(run); this.save(run, 'changed'); }
       } finally { await rm(staging, {recursive:true, force:true}); this.active.delete(run.id); }
       if (this.stopping) return;
+    }
+  }
+  async syncHistory() {
+    if (this.stopping) return;
+    if (this.historySync) return this.historySync;
+    this.historySync = this.updateHistory();
+    try { await this.historySync; } finally { this.historySync = undefined; }
+  }
+  private async updateHistory() {
+    // Read every download run, including older runs outside the UI's 100-run window.
+    const runs = (this.db.db.prepare("SELECT data FROM runs WHERE json_type(data,'$.download')='object'")
+      .all() as { data: string }[]).map(row => JSON.parse(row.data) as Run);
+    const verified = new Map<string, boolean>();
+    for (const previous of runs) {
+      if (this.stopping) return;
+      if (this.active.has(previous.id)) continue;
+      const unresolved = previous.download!.items.filter(item => !["completed", "existing"].includes(item.status));
+      for (const item of unresolved) {
+        if (!verified.has(item.workId)) verified.set(item.workId, await this.existing(item.workId));
+        if (this.stopping) return;
+      }
+      // A new run/resume may have started while the files were being checked.
+      if (this.active.has(previous.id)) continue;
+      const run = this.db.run(previous.id);
+      let changed = false;
+      for (const item of run.download!.items) {
+        if (["completed", "existing"].includes(item.status) || !verified.get(item.workId)) continue;
+        item.status = "completed";
+        item.message = "연결된 보관 PDF 검증됨";
+        delete item.errorCode;
+        changed = true;
+      }
+      if (changed) {
+        this.summarize(run);
+        this.save(run, "changed");
+      }
     }
   }
   private summarize(run: Run) {
@@ -162,13 +201,7 @@ export class PdfDownloads {
     return works;
   }
   private async existing(workId: string, signal?: AbortSignal) {
-    for (const attachment of this.db.attachments(workId)) {
-      try {
-        await verifyPdf(attachment.path);
-        if (await hashFile(attachment.path, signal) === attachment.hash) return true;
-      } catch { signal?.throwIfAborted(); }
-    }
-    return false;
+    return hasValidPdf(this.db, workId, signal);
   }
   async preview(target: DownloadTarget): Promise<PdfDownloadPreview> {
     const works = this.targets(target);

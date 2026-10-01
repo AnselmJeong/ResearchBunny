@@ -11,8 +11,8 @@ try {
   const code = `
     import assert from "node:assert/strict";
     import { fork } from "node:child_process";
-    import { readFileSync } from "node:fs";
-    const child = fork(process.argv[1], [process.argv[2], process.argv[3]], { execPath: process.execPath, stdio: ["ignore","ignore","inherit","ipc"], serialization:"json" });
+    import { readFileSync, writeFileSync } from "node:fs";
+    const child = fork(process.argv[1], [process.argv[2], process.argv[3]], { execPath: process.execPath, execArgv: [], stdio: ["ignore","ignore","inherit","ipc"], serialization:"json" });
     let id = 0;
     const pending = new Map();
     const request = (command,args={}) => new Promise((resolve,reject)=> { const key=++id; pending.set(key,{resolve,reject}); child.send({id:key,command,args}); });
@@ -39,6 +39,23 @@ try {
       for(let i=0;i<100;i++){const s=await request("snapshot",{projectId});downloaded=s.runs.find(r=>r.id===download.id);if(downloaded?.status==="completed")break;await Bun.sleep(50);}
       assert.equal(downloaded.status,"completed");assert.equal(downloaded.download.items[0].status,"existing");
       assert.equal((await request("inspect",{projectId,workId})).state.note,"packaged");
+      const missingTitle="Manually downloaded PDF fixture";
+      const missing=await request("manualWork",{projectId,metadata:{title:missingTitle}});
+      await request("mutateWorks",{projectId,ids:[missing.id],patch:{screening:"included",note:"keep folder note"}});
+      const matchFile=process.argv[5]+"/manual.pdf";
+      writeFileSync(matchFile,readFileSync(process.argv[4],"utf8").replace("Packaged PDF extraction fixture",missingTitle));
+      const match=await request("pdfMatch",{projectId,paths:[matchFile]});
+      let matched;
+      for(let i=0;i<100;i++){const s=await request("snapshot",{projectId});matched=s.runs.find(r=>r.id===match.id);if(matched?.status==="completed")break;await Bun.sleep(50);}
+      assert.equal(matched.status,"completed");assert.equal(matched.count,1);
+      assert.equal((await request("attachments",{workId:missing.id})).length,1);
+      assert.equal((await request("inspect",{projectId,workId:missing.id})).state.note,"keep folder note");
+      await request("mutateWorks",{projectId,ids:[missing.id],patch:{screening:"excluded"}});
+      const pdfPreview=await request("pdfExportPreview",{projectId,scope:"project",ids:[]});
+      assert.equal(pdfPreview.pdfCount,1);
+      const pdfExport=await request("performPdfExport",{targets:pdfPreview.targets,parent:process.argv[5]});
+      assert.equal(pdfExport.pdfCount,1);assert.equal(pdfExport.withoutPdf,0);
+      assert(readFileSync(pdfExport.reportPath,"utf8").includes("복사 완료"));
       const output=await request("performExport",{projectId,scope:"selected",ids:[workId],path:process.argv[5]+"/out.bib"});
       assert.equal(output.count,1); assert(readFileSync(process.argv[5]+"/out.bib","utf8").includes("@"));
       const backup=await request("backup",{path:process.argv[5]+"/backup",includeAttachments:true,includeLinked:false});
@@ -51,7 +68,7 @@ try {
       assert.equal((await request("snapshot",{projectId})).counts.trash,0);
       await assert.rejects(request("inspect",{projectId,workId}));
       await request("shutdown");
-      console.log("PASS packaged PDF extraction, archive, export, backup, restore and permanent deletion with restricted PATH");
+      console.log("PASS packaged PDF extraction, folder matching, archive, BibTeX and PDF folder export, backup, restore and permanent deletion with restricted PATH");
     } finally { clearTimeout(deadline); child.kill(); }
   `;
   const resources = join(bundle, "Contents/Resources/app/runtime");

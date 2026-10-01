@@ -11,6 +11,8 @@ import type {
   Settings,
   Project,
   PdfDownloadPreview,
+  PdfExportPreview,
+  PdfExportResult,
   Collection,
   ClassificationJob,
   SeedProfile,
@@ -30,6 +32,12 @@ const downloadTarget = z.object({
   includeBooks: z.boolean().default(false),
   useBrowser: z.boolean().default(false),
   downloadDirectory: z.string().min(1).max(4096).optional(),
+});
+const exportSelection = z.object({
+  projectId: id,
+  scope: z.enum(["selected", "project", "all", "collection"]),
+  ids: ids.default([]),
+  collectionId: id.optional(),
 });
 export const filtersSchema = z.object({
   reading: z.enum(["unread", "planned", "reading", "read"]).optional(),
@@ -174,6 +182,7 @@ export const schemas = {
   }),
   chooseBib: z.object({}),
   chooseDownloadDirectory: z.object({}),
+  choosePdfMatch: z.object({ projectId: id }),
   choosePdf: z.object({
     projectId: id,
     folder: z.boolean().default(false),
@@ -198,11 +207,10 @@ export const schemas = {
     includeNotes: z.boolean().default(false),
     includeFiles: z.boolean().default(false),
   }),
-  exportPreview: z.object({
-    projectId: id,
-    scope: z.enum(["selected", "project", "all", "collection"]),
-    ids: ids.default([]),
-    collectionId: id.optional(),
+  exportPreview: exportSelection,
+  pdfExportPreview: exportSelection,
+  exportPdfs: z.object({
+    targets: z.array(z.object({ projectId: id, ids: ids.min(1) })).min(1).max(1000),
   }),
   backup: z.object({
     includeAttachments: z.boolean(),
@@ -261,6 +269,8 @@ export interface Outputs {
     workId: string | null;
   }[];
   exportPreview: { ids: string[]; count: number };
+  pdfExportPreview: PdfExportPreview;
+  exportPdfs: PdfExportResult | null;
   snapshot: Snapshot;
   classifyArchive: ClassificationJob;
   cancelClassification: void;
@@ -283,6 +293,7 @@ export interface Outputs {
   importBib: ImportResult;
   chooseBib: ImportPreview | null;
   chooseDownloadDirectory: string | null;
+  choosePdfMatch: Run | null;
   choosePdf: Run | null;
   attachments: Attachment[];
   pdfDownloadPreview: PdfDownloadPreview;

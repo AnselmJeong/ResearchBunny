@@ -3,6 +3,7 @@ import type { Input } from "../../shared/contracts";
 import type { PdfDownloadPreview, Run } from "../../shared/types";
 import { Modal } from "./Modal";
 import { DownloadResults } from "./DownloadResults";
+import { ImportResults } from "./ImportResults";
 
 export function DownloadDialog({ projectId, selected, scope, scopeId, runs, busy, initialRunId, onClose, onError }: {
   projectId: string;
@@ -24,8 +25,12 @@ export function DownloadDialog({ projectId, selected, scope, scopeId, runs, busy
   const [starting, setStarting] = useState(false);
   const [runId, setRunId] = useState(initialRunId || "");
   const [started, setStarted] = useState<Run | null>(null);
-  const downloads = runs.filter(r => r.download);
+  const [matching, setMatching] = useState(false);
+  const [matched, setMatched] = useState<Run | null>(null);
+  const downloads = runs.filter(r => r.download || r.import?.matchExistingOnly);
   const run = downloads.find(r => r.id === runId) || started;
+  const matchRun = runs.find(r => r.id === matched?.id) || matched || (run?.import?.matchExistingOnly ? run : null);
+  const pdfRevision = runs.reduce((count, r) => count + (r.import || r.download ? r.count : 0), 0);
   useEffect(() => {
     let valid = true;
     setPreview(null);
@@ -34,7 +39,7 @@ export function DownloadDialog({ projectId, selected, scope, scopeId, runs, busy
       .then(result => { if (valid) { setPreview(result); if (result.downloadDirectory) setDownloadDirectory(current => current || result.downloadDirectory!); } })
       .catch(error => { if (valid) onError(error); });
     return () => { valid = false; };
-  }, [projectId, targetScope, scopeId, selected, includeBooks, busy, onError]);
+  }, [projectId, targetScope, scopeId, selected, includeBooks, busy, pdfRevision, onError]);
   const start = async () => {
     setStarting(true);
     try {
@@ -42,8 +47,28 @@ export function DownloadDialog({ projectId, selected, scope, scopeId, runs, busy
       setStarted(result); setRunId(result.id);
     } catch (error) { onError(error); } finally { setStarting(false); }
   };
+  const matchFolder = async () => {
+    setMatching(true);
+    try {
+      const result = await window.bunny.choosePdfMatch({ projectId });
+      if (result) setMatched(result);
+    } catch (error) { onError(error); } finally { setMatching(false); }
+  };
+  const pending = starting || matching;
   return <Modal title="PDF 원문 찾기" wide onClose={onClose}>
     <p className="subtle">원문을 확보해 기존 논문에 첨부합니다. 분류·노트·읽기 상태를 유지하며, 이미 보관한 PDF는 건너뜁니다.</p>
+    <section className="pdf-folder-match">
+      <button disabled={busy || pending} onClick={() => void matchFolder()}>{matching ? "폴더 확인 중…" : "다운로드한 PDF 폴더 연결"}</button>
+      <p className="subtle">폴더와 하위 폴더에서 원문이 없는 아카이브 항목의 PDF를 찾습니다. DOI·제목이 일치하는 파일만 연결하고, 애매한 파일은 확인할 수 있도록 결과에 남깁니다.</p>
+      <p className="subtle">DOI·원문 페이지에서 직접 내려받은 뒤 이 기능을 실행하세요. PDF가 연결되면 과거 실패 기록도 확보 완료로 바뀝니다.</p>
+      {matchRun && <>
+        <p role="status" aria-live="polite">{matchRun.message}</p>
+        <progress aria-label="PDF 폴더 연결 진행" max={matchRun.total || 1} value={matchRun.import?.index || 0} />
+        {["running", "queued"].includes(matchRun.status) && <button onClick={() => void window.bunny.controlRun({ runId: matchRun.id, action: "cancel" }).catch(onError)}>폴더 연결 취소</button>}
+        <ImportResults runId={matchRun.id} refreshKey={matchRun.updatedAt} autoShow busy={busy || pending} onError={onError} onResume={() => window.bunny.controlRun({ runId: matchRun.id, action: "resume" })} />
+        {["cancelled", "interrupted", "failed"].includes(matchRun.status) && <button disabled={busy || pending} onClick={() => void window.bunny.controlRun({ runId: matchRun.id, action: "resume" }).catch(onError)}>폴더 연결 재개</button>}
+      </>}
+    </section>
     <div className="download-options">
       <label>대상 범위
         <select aria-label="원문 확보 대상" value={targetScope} onChange={e => setTargetScope(e.target.value as typeof targetScope)}>
@@ -53,19 +78,19 @@ export function DownloadDialog({ projectId, selected, scope, scopeId, runs, busy
         </select>
       </label>
       <label className="check"><input type="checkbox" checked={includeBooks} onChange={e => setIncludeBooks(e.target.checked)} />책·챕터도 시도</label>
-      <label className="check"><input type="checkbox" checked={useBrowser} disabled={busy || starting} onChange={e => setUseBrowser(e.target.checked)} />로그인된 Chrome 사용</label>
+      <label className="check"><input type="checkbox" checked={useBrowser} disabled={busy || pending} onChange={e => setUseBrowser(e.target.checked)} />로그인된 Chrome 사용</label>
     </div>
-    {useBrowser && <div className="inline-actions"><span className="subtle">Chrome 다운로드 폴더 · {downloadDirectory || "자동 감지"}</span><button disabled={busy || starting} onClick={() => void window.bunny.chooseDownloadDirectory({}).then(path => { if (path) setDownloadDirectory(path); }).catch(onError)}>폴더 선택</button></div>}
+    {useBrowser && <div className="inline-actions"><span className="subtle">Chrome 다운로드 폴더 · {downloadDirectory || "자동 감지"}</span><button disabled={busy || pending} onClick={() => void window.bunny.chooseDownloadDirectory({}).then(path => { if (path) setDownloadDirectory(path); }).catch(onError)}>폴더 선택</button></div>}
     <p className="subtle">범위에는 화면의 검색·필터를 적용하지 않습니다. 선택 범위는 숨겨진 선택도 포함합니다.</p>
     <p role="status">{preview ? `대상 ${preview.total}편 · 기존 PDF ${preview.existing}편 · 책·챕터 제외 ${preview.books}편 · 확보 시도 ${preview.eligible}편` : busy ? "진행 중인 작업이 끝난 뒤 새 작업을 시작할 수 있습니다." : "대상 확인 중…"}</p>
     <p className="subtle">{useBrowser ? "현재 Chrome 창의 로그인 상태로 원문을 열고 PDF를 내려받습니다. 처음 실행할 때 Chrome 제어 권한이 필요하며, Apple Events의 JavaScript 허용은 Chrome에서 직접 켜야 합니다. 로그인·사람 인증은 Chrome에서 완료하세요. 논문별 최대 60초 후 공개 원문 보조 경로를 확인합니다." : "공개 원문과 출판사 PDF 주소를 확인합니다. 로그인·사람 인증이 필요한 자료는 원문 페이지에서 직접 내려받으세요."} 창을 닫아도 작업은 계속됩니다.</p>
-    <button className="primary" disabled={busy || starting || !preview?.eligible} onClick={() => void start()}>{starting ? "시작 중…" : "원문 확보 시작"}</button>
+    <button className="primary" disabled={busy || pending || !preview?.eligible} onClick={() => void start()}>{starting ? "시작 중…" : "원문 확보 시작"}</button>
     {!!downloads.length && <label className="download-history">작업 기록
-      <select aria-label="원문 확보 작업 기록" value={runId} onChange={e => { setStarted(null); setRunId(e.target.value); }}>
+      <select aria-label="원문 확보 작업 기록" value={runId} onChange={e => { setStarted(null); setMatched(null); setRunId(e.target.value); }}>
         <option value="">기록 선택</option>
         {downloads.map(r => <option key={r.id} value={r.id}>{new Date(r.createdAt).toLocaleString("ko-KR")} · {r.query}</option>)}
       </select>
     </label>}
-    {run && <DownloadResults run={run} busy={busy || starting} onError={onError} onResume={() => window.bunny.controlRun({ runId: run.id, action: "resume", useBrowser, downloadDirectory: downloadDirectory || undefined })} />}
+    {run?.download && <DownloadResults run={run} busy={busy || pending} onError={onError} onResume={() => window.bunny.controlRun({ runId: run.id, action: "resume", useBrowser, downloadDirectory: downloadDirectory || undefined })} />}
   </Modal>;
 }

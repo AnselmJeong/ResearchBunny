@@ -586,7 +586,7 @@ export function App() {
   };
   const openRun = (run: Run, fallbackSelection: string[] = []) => {
     if (run.projectId !== projectRef.current) return;
-    if (run.download) { setDownloadRunId(run.id); setDialog("download"); return; }
+    if (run.download || run.import?.matchExistingOnly) { setDownloadRunId(run.id); setDialog("download"); return; }
     navigate("run", run.id, {
       filters: { ...run.filters },
       query: run.query,

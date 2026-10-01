@@ -20,7 +20,7 @@ export function DownloadResults({ run, busy, onError, onResume }: {
     <ul className="download-items">
       {failedFirst.slice(0, 100).map(item => <li key={item.workId}>
         <strong>{item.title}</strong>
-        <p className="subtle">{statuses[item.status]} · {item.message}</p>
+        <p className={item.status === "completed" || item.status === "existing" ? "pdf-connected" : "subtle"}>{item.status === "completed" || item.status === "existing" ? "✓ " : ""}{statuses[item.status]} · {item.message}</p>
         {item.status === "failed" && <div className="inline-actions">
           <button onClick={() => void window.bunny.openExternal({ workId: item.workId, kind: "source" }).catch(onError)}>원문 페이지</button>
           <button onClick={() => void window.bunny.openExternal({ workId: item.workId, kind: "doi" }).catch(onError)}>DOI 페이지</button>

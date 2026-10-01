@@ -3309,6 +3309,9 @@ html[data-theme="dark"] .selection-bar .primary {
 .graph-key.seed { background: var(--graph-seed); }
 .graph-key.saved { background: var(--graph-saved); }
 .graph-key.candidate { background: var(--graph-candidate); }
+.pdf-export-folders { list-style: none; padding: 0; max-height: 220px; overflow-y: auto; }
+.pdf-export-folders li { display: flex; justify-content: space-between; gap: 16px; padding: 5px 0; }
+.pdf-export-folders small { flex-shrink: 0; color: var(--muted); }
 .graph-edge-key { position: relative; width: 28px; border-top: 2px solid var(--graph-citation); }
 .graph-edge-key.citation::after {
   content: "";
@@ -3333,6 +3336,10 @@ html[data-theme="dark"] .selection-bar .primary {
 .download-history { margin-top: 20px; }
 .download-results { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
 .download-results progress { width: 100%; height: 8px; accent-color: var(--accent); }
+.pdf-folder-match { margin: 16px 0; padding: 16px; background: var(--soft); border: 1px solid var(--border); border-radius: 10px; }
+.pdf-folder-match progress { width: 100%; accent-color: var(--accent); }
+.pdf-folder-match .import-results ul { max-height: 220px; overflow: auto; overflow-wrap: anywhere; }
+.pdf-connected { color: var(--accent); }
 .download-items { list-style: none; padding: 0; max-height: 340px; overflow: auto; margin: 14px 0; }
 .download-items li { padding: 12px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
 .download-items li p { margin: 6px 0; }

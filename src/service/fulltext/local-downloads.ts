@@ -1,23 +1,12 @@
 import { copyFile, lstat } from "node:fs/promises";
 import { hashFile, extractPdf } from "../interchange/pdf";
-import { normalizeDoi, titleSimilarity } from "../../shared/domain";
 import { AppError, type Work } from "../../shared/types";
 import { downloadedPdfs } from "./chrome";
+import { matchesDownloadedPdf } from "../interchange/pdf-identity";
+export { matchesDownloadedPdf, isAuxiliaryPdf } from "../interchange/pdf-identity";
 
 type Document = Awaited<ReturnType<typeof extractPdf>>;
 type LocalPdf = { path: string; hash: string; size: number; mtime: number; document: Document };
-export function isAuxiliaryPdf(document: Pick<Document, "title" | "text">) {
-  const auxiliary = /^(?:correction to\b|corrigendum\b|erratum\b|supplement(?:ary|al)?(?:\s+information|\s+material|\s+data)?\b|supporting information\b)/i;
-  return auxiliary.test(document.title.trim()) || auxiliary.test(document.text.replace(/^\s*\d*\s*/, ""));
-}
-export function matchesDownloadedPdf(document: Document, work: Work) {
-  if (!document.pages || isAuxiliaryPdf(document)) return false;
-  const score = titleSimilarity(document.title, work.title);
-  const doi = normalizeDoi(work.doi);
-  const dois = document.dois.map(normalizeDoi).filter(Boolean);
-  const doiMatch = !!doi && dois.includes(doi);
-  return (doiMatch && score >= 0.5) || (score >= 0.9 && (!dois.length || doiMatch));
-}
 export class LocalDownloads {
   private files = new Map<string, LocalPdf>();
   constructor(private worker: string) {}

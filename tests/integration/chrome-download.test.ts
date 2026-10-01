@@ -73,12 +73,16 @@ test("browser permission failures are shown once per run and public retrieval co
     async retrieve() { browserCalls++; throw new AppError("CHROME_PERMISSION", "Permission required"); },
   });
   try {
-    const run = jobs.start({projectId, scope:"archive", useBrowser:true});
-    for (let i = 0; i < 1000 && jobs.active.size; i++) await Bun.sleep(5);
+    const run = jobs.start({projectId, scope:"archive", useBrowser:true, downloadDirectory:root});
+    for (let i = 0; i < 4000 && jobs.active.size; i++) await Bun.sleep(5);
     assert.equal(jobs.active.size, 0); assert.equal(browserCalls, 1); assert.equal(warnings, 1);
     assert(db.run(run.id).download!.items.every(item => item.status === "completed"));
     assert.equal(db.run(run.id).download!.useBrowser, true);
-  } finally { db.close(); await rm(root, {recursive:true, force:true}); }
+  } finally {
+      for (const control of jobs.active.values()) control.abort();
+      for (let i = 0; i < 4000 && jobs.active.size; i++) await Bun.sleep(5);
+      db.close(); await rm(root, {recursive:true, force:true});
+    }
 });
 
 test("Chrome errors distinguish closed tabs, timeouts, execution errors and disabled JavaScript", () => {
@@ -117,8 +121,8 @@ for (const code of ["CHROME_CONTROL", "CHROME_TAB_CLOSED", "CHROME_TIMEOUT"]) {
       },
     });
     try {
-      const run = jobs.start({projectId, scope:"archive", useBrowser:true});
-      for (let i = 0; i < 1000 && jobs.active.size; i++) await Bun.sleep(5);
+      const run = jobs.start({projectId, scope:"archive", useBrowser:true, downloadDirectory:root});
+      for (let i = 0; i < 4000 && jobs.active.size; i++) await Bun.sleep(5);
       assert.equal(jobs.active.size, 0);
       assert.equal(browserCalls, 2);
       assert(publicCalls > 0);
@@ -129,7 +133,11 @@ for (const code of ["CHROME_CONTROL", "CHROME_TAB_CLOSED", "CHROME_TIMEOUT"]) {
       assert.equal(final.download!.items[0].message, "Temporary Chrome failure");
       assert.equal(final.download!.items[1].retrievalMethod, "chrome");
       assert.equal(db.state(projectId, final.download!.items[1].workId).note, "preserved");
-    } finally { db.close(); await rm(root, {recursive:true, force:true}); }
+    } finally {
+      for (const control of jobs.active.values()) control.abort();
+      for (let i = 0; i < 4000 && jobs.active.size; i++) await Bun.sleep(5);
+      db.close(); await rm(root, {recursive:true, force:true});
+    }
   });
 }
 
@@ -146,14 +154,18 @@ test("skipping one browser item advances the batch and cancellation is distinct"
     },
   });
   try {
-    const run = jobs.start({projectId, scope:"archive", useBrowser:true});
+    const run = jobs.start({projectId, scope:"archive", useBrowser:true, downloadDirectory:root});
     for (let i = 0; i < 100 && !calls; i++) await Bun.sleep(5);
     jobs.control(run.id, "skip");
-    for (let i = 0; i < 1000 && jobs.active.size; i++) await Bun.sleep(5);
+    for (let i = 0; i < 4000 && jobs.active.size; i++) await Bun.sleep(5);
     assert.equal(jobs.active.size, 0); assert.equal(calls, 2);
     assert.equal(db.run(run.id).status, "completed");
     assert.deepEqual(db.run(run.id).download!.items.map(item => item.status), ["skipped", "completed"]);
-  } finally { db.close(); await rm(root, {recursive:true, force:true}); }
+  } finally {
+      for (const control of jobs.active.values()) control.abort();
+      for (let i = 0; i < 4000 && jobs.active.size; i++) await Bun.sleep(5);
+      db.close(); await rm(root, {recursive:true, force:true});
+    }
 });
 
 test("page download uses browser credentials, bounds response size, and quotes URL and filename as data", () => {
