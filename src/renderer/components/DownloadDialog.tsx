@@ -31,7 +31,7 @@ export function DownloadDialog({ projectId, selected, scope, scopeId, runs, busy
     setPreview(null);
     if (busy) return;
     void window.bunny.pdfDownloadPreview({ projectId, scope: targetScope, scopeId: scopeId || undefined, ids: selected, includeBooks })
-      .then(result => { if (valid) setPreview(result); })
+      .then(result => { if (valid) { setPreview(result); if (result.downloadDirectory) setDownloadDirectory(current => current || result.downloadDirectory!); } })
       .catch(error => { if (valid) onError(error); });
     return () => { valid = false; };
   }, [projectId, targetScope, scopeId, selected, includeBooks, busy, onError]);

@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { blankWork } from "../../src/shared/domain";
 import { AppError } from "../../src/shared/types";
-import { ChromeDownloads, browserFetchScript, type ChromeControl } from "../../src/service/fulltext/chrome";
+import { ChromeDownloads, browserFetchScript, chromeControlError, type ChromeControl } from "../../src/service/fulltext/chrome";
 import { PdfDownloads } from "../../src/service/fulltext/jobs";
 import { FulltextEngine } from "../../src/service/fulltext/engine";
 import { Library } from "../../src/service/db/database";
@@ -16,13 +16,17 @@ const worker = resolve("dist/runtime/pdf-worker.cjs");
 const work = blankWork({title:"Browser session article", url:"https://papers.example.org/article", doi:"10.1234/browser"});
 const tab = {windowId:"7", tabId:"42"};
 
-test("real-session driver collects its unique browser download and preserves old Downloads files", async () => {
+test("real-session driver waits for its blank tab to navigate, collects its download and preserves old files", async () => {
   const root = await mkdtemp(join(tmpdir(), "researchbunny-chrome-"));
   const saved = join(root, "saved.part"), actions: string[] = [];
+  let probes = 0;
   await copyFile(fixturePdf, join(root, "already-here.pdf"));
   const chrome: ChromeControl = {
     async open(url) { actions.push(url); return tab; },
-    async probe() { return {url:work.url!, ready:"complete", challenge:false, links:["http://127.0.0.1/private.pdf", "https://papers.example.org/source.pdf"], state:"done"}; },
+    async probe() {
+      if (++probes <= 2) return {url:"about:blank", ready:"complete", challenge:false, links:[]};
+      return {url:work.url!, ready:"complete", challenge:false, links:["http://127.0.0.1/private.pdf", "https://papers.example.org/source.pdf"], state:"done"};
+    },
     async navigate() { throw new Error("same-origin PDF should use session fetch"); },
     async download(owned, url, filename) { assert.deepEqual(owned, tab); actions.push(url); await writeFile(join(root, filename), pdf); },
     async close(owned) { assert.deepEqual(owned, tab); actions.push("closed"); },
@@ -76,6 +80,58 @@ test("browser permission failures are shown once per run and public retrieval co
     assert.equal(db.run(run.id).download!.useBrowser, true);
   } finally { db.close(); await rm(root, {recursive:true, force:true}); }
 });
+
+test("Chrome errors distinguish closed tabs, timeouts, execution errors and disabled JavaScript", () => {
+  const closed = chromeControlError('execution error: Can’t get tab id 42 of window id 7. (-1728)');
+  assert.equal(closed.code, "CHROME_TAB_CLOSED");
+  assert.equal(closed.retryable, true);
+  assert(closed.message.includes("-1728"));
+  assert.equal(chromeControlError('execution error: AppleEvent timed out. (-1712)').code, "CHROME_TIMEOUT");
+  assert.equal(chromeControlError('', true).code, "CHROME_TIMEOUT");
+  assert.equal(chromeControlError('execution error: JavaScript execution failed. (-10000)').code, "CHROME_CONTROL");
+  assert.equal(chromeControlError('Executing JavaScript through AppleScript is turned off. Allow JavaScript from Apple Events. (-10000)').code, "CHROME_JAVASCRIPT");
+  assert.equal(chromeControlError('Apple Events를 통한 JavaScript가 꺼져 있습니다. (-10000)').code, "CHROME_JAVASCRIPT");
+  assert.equal(chromeControlError('Not authorized to send Apple events to Google Chrome. (-1743)').code, "CHROME_PERMISSION");
+});
+
+for (const code of ["CHROME_CONTROL", "CHROME_TAB_CLOSED", "CHROME_TIMEOUT"]) {
+  test(`${code} affects only one paper and the next paper still downloads through Chrome`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "researchbunny-chrome-recovery-"));
+    const db = new Library(join(root, "library"));
+    const projectId = db.projects()[0].id;
+    for (let i = 0; i < 2; i++) {
+      const w = db.upsert(blankWork({title:`Browser recovery ${i}`, url:`https://papers.example.org/${i}`})).work;
+      db.mutate(projectId, [w.id], {screening:"included", note:"preserved"});
+    }
+    let browserCalls = 0, publicCalls = 0, warnings = 0;
+    const jobs = new PdfDownloads(db, worker, event => { if (event.type === "service-error") warnings++; }, new FulltextEngine(async () => {
+      publicCalls++;
+      return new Response("unavailable", {status:404});
+    }, async () => {}), {
+      async retrieve(_work, path, _signal, _progress, validate) {
+        if (++browserCalls === 1) throw new AppError(code, "Temporary Chrome failure", true);
+        await writeFile(path, pdf);
+        const candidate = {sourceUrl:"https://papers.example.org/real.pdf", doi:null, method:"chrome" as const};
+        await validate(candidate);
+        return candidate;
+      },
+    });
+    try {
+      const run = jobs.start({projectId, scope:"archive", useBrowser:true});
+      for (let i = 0; i < 1000 && jobs.active.size; i++) await Bun.sleep(5);
+      assert.equal(jobs.active.size, 0);
+      assert.equal(browserCalls, 2);
+      assert(publicCalls > 0);
+      assert.equal(warnings, 0);
+      const final = db.run(run.id);
+      assert.equal(final.status, "completed");
+      assert.deepEqual(final.download!.items.map(item => item.status), ["failed", "completed"]);
+      assert.equal(final.download!.items[0].message, "Temporary Chrome failure");
+      assert.equal(final.download!.items[1].retrievalMethod, "chrome");
+      assert.equal(db.state(projectId, final.download!.items[1].workId).note, "preserved");
+    } finally { db.close(); await rm(root, {recursive:true, force:true}); }
+  });
+}
 
 test("skipping one browser item advances the batch and cancellation is distinct", async () => {
   const root = await mkdtemp(join(tmpdir(), "researchbunny-chrome-skip-"));

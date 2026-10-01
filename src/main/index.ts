@@ -55,7 +55,9 @@ async function command(name: Command, input: any): Promise<any> {
         title: "Chrome이 PDF를 저장하는 다운로드 폴더 선택",
         properties: ["openDirectory"],
       });
-      return result.canceled ? null : result.filePaths[0];
+      if (result.canceled) return null;
+      await rpc("rememberDownloadDirectory", {directory:result.filePaths[0]});
+      return result.filePaths[0];
     }
     case "chooseBib": {
       const result = await dialog.showOpenDialog(window!, {

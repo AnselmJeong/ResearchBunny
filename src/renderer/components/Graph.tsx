@@ -108,6 +108,7 @@ export function Graph({
           selector: "node",
           style: {
             "background-color": "#bbc4be",
+            shape: "ellipse",
             width: "data(diameter)",
             height: "data(diameter)",
             label: "data(label)",
@@ -128,13 +129,12 @@ export function Graph({
         },
         {
           selector: ".saved",
-          style: { "background-color": "#5f9380", shape: "round-rectangle" },
+          style: { "background-color": "#5f9380" },
         },
         {
           selector: ".seed",
           style: {
             "background-color": "#28644e",
-            shape: "diamond",
           },
         },
         {

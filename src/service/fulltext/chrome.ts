@@ -29,11 +29,33 @@ const APPLESCRIPT = `on run argv
     if op is "open" then
       if (count of windows) is 0 then make new window
       set w to front window
-      tell w to set t to make new tab with properties {URL:(item 2 of argv)}
+      tell w to set t to make new tab with properties {URL:"about:blank"}
+      set ownedIds to ((id of w) as text) & "," & ((id of t) as text)
+      set URL of t to item 2 of argv
       activate
-      return ((id of w) as text) & "," & ((id of t) as text)
+      return ownedIds
     end if
-    set t to tab id ((item 3 of argv) as integer) of window id ((item 2 of argv) as integer)
+    set ownedTabId to (item 3 of argv) as integer
+    set t to missing value
+    try
+      set t to tab id ownedTabId of window id ((item 2 of argv) as integer)
+      get id of t
+    on error number -1728
+      set t to missing value
+    end try
+    -- A user can move our tab to another window while signing in.
+    if t is missing value then
+      repeat with w in windows
+        try
+          set t to tab id ownedTabId of w
+          get id of t
+          exit repeat
+        on error number -1728
+          set t to missing value
+        end try
+      end repeat
+    end if
+    if t is missing value then error "ResearchBunny task tab is closed" number -1728
     if op is "navigate" then
       set URL of t to item 4 of argv
     else if op is "js" then
@@ -85,6 +107,19 @@ export function browserFetchScript(url: string, filename: string) {
     return 'started';
   })()`;
 }
+export function chromeControlError(stderr: string, timedOut = false) {
+  const number = /\((-\d+)\)\s*$/.exec(stderr.trim())?.[1];
+  const detail = number ? ` (Apple Events ${number})` : '';
+  if (number === '-1743' || /not authorized|not permitted|허용되지|권한/i.test(stderr))
+    return new AppError('CHROME_PERMISSION', 'Chrome 제어 권한이 필요합니다. macOS 개인정보 보호 및 보안 → 자동화에서 ResearchBunny의 Chrome 제어를 허용하세요.');
+  if (/Allow JavaScript from Apple Events|JavaScript.*(?:turned off|disabled|비활성|꺼져)|Apple Events.*(?:JavaScript.*허용|꺼져)/i.test(stderr))
+    return new AppError('CHROME_JAVASCRIPT', 'Chrome의 보기 → 개발자 → Apple Events의 JavaScript 허용이 필요합니다. 설정 후 재시도하세요.');
+  if (number === '-1728' || number === '-1719')
+    return new AppError('CHROME_TAB_CLOSED', 'Chrome 작업 탭이 닫혔거나 사라졌습니다. 다음 문헌은 새 탭에서 계속 시도합니다.' + detail, true);
+  if (timedOut || number === '-1712')
+    return new AppError('CHROME_TIMEOUT', 'Chrome 응답 대기 시간이 초과되었습니다. 다음 문헌은 새 탭에서 계속 시도합니다.' + detail, true);
+  return new AppError('CHROME_CONTROL', 'Chrome 탭 제어 중 오류가 발생했습니다. 다음 문헌은 새 탭에서 계속 시도합니다.' + detail, true);
+}
 function script(args: string[], signal?: AbortSignal, timeout = 10000): Promise<string> {
   signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
@@ -96,12 +131,7 @@ function script(args: string[], signal?: AbortSignal, timeout = 10000): Promise<
     child.once('close', code => {
       if (signal?.aborted) { reject(signal.reason); return; }
       if (code === 0) resolve(stdout.trim());
-      else reject(new AppError(/-1743|not authorized|not permitted|허용되지|권한/i.test(stderr) ? 'CHROME_PERMISSION' : /javascript|java script/i.test(stderr) ? 'CHROME_JAVASCRIPT' : 'CHROME_CONTROL',
-        /-1743|not authorized|not permitted|허용되지|권한/i.test(stderr)
-          ? 'Chrome 제어 권한이 필요합니다. macOS 개인정보 보호 및 보안 → 자동화에서 ResearchBunny의 Chrome 제어를 허용하세요.'
-          : /javascript|java script/i.test(stderr)
-            ? 'Chrome의 보기 → 개발자 → Apple Events의 JavaScript 허용이 필요합니다. 설정 후 재시도하세요.'
-            : 'Chrome 탭을 제어하지 못했습니다. Chrome 창과 다운로드 설정을 확인하세요.'));
+      else reject(chromeControlError(stderr, child.killed));
     });
     child.stdin.on('error', () => {});
     child.stdin.end(APPLESCRIPT);
@@ -138,9 +168,17 @@ export async function chromeDownloadDirectories(home = homedir()) {
       try {
         const prefs = JSON.parse(await readFile(join(root, profile, 'Preferences'), 'utf8'));
         if (typeof prefs.download?.default_directory === 'string' && prefs.download.default_directory.startsWith('/')) directories.add(prefs.download.default_directory);
-      } catch { /* A profile may have been removed. */ }
+      } catch (error) {
+        if (['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code || '')) throw error;
+        // A profile may have been removed.
+      }
     }
-  } catch { /* Default Downloads remains usable. */ }
+  } catch (error) {
+    if (['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code || ''))
+      throw new AppError('CHROME_DIRECTORY', 'Chrome 저장 폴더를 자동 감지할 권한이 없습니다. 원문 찾기에서 실제 다운로드 폴더를 한 번 선택하세요. 이후 자동으로 기억합니다.');
+    if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code || ''))
+      throw new AppError('CHROME_DIRECTORY', 'Chrome 저장 폴더 설정을 읽지 못했습니다. 원문 찾기에서 실제 다운로드 폴더를 한 번 선택하세요. 이후 자동으로 기억합니다.');
+  }
   return [...directories];
 }
 type FileStamp = { size: number; mtime: number };
@@ -175,7 +213,12 @@ export class ChromeDownloads implements BrowserRetrieval {
     const itemSignal = AbortSignal.any([signal, AbortSignal.timeout(this.budgetMs)]);
     progress('Chrome 다운로드 폴더 확인');
     const dirs = directory ? [directory] : await untilAborted(this.directories(), AbortSignal.any([itemSignal, AbortSignal.timeout(2000)]))
-      .catch(() => { itemSignal.throwIfAborted(); return [join(homedir(), 'Downloads')]; });
+      .catch(error => {
+        itemSignal.throwIfAborted();
+        if (error instanceof AppError) throw error;
+        throw new AppError('CHROME_DIRECTORY', 'Chrome 저장 폴더 자동 감지가 지연됐습니다. 원문 찾기에서 실제 다운로드 폴더를 한 번 선택하세요.');
+      });
+    progress('Chrome 저장 폴더 · ' + dirs.join(' · '));
     const baseline = await untilAborted(downloadedPdfs(dirs), itemSignal);
     const filename = `researchbunny-${randomUUID()}.pdf`;
     const tried = new Set<string>(), rejected = new Set<string>();
@@ -198,6 +241,11 @@ export class ChromeDownloads implements BrowserRetrieval {
         }
         previousFiles = files;
         const info = await this.chrome.probe(tab, itemSignal);
+        // Chrome may still expose the new tab's blank page before navigation commits.
+        if (!lastUrl && info.url === 'about:blank') {
+          await delay(this.pollMs, undefined, {signal:itemSignal});
+          continue;
+        }
         const current = publicUrl(info.url);
         if (!current) throw new AppError('CHROME_URL', 'Chrome의 원문 주소를 확인할 수 없습니다.');
         if (current !== lastUrl) { lastUrl = current; stableSince = Date.now(); exhaustedSince = 0; }

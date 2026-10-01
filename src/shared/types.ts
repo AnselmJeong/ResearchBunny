@@ -224,6 +224,7 @@ export interface Run {
     includeBooks: boolean;
     useBrowser?: boolean;
     downloadDirectory?: string;
+    observedDirectories?: string[];
   };
 }
 export type PdfDownloadScope = "archive" | "selected" | "topic" | "unclassified" | "collection";
@@ -234,12 +235,15 @@ export interface PdfDownloadItem {
   message: string;
   sourceUrl?: string;
   retrievalMethod?: "chrome" | "http";
+  downloadedPath?: string;
+  errorCode?: string;
 }
 export interface PdfDownloadPreview {
   total: number;
   existing: number;
   books: number;
   eligible: number;
+  downloadDirectory?: string;
 }
 export interface Attachment {
   id: string;

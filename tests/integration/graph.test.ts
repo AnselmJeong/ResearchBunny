@@ -50,11 +50,9 @@ test("log scaling keeps empty and sparse graphs usable and compresses citation o
   }
 });
 
-test("seed and saved nodes resize on refresh while retaining shape, selection and position", () => {
+test("seed and saved circles resize on refresh while retaining selection and position", () => {
   const cy = cytoscape({ headless: true, styleEnabled: true, style: [
-    { selector: "node", style: { width: "data(diameter)", height: "data(diameter)" } },
-    { selector: "node.saved", style: { shape: "round-rectangle" } },
-    { selector: "node.seed", style: { shape: "diamond" } },
+    { selector: "node", style: { shape: "ellipse", width: "data(diameter)", height: "data(diameter)" } },
   ] });
   try {
     const definitions = [
@@ -71,8 +69,8 @@ test("seed and saved nodes resize on refresh while retaining shape, selection an
     ]);
     expect(node.width()).toBe(64);
     expect(node.height()).toBe(64);
-    expect(node.style("shape")).toBe("diamond");
-    expect(cy.getElementById("saved").style("shape")).toBe("round-rectangle");
+    expect(node.style("shape")).toBe("ellipse");
+    expect(cy.getElementById("saved").style("shape")).toBe("ellipse");
     expect(node.position()).toEqual({ x: 44, y: 55 });
     expect(node.selected()).toBe(true);
   } finally { cy.destroy(); }
@@ -85,15 +83,14 @@ test("topic colors distinguish classified, unclassified and unsaved works withou
   expect(archiveNodeColor({ ...saved, archiveTopicId: undefined }, topics)).toBe(UNCLASSIFIED_COLOR);
   expect(archiveNodeColor({ ...saved, state: defaultState() }, topics)).toBeNull();
   const cy = cytoscape({ headless: true, styleEnabled: true, style: [
-    { selector: "node", style: { "background-color": "#111111" } },
-    { selector: "node.seed", style: { shape: "diamond" } },
+    { selector: "node", style: { shape: "ellipse", "background-color": "#111111" } },
     { selector: "node.topic-colored", style: { "background-color": "data(topicColor)" } },
   ] });
   try {
     reconcileGraph(cy, [{ data: { id: "a", topicColor: TOPIC_COLORS[0] }, classes: "saved seed topic-colored" }]);
     const node = cy.getElementById("a").position({ x: 44, y: 55 }).select();
     expect(node.style("background-color")).toBe("rgb(78,145,208)");
-    expect(node.style("shape")).toBe("diamond");
+    expect(node.style("shape")).toBe("ellipse");
     reconcileGraph(cy, [{ data: { id: "a", topicColor: TOPIC_COLORS[1] }, classes: "saved seed topic-colored" }]);
     expect(node.style("background-color")).toBe("rgb(225,147,66)");
     expect(node.position()).toEqual({ x: 44, y: 55 });

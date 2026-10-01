@@ -3306,8 +3306,8 @@ html[data-theme="dark"] .selection-bar .primary {
   height: 10px;
   border-radius: 50%;
 }
-.graph-key.seed { background: var(--graph-seed); border-radius: 0; transform: rotate(45deg); }
-.graph-key.saved { background: var(--graph-saved); border-radius: 2px; }
+.graph-key.seed { background: var(--graph-seed); }
+.graph-key.saved { background: var(--graph-saved); }
 .graph-key.candidate { background: var(--graph-candidate); }
 .graph-edge-key { position: relative; width: 28px; border-top: 2px solid var(--graph-citation); }
 .graph-edge-key.citation::after {

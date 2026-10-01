@@ -79,7 +79,10 @@ export class Service {
     switch (command) {
       case "init":
         this.secrets = args;
+        this.downloads.startRecoveryMonitor(() => this.busy());
         return true;
+      case "rememberDownloadDirectory":
+        return this.downloads.rememberDirectory(args.directory);
       case "snapshot": {
         const projectId = args.projectId || this.db.projects()[0].id;
         this.db.project(projectId);
@@ -389,6 +392,7 @@ export class Service {
         if (this.busy()) throw new AppError("BUSY", "작업 종료 후 되돌리세요.");
         return undoMerge(this.db);
       case "shutdown":
+        this.downloads.stopRecoveryMonitor();
         this.codex.close();
         for (const control of [
           ...this.discovery.active.values(),
