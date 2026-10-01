@@ -24,6 +24,11 @@ const aboutCredit = spawnSync("/usr/bin/plutil", [
   "developed by Anselm Jeong", join(target, "Contents", "Info.plist"),
 ], { stdio: "inherit" });
 if (aboutCredit.status !== 0) process.exit(1);
+const automationUsage = spawnSync("/usr/bin/plutil", [
+  "-replace", "NSAppleEventsUsageDescription", "-string",
+  "로그인된 Google Chrome에서 논문 원문을 열고 PDF를 다운로드합니다.", join(target, "Contents", "Info.plist"),
+], { stdio: "inherit" });
+if (automationUsage.status !== 0) process.exit(1);
 for (const args of [
   ["--force", "--deep", "--sign", "-", resolve(target)],
   ["--verify", "--deep", "--strict", resolve(target)],

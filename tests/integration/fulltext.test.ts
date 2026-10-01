@@ -88,6 +88,22 @@ test("Crossref lookup rejects a wrong author/year and uses a confident DOI only"
   assert.equal(await engine(async () => json({ message: { items: [{ ...match, issued: { "date-parts": [[2010]] } }] } })).lookupDoi(w, new AbortController().signal), null);
 });
 
+test("a stalled response body or DNS lookup cannot hold later PDF candidates", () => fixture(async (_db, root) => {
+  const w = blankWork({oaUrl:"https://papers.example.org/stall.pdf", raw:{locations:[{pdf_url:"https://papers.example.org/good.pdf"}]}});
+  const path = join(root, "bounded.part");
+  let reads = 0;
+  const stalled = new FulltextEngine(async url => {
+    if (url.endsWith("good.pdf")) return new Response(pdf);
+    return new Response(new ReadableStream({start(c) { c.enqueue(pdf.subarray(0, 5)); }, cancel() { return new Promise(() => {}); }}));
+  }, async () => {}, {requestMs:20, itemMs:500});
+  assert.equal((await stalled.retrieve(w, path, new AbortController().signal, () => {})).sourceUrl, "https://papers.example.org/good.pdf");
+  const dns = new FulltextEngine(async () => new Response(pdf), async () => {
+    if (++reads === 1) await new Promise(() => {});
+  }, {requestMs:20, itemMs:500});
+  assert.equal((await dns.retrieve(w, path, new AbortController().signal, () => {})).sourceUrl, "https://papers.example.org/good.pdf");
+  assert.deepEqual(await readFile(path), pdf);
+}));
+
 test("hash attachments preserve classification, notes, pre-2010 papers, shared projects and backup/restore", () => fixture(async (db, root) => {
   const projectId = db.projects()[0].id;
   const w = add(db, projectId, "one");

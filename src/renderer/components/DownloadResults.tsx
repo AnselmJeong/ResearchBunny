@@ -14,7 +14,7 @@ export function DownloadResults({ run, busy, onError, onResume }: {
     <p role="status" aria-live="polite">{run.message}</p>
     <progress aria-label="원문 확보 진행" max={items.length || 1} value={items.filter(i => !["pending", "running"].includes(i.status)).length} />
     <div className="inline-actions">
-      {active ? <button onClick={() => void window.bunny.controlRun({ runId: run.id, action: "cancel" }).catch(onError)}>작업 취소</button>
+      {active ? <><button onClick={() => void window.bunny.controlRun({ runId: run.id, action: "skip" }).catch(onError)}>현재 문헌 건너뛰기</button><button onClick={() => void window.bunny.controlRun({ runId: run.id, action: "cancel" }).catch(onError)}>작업 취소</button></>
         : unfinished && <button disabled={busy} onClick={() => void onResume().catch(onError)}>미처리·실패 항목 재시도</button>}
     </div>
     <ul className="download-items">

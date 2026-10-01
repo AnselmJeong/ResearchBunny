@@ -70,6 +70,7 @@ export function extractPdf(
   workerPath: string,
   signal: AbortSignal,
 ): Promise<Extracted> {
+  signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     const worker = fork(workerPath, [path], {
       execPath: process.execPath,

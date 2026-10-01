@@ -222,6 +222,8 @@ export interface Run {
   download?: {
     items: PdfDownloadItem[];
     includeBooks: boolean;
+    useBrowser?: boolean;
+    downloadDirectory?: string;
   };
 }
 export type PdfDownloadScope = "archive" | "selected" | "topic" | "unclassified" | "collection";
@@ -231,6 +233,7 @@ export interface PdfDownloadItem {
   status: "pending" | "running" | "completed" | "existing" | "skipped" | "failed";
   message: string;
   sourceUrl?: string;
+  retrievalMethod?: "chrome" | "http";
 }
 export interface PdfDownloadPreview {
   total: number;
@@ -249,6 +252,7 @@ export interface Attachment {
   status: string;
   exists: boolean;
   sourceUrl?: string;
+  retrievalMethod?: "chrome" | "http";
   fetchedAt?: string;
   version?: string;
 }

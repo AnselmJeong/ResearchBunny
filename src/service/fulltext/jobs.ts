@@ -4,6 +4,8 @@ import { join } from "node:path";
 import type { Library } from "../db/database";
 import { extractPdf, hashFile, verifyPdf } from "../interchange/pdf";
 import { cleanDoi, FulltextEngine, isBook } from "./engine";
+import { ChromeDownloads, type BrowserRetrieval } from "./chrome";
+import type { RetrievedPdf } from "./engine";
 import { titleSimilarity } from "../../shared/domain";
 import { AppError, DEFAULT_FILTERS, now, type AppEvent, type PdfDownloadItem, type PdfDownloadPreview, type PdfDownloadScope, type Run, type Work } from "../../shared/types";
 
@@ -13,14 +15,18 @@ export interface DownloadTarget {
   ids?: string[];
   scopeId?: string;
   includeBooks?: boolean;
+  useBrowser?: boolean;
+  downloadDirectory?: string;
 }
 export class PdfDownloads {
   active = new Map<string, AbortController>();
+  private currentItems = new Map<string, AbortController>();
   constructor(
     private db: Library,
     private workerPath: string,
     private emit: (event: AppEvent) => void,
     private engine = new FulltextEngine(),
+    private browser: BrowserRetrieval = new ChromeDownloads(),
   ) {}
   private targets(target: DownloadTarget): Work[] {
     this.db.project(target.projectId);
@@ -74,18 +80,21 @@ export class PdfDownloads {
       status: "queued", createdAt: now(), updatedAt: now(), calls: 0, maxCalls: 0,
       maxCandidates: works.length, total: works.length, count: 0, message: "원문 확보 준비",
       tasks: [], rankingVersion: "fulltext-v1",
-      download: { includeBooks: !!target.includeBooks, items: works.map(w => ({ workId: w.id, title: w.title, status: "pending", message: "대기 중" })) },
+      download: { includeBooks: !!target.includeBooks, useBrowser: !!target.useBrowser, downloadDirectory: target.downloadDirectory, items: works.map(w => ({ workId: w.id, title: w.title, status: "pending", message: "대기 중" })) },
     };
     this.db.saveRun(run);
     void this.execute(run.id);
     return run;
   }
-  control(id: string, action: string) {
+  control(id: string, action: string, useBrowser?: boolean, downloadDirectory?: string) {
     if (action === "cancel") { this.active.get(id)?.abort(); return; }
+    if (action === "skip") { this.currentItems.get(id)?.abort(new AppError("DOWNLOAD_SKIPPED", "사용자가 이 문헌을 건너뛰었습니다.")); return; }
     if (action !== "resume") throw new AppError("INVALID", "원문 확보는 재시도로 이어갈 수 있습니다.");
     if (this.active.size) throw new AppError("BUSY", "원문 확보 작업이 진행 중입니다.");
     const run = this.db.run(id);
     if (!run.download) throw new AppError("INVALID", "원문 확보 작업이 아닙니다.");
+    if (useBrowser !== undefined) run.download.useBrowser = useBrowser;
+    if (downloadDirectory !== undefined) run.download.downloadDirectory = downloadDirectory;
     for (const item of run.download.items) {
       if (["pending", "running", "failed"].includes(item.status)) {
         item.status = "pending"; item.message = "재시도 대기";
@@ -111,6 +120,7 @@ export class PdfDownloads {
     const signal = control.signal;
     const run = this.db.run(id);
     let current: PdfDownloadItem | undefined;
+    let browserError: AppError | undefined;
     run.status = "running";
     this.save(run);
     try {
@@ -120,60 +130,85 @@ export class PdfDownloads {
         signal.throwIfAborted();
         if (item.status !== "pending") continue;
         current = item;
+        const itemControl = new AbortController();
+        this.currentItems.set(id, itemControl);
+        const itemSignal = AbortSignal.any([signal, itemControl.signal]);
         const path = join(staging, randomUUID() + ".part");
         try {
           if (!this.isArchived(run.projectId, item.workId)) {
             item.status = "skipped"; item.message = "아카이브에서 제거된 문헌"; continue;
           }
           const work = this.db.get(item.workId);
-          if (await this.existing(work.id, signal)) { item.status = "existing"; item.message = "검증한 보관 PDF 있음"; continue; }
+          if (await this.existing(work.id, itemSignal)) { item.status = "existing"; item.message = "검증한 보관 PDF 있음"; continue; }
           if (!run.download!.includeBooks && isBook(work)) { item.status = "skipped"; item.message = "책·챕터 기본 제외"; continue; }
           item.status = "running";
           run.message = `원문 ${index + 1}/${run.total} · ${item.title}`;
           this.save(run);
-          const retrieved = await this.engine.retrieve(work, path, signal, message => {
+          const progress = (message: string) => {
             item.message = message;
             run.message = `${index + 1}/${run.total} · ${message} · ${item.title}`;
             this.save(run);
-          }, async candidate => {
+          };
+          const validate = async (candidate: RetrievedPdf) => {
             await verifyPdf(path);
-            const inspected = await extractPdf(path, this.workerPath, signal);
+            const inspected = await extractPdf(path, this.workerPath, itemSignal);
             if (!inspected.pages) throw new AppError("INVALID_PDF", "PDF가 손상·암호화되어 있거나 내용을 검증할 수 없습니다.");
             const expectedDoi = candidate.doi || cleanDoi(work.doi);
             const detected = inspected.dois.map(cleanDoi).filter(Boolean);
+            if (candidate.requireIdentity && !(expectedDoi && detected.includes(expectedDoi)) && titleSimilarity(work.title, inspected.title) < 0.7)
+              throw new AppError("WRONG_PDF", "새 다운로드의 DOI·제목이 대상 문헌과 일치하지 않아 첨부하지 않았습니다.");
             if (expectedDoi && detected.length === 1 && detected[0] !== expectedDoi && titleSimilarity(work.title, inspected.title) < 0.5)
               throw new AppError("WRONG_PDF", "PDF의 DOI·제목이 대상 논문과 다릅니다. 직접 확인 후 연결하세요.");
-          });
-          const hash = await hashFile(path, signal);
+          };
+          let retrieved: RetrievedPdf | undefined;
+          let chromeFailure = browserError;
+          if (run.download!.useBrowser && !browserError) {
+            try { retrieved = await this.browser.retrieve(work, path, itemSignal, progress, validate, run.download!.downloadDirectory); }
+            catch (error) {
+              itemSignal.throwIfAborted();
+              chromeFailure = error instanceof AppError ? error : new AppError("CHROME_TIMEOUT", "Chrome 원문 확보 시간이 초과되었습니다.");
+              if (["CHROME_PERMISSION", "CHROME_JAVASCRIPT", "CHROME_CONTROL", "CHROME_DIRECTORY"].includes(chromeFailure.code)) {
+                browserError = chromeFailure;
+                this.emit({type:"service-error", message:chromeFailure.message});
+              }
+              progress("공개 원문 보조 경로 확인");
+            }
+          }
+          if (!retrieved) {
+            try { retrieved = await this.engine.retrieve(work, path, itemSignal, progress, validate); }
+            catch (error) { if (chromeFailure) throw chromeFailure; throw error; }
+          }
+          const hash = await hashFile(path, itemSignal);
           const size = (await stat(path)).size;
           const destination = join(this.db.root, "attachments", hash + ".pdf");
-          signal.throwIfAborted();
+          itemSignal.throwIfAborted();
           // Repair a missing/corrupt managed copy; never overwrite a linked source file.
-          if (await hashFile(destination, signal).catch(() => null) !== hash) {
-            signal.throwIfAborted();
+          if (await hashFile(destination, itemSignal).catch(() => null) !== hash) {
+            itemSignal.throwIfAborted();
             await rename(path, destination);
           }
-          signal.throwIfAborted();
+          itemSignal.throwIfAborted();
           if (!this.isArchived(run.projectId, work.id)) { item.status = "skipped"; item.message = "확보 중 아카이브에서 제거됨"; continue; }
           this.db.transaction(() => {
             const attachment = this.db.attachments(work.id).find(a => a.hash === hash);
             this.db.saveAttachment({
               id: attachment?.id || randomUUID(), workId: work.id, name: work.title + ".pdf",
               path: destination, hash, mode: "managed", size, status: "원문 확보 · PDF 검증됨", exists: true,
-              sourceUrl: retrieved.sourceUrl, fetchedAt: now(), version: retrieved.version,
+              sourceUrl: retrieved.sourceUrl, retrievalMethod:retrieved.method, fetchedAt: now(), version: retrieved.version,
             });
-            item.status = "completed"; item.message = "PDF 확보·검증·첨부 완료"; item.sourceUrl = retrieved.sourceUrl;
+            item.status = "completed"; item.message = `${retrieved.method === "chrome" ? "Chrome에서 " : ""}PDF 확보·검증·첨부 완료`; item.sourceUrl = retrieved.sourceUrl; item.retrievalMethod = retrieved.method;
             this.save(run, "changed");
           });
         } catch (error) {
           signal.throwIfAborted();
-          item.status = "failed";
-          item.message = error instanceof AppError ? error.message : (error as Error)?.name === "TimeoutError"
+          item.status = itemControl.signal.aborted ? "skipped" : "failed";
+          item.message = itemControl.signal.aborted ? "사용자가 이 문헌을 건너뛰었습니다." : error instanceof AppError ? error.message : (error as Error)?.name === "TimeoutError"
             ? "논문당 조회 시간이 초과되었습니다. 재시도하거나 원문을 직접 연결하세요."
             : "원문 서버 연결 또는 PDF 저장·검증에 실패했습니다. 재시도하거나 직접 연결하세요.";
         } finally {
+          this.currentItems.delete(id);
           await rm(path, { force: true });
-          this.save(run, "changed");
+          this.save(run, "progress");
         }
       }
       run.status = "completed";

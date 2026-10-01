@@ -50,6 +50,13 @@ function atomicJson(path: string, value: unknown) {
 async function command(name: Command, input: any): Promise<any> {
   const args = (schemas[name] as any).parse(input);
   switch (name) {
+    case "chooseDownloadDirectory": {
+      const result = await dialog.showOpenDialog(window!, {
+        title: "Chrome이 PDF를 저장하는 다운로드 폴더 선택",
+        properties: ["openDirectory"],
+      });
+      return result.canceled ? null : result.filePaths[0];
+    }
     case "chooseBib": {
       const result = await dialog.showOpenDialog(window!, {
         properties: ["openFile"],

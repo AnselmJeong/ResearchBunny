@@ -1,4 +1,5 @@
 import { resultWindow } from "../shared/graph";
+import { refreshQueue } from "../shared/refresh-queue";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -264,47 +265,57 @@ export function App() {
     [flash],
   );
   const refresh = useCallback(() => setRevision((r) => r + 1), []);
+  const snapshotRefresh = useRef<ReturnType<typeof refreshQueue> | null>(null);
   useEffect(
     () =>
       window.bunny.onEvent((event) => {
         if (event.type === "service-error")
           flash(event.message || "자료 서비스 오류", true);
-        refresh();
+        // Source probes change progress, not the library list or graph.
+        if (event.type === "progress") snapshotRefresh.current?.request();
+        else refresh();
       }),
     [refresh, flash],
   );
   useEffect(() => {
     let valid = true;
-    void window.bunny
-      .snapshot(projectId ? { projectId } : {})
-      .then((data) => {
-        if (!valid) return;
-        setSnapshot(data);
-        const current = projectId || data.projects[0].id;
-        if (!projectId) {
-          setProjectId(current);
-          return;
-        }
-        document.documentElement.dataset.theme = data.settings.theme;
-        if (initialized.current !== current) {
-          initialized.current = current;
-          const restored = restoreNavigation(data.ui);
-          navigationRef.current = restored;
-          setNavigation(restored);
-          applyView(restored.views[restored.keys[restored.index]]);
-          setHydratedProject(current);
-          setQuestion(
-            data.projects.find((p) => p.id === current)?.question || "",
-          );
-          setList(EMPTY);
-          setRevision((r) => r + 1);
-        }
-      })
-      .catch(onError);
+    let activeJob = true;
+    const queue = refreshQueue(async () => {
+      const data = await window.bunny.snapshot(projectId ? { projectId } : {});
+      if (!valid) return;
+      activeJob = data.runs.some(r => ["running", "queued"].includes(r.status)) || data.classification.job?.status === "running";
+      setSnapshot(data);
+      const current = projectId || data.projects[0].id;
+      if (!projectId) {
+        setProjectId(current);
+        return;
+      }
+      document.documentElement.dataset.theme = data.settings.theme;
+      if (initialized.current !== current) {
+        initialized.current = current;
+        const restored = restoreNavigation(data.ui);
+        navigationRef.current = restored;
+        setNavigation(restored);
+        applyView(restored.views[restored.keys[restored.index]]);
+        setHydratedProject(current);
+        setQuestion(
+          data.projects.find((p) => p.id === current)?.question || "",
+        );
+        setList(EMPTY);
+        setRevision((r) => r + 1);
+      }
+    }, onError);
+    snapshotRefresh.current = queue;
+    queue.request();
+    // Recover a missed progress/completion event from the persisted job state.
+    const poll = setInterval(() => { if (activeJob) queue.request(); }, 2000);
     return () => {
       valid = false;
+      queue.dispose();
+      clearInterval(poll);
     };
-  }, [projectId, revision, onError]);
+  }, [projectId, onError]);
+  useEffect(() => { snapshotRefresh.current?.request(); }, [revision]);
   useEffect(() => {
     if (!projectId || initialized.current !== projectId) return;
     let valid = true;

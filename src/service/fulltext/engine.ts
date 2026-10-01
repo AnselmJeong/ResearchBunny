@@ -94,52 +94,63 @@ async function readLimited(response: Response, limit: number, signal: AbortSigna
   try {
     while (true) {
       signal.throwIfAborted();
-      const { value, done } = await reader.read();
+      const { value, done } = await untilAborted(reader.read(), signal);
       if (done) break;
       size += value.length;
       if (size > limit) throw new AppError("DOWNLOAD_SIZE", "응답 크기 제한을 초과했습니다.");
       chunks.push(value);
     }
     return Buffer.concat(chunks);
-  } finally { await reader.cancel().catch(() => {}); }
+  } finally { void reader.cancel().catch(() => {}); }
 }
-export interface RetrievedPdf { sourceUrl: string; doi: string | null; version?: string }
+// DNS and body readers do not always honor the fetch AbortSignal. Bound the
+// awaited operation as well, so one server cannot hold the batch indefinitely.
+export function untilAborted<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, {once:true});
+    pending.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+    if (signal.aborted) abort();
+  });
+}
+export interface RetrievedPdf { sourceUrl: string; doi: string | null; version?: string; requireIdentity?: boolean; method?: "chrome" | "http" }
 export class FulltextEngine {
   constructor(
     private fetcher: DownloadFetch = fetch,
     private networkCheck: (url: string) => Promise<void> = checkAddress,
+    private limits = {requestMs:15000, itemMs:90000},
   ) {}
-  private async request(value: string, signal: AbortSignal): Promise<Response> {
+  private async request(value: string, signal: AbortSignal): Promise<{response:Response; signal:AbortSignal}> {
     let url = publicUrl(value);
-    const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(15000)]);
+    const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(this.limits.requestMs)]);
     for (let i = 0; url && i < 6; i++) {
       requestSignal.throwIfAborted();
-      await this.networkCheck(url);
+      await untilAborted(this.networkCheck(url), requestSignal);
       requestSignal.throwIfAborted();
-      const response = await this.fetcher(url, { headers, signal: requestSignal, redirect: "manual" });
+      const response = await untilAborted(this.fetcher(url, { headers, signal: requestSignal, redirect: "manual" }), requestSignal);
       if (response.status >= 300 && response.status < 400) {
         const next = publicUrl(response.headers.get("location"), url);
-        await response.body?.cancel();
+        void response.body?.cancel().catch(() => {});
         url = next;
         continue;
       }
       if (!response.ok) {
-        await response.body?.cancel();
+        void response.body?.cancel().catch(() => {});
         throw new AppError("DOWNLOAD_HTTP", response.status === 401 || response.status === 403
           ? `로그인·접근 권한 또는 사람 인증이 필요합니다 (HTTP ${response.status}).`
           : `원문 서버 응답 오류 (HTTP ${response.status}).`);
       }
       // Mock responses may have no URL; resolve relative PDF links against the final request.
       if (!response.url) Object.defineProperty(response, "url", { value: url });
-      return response;
+      return {response, signal:requestSignal};
     }
     throw new AppError("DOWNLOAD_REDIRECT", "안전한 원문 주소를 찾지 못했거나 리디렉션이 너무 많습니다.");
   }
   private async json(url: string, signal: AbortSignal) {
     for (let i = 0; i < 2; i++) {
       try {
-        const r = await this.request(url, signal);
-        return JSON.parse((await readLimited(r, MAX_HTML_BYTES, signal)).toString("utf8"));
+        const {response, signal:requestSignal} = await this.request(url, signal);
+        return JSON.parse((await readLimited(response, MAX_HTML_BYTES, requestSignal)).toString("utf8"));
       } catch (error) {
         signal.throwIfAborted();
         if (i) throw error;
@@ -165,7 +176,7 @@ export class FulltextEngine {
   }
   async retrieve(work: Work, path: string, signal: AbortSignal, progress: (message: string) => void,
     validate?: (retrieved: RetrievedPdf) => Promise<void>): Promise<RetrievedPdf> {
-    const itemSignal = AbortSignal.any([signal, AbortSignal.timeout(90000)]);
+    const itemSignal = AbortSignal.any([signal, AbortSignal.timeout(this.limits.itemMs)]);
     let doi = cleanDoi(work.doi);
     const raw = work.raw as any;
     const locations = [raw?.best_oa_location, ...(Array.isArray(raw?.locations) ? raw.locations : [])];
@@ -178,7 +189,7 @@ export class FulltextEngine {
       tried.add(url);
       progress(`원문 확인 · ${new URL(url).hostname}`);
       try {
-        const response = await this.request(url, itemSignal);
+        const {response, signal:requestSignal} = await this.request(url, itemSignal);
         const reader = response.body?.getReader();
         if (!reader) throw new AppError("DOWNLOAD_EMPTY", "원문 응답이 비어 있습니다.");
         const prefix: Uint8Array[] = [];
@@ -187,7 +198,7 @@ export class FulltextEngine {
         let file: Awaited<ReturnType<typeof open>> | undefined;
         try {
           while (size < 1024) {
-            const chunk = await reader.read();
+            const chunk = await untilAborted(reader.read(), requestSignal);
             if (chunk.done) { ended = true; break; }
             size += chunk.value.length;
             prefix.push(chunk.value);
@@ -198,7 +209,7 @@ export class FulltextEngine {
             const parts = [head];
             while (!ended && size <= MAX_HTML_BYTES) {
               itemSignal.throwIfAborted();
-              const chunk = await reader.read();
+              const chunk = await untilAborted(reader.read(), requestSignal);
               if (chunk.done) break;
               size += chunk.value.length;
               if (size <= MAX_HTML_BYTES) parts.push(Buffer.from(chunk.value));
@@ -212,7 +223,7 @@ export class FulltextEngine {
           await file.writeFile(head);
           while (!ended) {
             itemSignal.throwIfAborted();
-            const chunk = await reader.read();
+            const chunk = await untilAborted(reader.read(), requestSignal);
             if (chunk.done) break;
             size += chunk.value.length;
             if (size > MAX_PDF_BYTES) throw new AppError("DOWNLOAD_SIZE", "PDF가 150MB 제한을 초과했습니다.");
@@ -222,10 +233,10 @@ export class FulltextEngine {
           await file.close();
           file = undefined;
           const version = locations.find((l: any) => l?.pdf_url === url)?.version;
-          const retrieved = { sourceUrl: response.url, doi, ...(version ? { version } : {}) };
+          const retrieved: RetrievedPdf = { sourceUrl: response.url, doi, method:"http", ...(version ? { version } : {}) };
           await validate?.(retrieved);
           return retrieved;
-        } finally { await reader.cancel().catch(() => {}); await file?.close(); }
+        } finally { void reader.cancel().catch(() => {}); await file?.close(); }
       } catch (error) { itemSignal.throwIfAborted(); lastError = error; return null; }
     };
     // Try provider URLs even if DOI resolution or Unpaywall is unavailable.

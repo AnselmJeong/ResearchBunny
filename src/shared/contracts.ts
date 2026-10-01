@@ -28,6 +28,8 @@ const downloadTarget = z.object({
   ids: ids.default([]),
   scopeId: id.optional(),
   includeBooks: z.boolean().default(false),
+  useBrowser: z.boolean().default(false),
+  downloadDirectory: z.string().min(1).max(4096).optional(),
 });
 export const filtersSchema = z.object({
   reading: z.enum(["unread", "planned", "reading", "read"]).optional(),
@@ -160,7 +162,9 @@ export const schemas = {
   }),
   controlRun: z.object({
     runId: id,
-    action: z.enum(["cancel", "resume", "more"]),
+    action: z.enum(["cancel", "resume", "more", "skip"]),
+    useBrowser: z.boolean().optional(),
+    downloadDirectory: z.string().min(1).max(4096).optional(),
   }),
   previewBib: z.object({ text: z.string().max(20_000_000) }),
   importBib: z.object({
@@ -169,6 +173,7 @@ export const schemas = {
     collectionId: id.optional(),
   }),
   chooseBib: z.object({}),
+  chooseDownloadDirectory: z.object({}),
   choosePdf: z.object({
     projectId: id,
     folder: z.boolean().default(false),
@@ -277,6 +282,7 @@ export interface Outputs {
   previewBib: ImportPreview;
   importBib: ImportResult;
   chooseBib: ImportPreview | null;
+  chooseDownloadDirectory: string | null;
   choosePdf: Run | null;
   attachments: Attachment[];
   pdfDownloadPreview: PdfDownloadPreview;
