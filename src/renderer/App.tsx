@@ -132,7 +132,6 @@ function Bunny({ size = 27 }: { size?: number }) {
   );
 }
 export function App() {
-  const [downloadRunId, setDownloadRunId] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null),
     [projectId, setProjectId] = useState(""),
     [scope, setScope] = useState<Scope>("archive"),
@@ -586,7 +585,7 @@ export function App() {
   };
   const openRun = (run: Run, fallbackSelection: string[] = []) => {
     if (run.projectId !== projectRef.current) return;
-    if (run.download || run.import?.matchExistingOnly) { setDownloadRunId(run.id); setDialog("download"); return; }
+    if (run.download || run.import?.matchExistingOnly) { setDialog("download"); return; }
     navigate("run", run.id, {
       filters: { ...run.filters },
       query: run.query,
@@ -730,6 +729,7 @@ export function App() {
         {toast?.error && <button onClick={refresh}>다시 시도</button>}
       </div>
     );
+  const explorationRuns = snapshot.runs.filter(run => !run.download && !run.import?.matchExistingOnly);
   return (
     <div
       className="app-shell"
@@ -776,7 +776,7 @@ export function App() {
         <nav>
           <button
             className={!fullPage && scope === "run" ? "active" : ""}
-            onClick={() => navigate("run", snapshot.runs[0]?.id || "")}
+            onClick={() => navigate("run", explorationRuns[0]?.id || "")}
           >
             <Compass size={17} />
             문헌 탐색
@@ -867,7 +867,7 @@ export function App() {
               <History size={14} />
             </button>
           </div>
-          {snapshot.runs.slice(0, 5).map((r) => (
+          {explorationRuns.slice(0, 5).map((r) => (
             <button
               data-help={`${MODES[r.mode]} · ${r.query || "저장된 탐색"}. 이 단계의 선택과 필터를 복원합니다.`}
               className="recent-run"
@@ -882,7 +882,7 @@ export function App() {
               <span className="ellipsis">{r.query || MODES[r.mode]}</span>
             </button>
           ))}
-          {!snapshot.runs.length && (
+          {!explorationRuns.length && (
             <p className="nav-empty">탐색 경로가 여기에 남습니다.</p>
           )}
         </nav>
@@ -1100,7 +1100,7 @@ export function App() {
         {dialog === "history" && (
           <HistoryWorkspace
             key={projectId}
-            runs={snapshot.runs}
+            runs={explorationRuns}
             projectId={projectId}
             currentId={scopeId}
             views={rememberView(navigation, viewRef.current).views}
@@ -1156,7 +1156,7 @@ export function App() {
                     </h1>
                   </div>
                   <div className="workspace-actions">
-                  {(archiveScope || scope === "collection") && <button className="secondary" onClick={() => { setDownloadRunId(""); setDialog("download"); }} disabled={!snapshot.counts.archive}>
+                  {(archiveScope || scope === "collection") && <button className="secondary" onClick={() => setDialog("download")} disabled={!snapshot.counts.archive}>
                     <Download size={15} /> PDF 원문 찾기
                   </button>}
                   {archiveScope && <button className="secondary" disabled={busy || !!active || classifying || !snapshot.counts.archive}
@@ -1480,7 +1480,7 @@ export function App() {
                         <button
                           className="primary"
                           onClick={() => {
-                            navigate("run", snapshot.runs[0]?.id || "");
+                            navigate("run", explorationRuns[0]?.id || "");
                             requestAnimationFrame(() =>
                               searchInput.current?.focus(),
                             );
@@ -1888,7 +1888,7 @@ export function App() {
         />
       )}
       {dialog === "download" && <DownloadDialog key={projectId} projectId={projectId} selected={selected} scope={scope} scopeId={scopeId}
-        runs={snapshot.runs} busy={busy || !!active || !!classifying} initialRunId={downloadRunId}
+        runs={snapshot.runs} busy={busy || !!active || !!classifying}
         onClose={() => setDialog(null)} onError={onError} />}
       {(dialog === "manual" || dialog === "edit") && (
         <WorkEditor

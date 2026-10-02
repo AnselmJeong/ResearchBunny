@@ -3332,8 +3332,15 @@ html[data-theme="dark"] .selection-bar .primary {
 .graph-warnings li { margin: 12px 0; }
 .graph-warnings .text-button { display: inline; white-space: normal; text-align: left; padding: 0; }
 .download-options { display: flex; align-items: end; gap: 18px; flex-wrap: wrap; margin: 18px 0 8px; }
-.download-options label:first-child, .download-history { display: grid; gap: 7px; }
-.download-history { margin-top: 20px; }
+.download-scope { display: grid; gap: 7px; max-width: 320px; }
+.pdf-current-summary { font-weight: 600; }
+.download-settings { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px; }
+.download-settings summary, .pdf-folder-match summary { cursor: pointer; color: var(--muted); }
+.missing-pdfs { margin-top: 20px; }
+.missing-pdfs h3 { margin-bottom: 8px; }
+.missing-pdfs .download-items { max-height: 420px; }
+.download-progress { margin-top: 16px; }
+.download-progress progress { width: 100%; accent-color: var(--accent); }
 .download-results { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
 .download-results progress { width: 100%; height: 8px; accent-color: var(--accent); }
 .pdf-folder-match { margin: 16px 0; padding: 16px; background: var(--soft); border: 1px solid var(--border); border-radius: 10px; }

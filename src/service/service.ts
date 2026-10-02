@@ -238,6 +238,8 @@ export class Service {
         return this.db.attachments(args.workId);
       case "pdfDownloadPreview":
         return this.downloads.preview(args);
+      case "missingPdfs":
+        return this.downloads.missing(args);
       case "downloadPdfs":
         if (this.busy()) throw new AppError("BUSY", "진행 중인 작업을 완료하거나 취소하세요.");
         return this.downloads.start(args);

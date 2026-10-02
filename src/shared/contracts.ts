@@ -11,6 +11,7 @@ import type {
   Settings,
   Project,
   PdfDownloadPreview,
+  MissingPdfs,
   PdfExportPreview,
   PdfExportResult,
   Collection,
@@ -193,6 +194,7 @@ export const schemas = {
   }),
   attachments: z.object({ workId: id }),
   pdfDownloadPreview: downloadTarget,
+  missingPdfs: downloadTarget,
   downloadPdfs: downloadTarget,
   importItems: z.object({ runId: id }),
   attachmentAction: z.object({
@@ -297,6 +299,7 @@ export interface Outputs {
   choosePdf: Run | null;
   attachments: Attachment[];
   pdfDownloadPreview: PdfDownloadPreview;
+  missingPdfs: MissingPdfs;
   downloadPdfs: Run;
   attachmentAction: void;
   exportBib: {

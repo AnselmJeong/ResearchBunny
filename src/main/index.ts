@@ -237,6 +237,7 @@ const hostRpc = BrowserView.defineRPC<BunnyRPC>({
               "exportPreview",
               "pdfExportPreview",
               "pdfDownloadPreview",
+              "missingPdfs",
             ].includes(name)
           )
             emit({ type: "changed" });

@@ -8,7 +8,7 @@ import { ChromeDownloads, chromeDownloadDirectories, type BrowserRetrieval } fro
 import { LocalDownloads, isAuxiliaryPdf } from "./local-downloads";
 import type { RetrievedPdf } from "./engine";
 import { titleSimilarity } from "../../shared/domain";
-import { AppError, DEFAULT_FILTERS, now, type AppEvent, type PdfDownloadItem, type PdfDownloadPreview, type PdfDownloadScope, type Run, type Work } from "../../shared/types";
+import { AppError, DEFAULT_FILTERS, now, type AppEvent, type MissingPdfs, type PdfDownloadItem, type PdfDownloadPreview, type PdfDownloadScope, type Run, type Work } from "../../shared/types";
 
 export interface DownloadTarget {
   projectId: string;
@@ -176,7 +176,7 @@ export class PdfDownloads {
     const items = run.download!.items, failed = items.filter(i => i.status === 'failed').length;
     run.message = `${run.status === 'cancelled' ? '중단 · ' : ''}새 PDF ${items.filter(i => i.status === 'completed').length}편 · 기존 ${items.filter(i => i.status === 'existing').length}편 · 제외 ${items.filter(i => i.status === 'skipped').length}편 · 실패 ${failed}편${run.status !== 'completed' ? ' · 재개 가능' : failed ? ' · 실패 항목 재시도 가능' : ''}`;
   }
-  private targets(target: DownloadTarget): Work[] {
+  private targets(target: DownloadTarget, limited = true): Work[] {
     this.db.project(target.projectId);
     let works = (this.db.db.prepare("SELECT w.data FROM works w JOIN project_works pw ON pw.work_id=w.id WHERE pw.project_id=? AND json_extract(pw.state,'$.screening')='included' ORDER BY w.id")
       .all(target.projectId) as { data: string }[]).map(r => this.db.get((JSON.parse(r.data) as Work).id));
@@ -197,11 +197,43 @@ export class PdfDownloads {
       const members = new Set((this.db.db.prepare("SELECT work_id FROM collection_works WHERE collection_id=?").all(target.scopeId!) as { work_id: string }[]).map(r => r.work_id));
       works = works.filter(w => members.has(w.id));
     } else if (target.scope !== "archive") throw new AppError("DOWNLOAD_TARGET", "원문 확보 범위를 확인하세요.");
-    if (works.length > 1000) throw new AppError("DOWNLOAD_LIMIT", "한 번에 1,000편 이하를 선택하세요.");
+    if (limited && works.length > 1000) throw new AppError("DOWNLOAD_LIMIT", "한 번에 1,000편 이하를 선택하세요.");
     return works;
   }
   private async existing(workId: string, signal?: AbortSignal) {
     return hasValidPdf(this.db, workId, signal);
+  }
+  async missing(target: DownloadTarget): Promise<MissingPdfs> {
+    const works = this.targets(target, false);
+    const items: MissingPdfs["items"] = [];
+    let existing = 0, books = 0;
+    for (const work of works) {
+      if (await this.existing(work.id)) existing++;
+      else if (!target.includeBooks && isBook(work)) books++;
+      else items.push({ workId: work.id, title: work.title, status: "untried", message: "아직 원문 확보를 시도하지 않았습니다." });
+    }
+    // Attachment verification is authoritative. History only supplies an explanation,
+    // including runs older than the snapshot's 100-run window.
+    const runs = (this.db.db.prepare("SELECT data FROM runs WHERE project_id=? AND json_type(data,'$.download')='object' ORDER BY json_extract(data,'$.createdAt') DESC, rowid DESC")
+      .all(target.projectId) as { data: string }[]).map(row => JSON.parse(row.data) as Run);
+    const latest = new Map<string, PdfDownloadItem>();
+    for (const run of [...runs.filter(r => this.active.has(r.id)), ...runs.filter(r => !this.active.has(r.id))]) {
+      for (const item of run.download!.items) if (!latest.has(item.workId)) latest.set(item.workId, item);
+    }
+    for (const item of items) {
+      const attempt = latest.get(item.workId);
+      if (!attempt) continue;
+      if (attempt.status === "completed" || attempt.status === "existing") {
+        item.status = "missing";
+        item.message = "이전에 연결한 PDF를 찾거나 검증할 수 없습니다. 다시 연결하세요.";
+      } else {
+        item.status = attempt.status;
+        item.message = attempt.message;
+      }
+    }
+    items.sort((a, b) => a.title.localeCompare(b.title, "ko") || a.workId.localeCompare(b.workId));
+    const directory = this.db.pref<string>("pdfDownloadDirectory");
+    return { total: works.length, existing, books, eligible: items.length, items, ...(directory ? { downloadDirectory: directory } : {}) };
   }
   async preview(target: DownloadTarget): Promise<PdfDownloadPreview> {
     const works = this.targets(target);

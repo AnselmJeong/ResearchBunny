@@ -246,6 +246,15 @@ export interface PdfDownloadPreview {
   eligible: number;
   downloadDirectory?: string;
 }
+export interface MissingPdfItem {
+  workId: string;
+  title: string;
+  status: "untried" | "pending" | "running" | "failed" | "skipped" | "missing";
+  message: string;
+}
+export interface MissingPdfs extends PdfDownloadPreview {
+  items: MissingPdfItem[];
+}
 export interface Attachment {
   id: string;
   workId: string;

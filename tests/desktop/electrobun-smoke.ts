@@ -34,6 +34,8 @@ try {
       await request("mutateWorks",{projectId,ids:[workId],patch:{screening:"included",note:"packaged"}});
       const preview=await request("pdfDownloadPreview",{projectId,scope:"selected",ids:[workId]});
       assert.deepEqual(preview,{total:1,existing:1,books:0,eligible:0});
+      const resolved=await request("missingPdfs",{projectId,scope:"archive"});
+      assert.equal(resolved.existing,1);assert.deepEqual(resolved.items,[]);
       const download=await request("downloadPdfs",{projectId,scope:"selected",ids:[workId]});
       let downloaded;
       for(let i=0;i<100;i++){const s=await request("snapshot",{projectId});downloaded=s.runs.find(r=>r.id===download.id);if(downloaded?.status==="completed")break;await Bun.sleep(50);}
@@ -42,6 +44,8 @@ try {
       const missingTitle="Manually downloaded PDF fixture";
       const missing=await request("manualWork",{projectId,metadata:{title:missingTitle}});
       await request("mutateWorks",{projectId,ids:[missing.id],patch:{screening:"included",note:"keep folder note"}});
+      const outstanding=await request("missingPdfs",{projectId,scope:"archive"});
+      assert.equal(outstanding.eligible,1);assert.equal(outstanding.items[0].workId,missing.id);
       const matchFile=process.argv[5]+"/manual.pdf";
       writeFileSync(matchFile,readFileSync(process.argv[4],"utf8").replace("Packaged PDF extraction fixture",missingTitle));
       const match=await request("pdfMatch",{projectId,paths:[matchFile]});
@@ -49,6 +53,7 @@ try {
       for(let i=0;i<100;i++){const s=await request("snapshot",{projectId});matched=s.runs.find(r=>r.id===match.id);if(matched?.status==="completed")break;await Bun.sleep(50);}
       assert.equal(matched.status,"completed");assert.equal(matched.count,1);
       assert.equal((await request("attachments",{workId:missing.id})).length,1);
+      assert.equal((await request("missingPdfs",{projectId,scope:"archive"})).eligible,0);
       assert.equal((await request("inspect",{projectId,workId:missing.id})).state.note,"keep folder note");
       await request("mutateWorks",{projectId,ids:[missing.id],patch:{screening:"excluded"}});
       const pdfPreview=await request("pdfExportPreview",{projectId,scope:"project",ids:[]});
