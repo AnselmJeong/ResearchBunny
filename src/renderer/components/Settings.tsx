@@ -27,6 +27,8 @@ export function Settings({
     [status, setStatus] = useState(""),
     [attachments, setAttachments] = useState(true),
     [linked, setLinked] = useState(false);
+  const [extraKeys, setExtraKeys] = useState<Partial<Record<"ollama" | "pubmed" | "tinyfish", string>>>({});
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [openalexCheck, setOpenalexCheck] = useState<ConnectionCheck>({ state: "idle" });
   const run = async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -39,10 +41,14 @@ export function Settings({
     }
   };
   const save = async () => {
-    await window.bunny.saveSettings({
+    const saved = await window.bunny.saveSettings({
       model: value.model,
       aiProvider: value.aiProvider,
       codexModel: value.codexModel,
+      ollamaModel: value.ollamaModel,
+      ...(extraKeys.ollama !== undefined ? { ollamaKey: extraKeys.ollama } : {}),
+      ...(extraKeys.pubmed !== undefined ? { pubmedKey: extraKeys.pubmed } : {}),
+      ...(extraKeys.tinyfish !== undefined ? { tinyfishKey: extraKeys.tinyfish } : {}),
       aiEnabled: value.aiEnabled,
       theme: value.theme,
       aiMaxInputTokens: value.aiMaxInputTokens,
@@ -53,6 +59,8 @@ export function Settings({
       ...(oa !== undefined ? { openalexKey: oa } : {}),
       ...(ai !== undefined ? { openaiKey: ai } : {}),
     });
+    setValue(saved);
+    setExtraKeys({});
     setOa(undefined);
     setAi(undefined);
     onSaved();
@@ -142,7 +150,7 @@ export function Settings({
           </section>
           <section className="settings-group">
             <h3>
-              AI 추천·분류 <span className="badge">선택 기능</span>
+              AI 대화·추천·분류 <span className="badge">선택 기능</span>
             </h3>
             <label className="check ai-toggle">
               <input
@@ -153,19 +161,46 @@ export function Settings({
                   setValue({ ...value, aiEnabled: e.target.checked })
                 }
               />
-              AI 추천·분류 사용
+              AI 대화·추천·분류 사용
             </label>
             <p className="subtle">
               실행하면 연구 질문과 대상 논문의 제목·초록·주제 정보를 선택한 AI 연결로
-              전송합니다. PDF 전문과 비공개 노트는 전송하지 않습니다.
+              전송합니다. AI 대화에서는 선택한 논문의 초록과 해당 대화가 포함됩니다.
             </p>
             <label className="field">AI 연결 방식
-              <select value={value.aiProvider} onChange={e => setValue({ ...value, aiProvider: e.target.value === "openai" ? "openai" : "codex" })}>
+              <select value={value.aiProvider} onChange={e => setValue({ ...value, aiProvider: e.target.value === "openai" ? "openai" : e.target.value === "ollama" ? "ollama" : "codex" })}>
+                <option value="ollama">Ollama Cloud · 기본</option>
                 <option value="codex">Codex (ChatGPT subscription)</option>
                 <option value="openai">OpenAI API · 별도 API 과금</option>
               </select>
             </label>
-            {value.aiProvider === "codex" ? <>
+            {value.aiProvider === "ollama" ? <>
+              <label className="field">Ollama Cloud API 키 <span className="subtle">{value.ollamaConfigured ? "등록됨" : "미등록"}</span>
+                <input type="password" autoComplete="off" placeholder="변경할 때만 입력" disabled={busy} value={extraKeys.ollama ?? ""} onChange={e => setExtraKeys(keys => ({ ...keys, ollama: e.target.value }))} />
+              </label>
+              <div className="inline-actions">
+                <button className="text-button" onClick={() => void window.bunny.openExternal({ kind: "ollama-settings" }).catch(onError)}>키 발급 <ExternalLink size={12} /></button>
+                <button className="text-button" disabled={busy} onClick={() => setExtraKeys(keys => ({ ...keys, ollama: "" }))}>키 삭제 예약</button>
+              </div>
+              <label className="field">Ollama Cloud 모델
+                <input list="ollama-cloud-models" value={value.ollamaModel} onChange={e => setValue(current => ({ ...current, ollamaModel: e.target.value }))} />
+                <datalist id="ollama-cloud-models">{ollamaModels.map(model => <option key={model} value={model} />)}</datalist>
+              </label>
+              {ollamaModels.length > 0 && <label className="field">사용 가능한 모델
+                <select aria-label="Ollama 모델 목록" value={ollamaModels.includes(value.ollamaModel) ? value.ollamaModel : ""} onChange={e => setValue(current => ({ ...current, ollamaModel: e.target.value }))}>
+                  <option value="" disabled>모델 선택</option>{ollamaModels.map(model => <option key={model} value={model}>{model}</option>)}
+                </select>
+              </label>}
+              <div className="inline-actions">
+                <button disabled={busy} onClick={() => void run(async () => { await save(); const models = await window.bunny.ollamaModels({}); setOllamaModels(models); setStatus(`Ollama Cloud 모델 ${models.length}개를 불러왔습니다.`); })}>모델 목록 새로고침</button>
+                <button disabled={busy} onClick={() => void run(async () => { await save(); setStatus((await window.bunny.testConnection({ provider: "ollama" })).message); })}>연결 확인</button>
+              </div>
+              <div className="form-grid">
+                <label className="field">입력량 상한 <input type="number" min="1000" max="100000" value={value.aiMaxInputTokens} onChange={e => setValue({ ...value, aiMaxInputTokens: Number(e.target.value) })} /></label>
+                <label className="field">응답 토큰 상한 <input type="number" min="500" max="16000" value={value.aiMaxOutputTokens} onChange={e => setValue({ ...value, aiMaxOutputTokens: Number(e.target.value) })} /></label>
+              </div>
+              <p className="subtle">모델은 Cloud에서 실행됩니다. 연결 실패 시 다른 제공자로 자동 전환하지 않습니다.</p>
+            </> : value.aiProvider === "codex" ? <>
               <CodexConnection model={value.codexModel} onModel={codexModel => setValue(current => ({ ...current, codexModel }))} />
               <details className="settings-advanced">
                 <summary>AI 입력량 제한 · 고급 설정</summary>
@@ -174,7 +209,7 @@ export function Settings({
                 </label>
                 <p className="subtle">검색·분류 한 번에서 AI에 보내는 연구 질문, 논문 제목·초록, 지시문의 누적량을 제한합니다. 실제 토큰 수와 다른 보수적 추정치입니다. 낮추면 검토할 후보 수나 초록 길이가 줄어들 수 있고, 높이면 구독 사용량과 대기 시간이 늘 수 있습니다.</p>
               </details>
-              <p className="subtle">실행당 최대 3회 호출. Codex 연결은 응답 토큰 상한·달러 예산을 지원하지 않으며, 구독 허용 상태를 매번 확인합니다.</p>
+              <p className="subtle">추천·분류는 실행당 최대 3회 호출. 대화는 질문당 1회, 검색을 켜면 2회 호출. Codex 연결은 응답 토큰 상한·달러 예산을 지원하지 않으며, 구독 허용 상태를 매번 확인합니다.</p>
             </> : <details className="settings-advanced">
               <summary>모델과 사용 한도 · API 키</summary>
               <label className="field">
@@ -312,6 +347,21 @@ export function Settings({
                 모델을 바꾸면 공식 요금에 맞춰 단가를 수정하세요.
               </p>
             </details>}
+          </section>
+          <section className="settings-group">
+            <h3>AI 외부 검색</h3>
+            <p className="subtle">AI 패널에서 검색을 켜면 OpenAlex와 PubMed를 우선 조회하고, 결과가 부족할 때 TinyFish로 보완합니다. 검색 질문은 해당 서비스로 전송됩니다.</p>
+            {([['pubmed', 'PubMed / NCBI', value.pubmedConfigured, '키 없이도 사용 가능'], ['tinyfish', 'TinyFish', value.tinyfishConfigured, '보완 검색에 필요']] as const).map(([provider, label, configured, hint]) => <div key={provider} className="search-key-group">
+              <label className="field">{label} API 키 <span className="subtle">{configured ? "등록됨" : hint}</span>
+                <input type="password" autoComplete="off" placeholder="변경할 때만 입력" disabled={busy} value={extraKeys[provider] ?? ""} onChange={e => setExtraKeys(keys => ({ ...keys, [provider]: e.target.value }))} />
+              </label>
+              <div className="inline-actions">
+                <button disabled={busy} onClick={() => void run(async () => { await save(); setStatus((await window.bunny.testConnection({ provider })).message); })}>연결 확인</button>
+                <button className="text-button" onClick={() => void window.bunny.openExternal({ kind: provider === "pubmed" ? "pubmed-settings" : "tinyfish-settings" }).catch(onError)}>키 관리 <ExternalLink size={12} /></button>
+                <button className="text-button" disabled={busy} onClick={() => setExtraKeys(keys => ({ ...keys, [provider]: "" }))}>키 삭제 예약</button>
+              </div>
+            </div>)}
+            <p className="subtle">OpenAlex 키는 문헌 검색 설정과 공유합니다. TinyFish 연결 확인에는 검색 1회가 사용됩니다.</p>
           </section>
           <section id="settings-library" className="settings-group">
             <h3>

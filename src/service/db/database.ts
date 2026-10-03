@@ -68,6 +68,10 @@ export class Library {
       CREATE INDEX IF NOT EXISTS idx_candidates_rank ON candidates(run_id,rank DESC);
       CREATE INDEX IF NOT EXISTS idx_citations_target ON citations(cited_external);
       CREATE INDEX IF NOT EXISTS idx_attachments_work ON attachments(work_id);
+      CREATE TABLE IF NOT EXISTS chat_threads(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,work_id TEXT NOT NULL,context_key TEXT NOT NULL,updated_at TEXT NOT NULL,data TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS idx_chat_scope ON chat_threads(project_id,work_id,context_key,updated_at);
+      CREATE TABLE IF NOT EXISTS chat_contexts(thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,message_id TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(thread_id,message_id));
+      CREATE TABLE IF NOT EXISTS chat_heads(scope TEXT PRIMARY KEY,thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE);
       PRAGMA user_version=2;
     `);
     if (!this.projects().length) this.createProject("내 연구", "");

@@ -1,7 +1,7 @@
 {
   "name": "researchbunny",
   "productName": "ResearchBunny",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "A local research library and citation discovery workspace",
   "author": "ResearchBunny",
   "license": "UNLICENSED",
@@ -26,6 +26,8 @@
     "pdfjs-dist": "6.3.289",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "zod": "4.6.5"
   },
   "devDependencies": {

@@ -16,7 +16,7 @@ import { defaultView, restoreNavigation, visitView } from "../../src/shared/navi
 async function fixture(fn: (db: Library, root: string) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), "researchbunny-classify-"));
   const db = new Library(join(root, "library"));
-  db.pref("ai", { ...DEFAULT_AI, aiEnabled: true });
+  db.pref("ai", { ...DEFAULT_AI, aiProvider: "codex", aiEnabled: true });
   try { await fn(db, root); } finally { db.close(); await rm(root, { recursive: true, force: true }); }
 }
 const grouped = (indexes: number[]) => ({ topics: [{ reuseTopic: null, name: "유지 치료", description: "재발 예방과 장기 치료", papers: indexes }] });
@@ -119,7 +119,7 @@ test("AI provider classifies whole archive, preserves collections, isolates proj
   const collection = db.createCollection(projectId, "Manual");
   db.db.prepare("INSERT INTO collection_works VALUES(?,?)").run(collection.id, ids[0]);
   db.mutate(projectId, [ids[0]], { note: "PRIVATE NOTE" });
-  const provider = new AIProvider(db, () => undefined, () => ({ ...DEFAULT_AI, aiEnabled: true }), fetch, {
+  const provider = new AIProvider(db, () => undefined, () => ({ ...DEFAULT_AI, aiProvider: "codex", aiEnabled: true }), fetch, {
     complete: async request => {
       assert(!request.input.includes("PRIVATE NOTE"));
       const data = JSON.parse(request.input);

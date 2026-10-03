@@ -293,9 +293,13 @@ export interface PdfExportResult {
 export interface Settings {
   openalexConfigured: boolean;
   openaiConfigured: boolean;
+  ollamaConfigured: boolean;
+  pubmedConfigured: boolean;
+  tinyfishConfigured: boolean;
   secureStorage: boolean | null;
   credentialMigrationRequired?: boolean;
-  aiProvider: "codex" | "openai";
+  aiProvider: "ollama" | "codex" | "openai";
+  ollamaModel: string;
   codexModel: string;
   model: string;
   aiEnabled: boolean;
@@ -350,11 +354,11 @@ export interface ImportResult {
   errors: { name: string; message: string }[];
   ids: string[];
 }
-export interface AppEvent {
+export type AppEvent = {
   type: "changed" | "progress" | "service-error";
   runId?: string;
   message?: string;
-}
+} | { type: "chat"; session: import("./chat").ChatSession };
 export type Result<T> =
   | { ok: true; data: T }
   | { ok: false; error: { code: string; message: string; retryable: boolean } };

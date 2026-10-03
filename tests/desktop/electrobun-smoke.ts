@@ -31,6 +31,22 @@ try {
       const items=await request("importItems",{runId:run.id});
       assert(items[0].message.includes("extracted"),JSON.stringify(items));
       const workId=items[0].workId;
+      const attachment=(await request("attachments",{workId}))[0];
+      const pdfTarget={projectId,workId,attachmentId:attachment.id};
+      const readerInfo=await request("pdfInfo",pdfTarget);
+      assert(readerInfo.size>0);assert.equal(readerInfo.hash,attachment.hash);
+      const readerChunk=await request("pdfReadChunk",{...pdfTarget,offset:0,length:128});
+      assert(Buffer.from(readerChunk.base64,"base64").toString().includes("%PDF"));
+      const browseThread=await request("chatSession",{projectId,workId});
+      const pdfContext={kind:"pdf-fulltext",attachmentId:attachment.id};
+      const pdfThread=await request("chatSession",{projectId,workId,context:pdfContext});
+      assert.notEqual(browseThread.threadId,pdfThread.threadId);
+      const freshThread=await request("chatClear",{projectId,workId,context:pdfContext});
+      assert.notEqual(freshThread.threadId,pdfThread.threadId);
+      assert.equal((await request("chatThreads",{projectId,workId,context:pdfContext})).length,2);
+      await request("chatSession",{projectId,workId,context:pdfContext,threadId:pdfThread.threadId});
+      assert.equal((await request("chatSession",{projectId,workId,context:pdfContext})).threadId,pdfThread.threadId);
+
       await request("mutateWorks",{projectId,ids:[workId],patch:{screening:"included",note:"packaged"}});
       const preview=await request("pdfDownloadPreview",{projectId,scope:"selected",ids:[workId]});
       assert.deepEqual(preview,{total:1,existing:1,books:0,eligible:0});
@@ -73,7 +89,7 @@ try {
       assert.equal((await request("snapshot",{projectId})).counts.trash,0);
       await assert.rejects(request("inspect",{projectId,workId}));
       await request("shutdown");
-      console.log("PASS packaged PDF extraction, folder matching, archive, BibTeX and PDF folder export, backup, restore and permanent deletion with restricted PATH");
+      console.log("PASS packaged PDF reader chunks, independent durable threads, extraction, folder matching, archive, BibTeX and PDF folder export, backup, restore and permanent deletion with restricted PATH");
     } finally { clearTimeout(deadline); child.kill(); }
   `;
   const resources = join(bundle, "Contents/Resources/app/runtime");

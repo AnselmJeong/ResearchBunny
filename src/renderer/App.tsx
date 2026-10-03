@@ -1,6 +1,8 @@
+import { ABSTRACT_CONTEXT } from "../shared/chat";
+import type { Attachment } from "../shared/types";
 import { resultWindow } from "../shared/graph";
 import { refreshQueue } from "../shared/refresh-queue";
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { lazy, Suspense, useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import {
   Search,
@@ -67,7 +69,7 @@ import { ResizableSidebar } from "./components/ResizableSidebar";
 import type { Input } from "../shared/contracts";
 import { Graph } from "./components/Graph";
 import { Filters } from "./components/Filters";
-import { Inspector } from "./components/Inspector";
+import { RightPane } from "./components/RightPane";
 import { ResizableInspector } from "./components/ResizableInspector";
 import { Modal } from "./components/Modal";
 import { DiscoveryMenu } from "./components/DiscoveryMenu";
@@ -80,6 +82,7 @@ import {
   SeedDialog,
   ExportDialog,
 } from "./components/Dialogs";
+const ArticleReader = lazy(() => import("./components/ArticleReader").then(module => ({ default: module.ArticleReader })));
 const MODES: Record<DiscoveryMode, string> = {
   search: "검색 결과",
   related: "관련 논문",
@@ -158,6 +161,11 @@ export function App() {
     [positions, setPositions] = useState<
       Record<string, { x: number; y: number }>
     >({});
+  const [reader, setReader] = useState<{ projectId: string; work: WorkView; attachmentId: string; attachments: Attachment[] } | null>(null);
+  const [readerVisible, setReaderVisible] = useState(false);
+  const readerRequest = useRef(0);
+  const readerActive = readerVisible && reader?.projectId === projectId && reader.work.id === inspectorId;
+  const chatContext = readerActive ? { kind: "pdf-fulltext" as const, attachmentId: reader.attachmentId } : ABSTRACT_CONTEXT;
   const graphView = view !== "list";
   const displayWindow = resultWindow(graphView, limit, offset);
   const [dialog, setDialog] = useState<Dialog>(null),
@@ -212,6 +220,9 @@ export function App() {
   const projectRef = useRef(projectId);
   projectRef.current = projectId;
   const applyView = useCallback((v: WorkspaceView) => {
+    readerRequest.current++;
+    setReaderVisible(false);
+    setReader(null);
     setList(EMPTY);
     setLoading(true);
     setInspected(null);
@@ -268,6 +279,7 @@ export function App() {
   useEffect(
     () =>
       window.bunny.onEvent((event) => {
+        if (event.type === "chat") return;
         if (event.type === "service-error")
           flash(event.message || "자료 서비스 오류", true);
         // Source probes change progress, not the library list or graph.
@@ -477,6 +489,8 @@ export function App() {
     id = "",
     fallback?: Partial<WorkspaceView>,
   ) => {
+    readerRequest.current++;
+    setReaderVisible(false);
     setDialog((current) =>
       current === "settings" || current === "history" ? null : current,
     );
@@ -500,6 +514,7 @@ export function App() {
     applyNavigation(visitView(navigationRef.current, viewRef.current, target));
   };
   const travel = (delta: number) => {
+    if (readerActive) { setReaderVisible(false); return; }
     if (dialog === "settings" || dialog === "history") {
       setDialog(null);
       return;
@@ -512,8 +527,22 @@ export function App() {
   }, [classification, hydratedProject, projectId, scope, scopeId]);
   const trail = scope === "run" ? runPath(snapshot?.runs || [], scopeId) : [];
   const inspect = (id: string) => {
+    readerRequest.current++;
+    setReaderVisible(false);
     setInspectorId(id);
     setInspectorOpen(true);
+  };
+  const openArticle = async (id: string, attachmentId?: string) => {
+    inspect(id);
+    const request = readerRequest.current;
+    const [work, attachments] = await Promise.all([
+      window.bunny.inspect({ projectId, workId: id, runId: scope === "run" ? scopeId || undefined : undefined }),
+      window.bunny.attachments({ workId: id }),
+    ]);
+    if (request !== readerRequest.current || projectRef.current !== projectId) return;
+    setInspected(work);
+    const attachment = attachments.find(a => a.id === attachmentId) || attachments.find(a => a.exists) || attachments[0];
+    if (attachment) { setReader({ projectId, work, attachmentId: attachment.id, attachments }); setReaderVisible(true); }
   };
   const task = async (fn: () => Promise<unknown>, message?: string) => {
     setBusy(true);
@@ -673,6 +702,7 @@ export function App() {
         requestAnimationFrame(() => searchInput.current?.focus());
       }
       if (editable || dialog) return;
+      if (readerActive) return;
       if ((e.metaKey || e.ctrlKey) && e.key === "a") {
         e.preventDefault();
         setSelected(list.works.map((w) => w.id));
@@ -693,7 +723,7 @@ export function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selected, list, dialog, projectId, scope, snapshot]);
+  }, [selected, list, dialog, projectId, scope, snapshot, readerActive]);
   const title =
     scope === "run"
       ? currentRun
@@ -923,7 +953,7 @@ export function App() {
             <button
               aria-label="이전 단계"
               data-help="이전 화면의 선택 문헌과 필터를 복원합니다. 저장한 자료는 바뀌지 않습니다."
-              disabled={(!fullPage && navigation.index === 0) || busy}
+              disabled={(!readerActive && !fullPage && navigation.index === 0) || busy}
               onClick={() => travel(-1)}
             >
               <ArrowLeft size={17} />
@@ -1138,13 +1168,23 @@ export function App() {
                 <ChevronRight size={13} />
               </button>
             </div>
+            <div className="article-modebar" aria-label="탐색과 원문 전환">
+              <div className="article-mode-switch">
+                <button aria-pressed={!readerActive} onClick={() => setReaderVisible(false)}><List size={15} />탐색</button>
+                <button aria-pressed={!!readerActive} disabled={!inspected?.attachmentCount} onClick={() => {
+                  if (reader?.projectId === projectId && reader.work.id === inspectorId) setReaderVisible(true);
+                  else if (inspectorId) void openArticle(inspectorId).catch(onError);
+                }}><FileText size={15} />원문 보기</button>
+              </div>
+              {readerActive && reader.attachments.length > 1 ? <select aria-label="원문 PDF 선택" value={reader.attachmentId} onChange={e => setReader({ ...reader, attachmentId: e.target.value })}>{reader.attachments.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select> : <span>{readerActive ? "PDF 본문 대화 · 탐색 대화와 별도 보관" : "논문을 선택해 초록을 확인하고 첨부 원문을 읽어보세요"}</span>}
+            </div>
             <div
               className={
                 "workspace " +
                 (scope === "run" ? "discovery-workspace" : "library-workspace")
               }
             >
-              <main className="workspace-main">
+              <main className="workspace-main" hidden={!!readerActive}>
                 <div className="workspace-heading">
                   <div>
                     {scope === "topic" || scope === "unclassified" ? (
@@ -1559,7 +1599,8 @@ export function App() {
                             />
                             <button
                               className="paper-main"
-                              onClick={() => inspect(w.id)}
+                              title={w.attachmentCount ? "문헌 선택 · 첨부 원문 보기" : "문헌 선택"}
+                              onClick={() => void openArticle(w.id).catch(onError)}
                             >
                               <h3>{w.title}</h3>
                               <p>
@@ -1730,10 +1771,15 @@ export function App() {
                   </div>
                 </div>
               </main>
+              {reader?.projectId === projectId && <Suspense fallback={<div className="reader-loading">원문 뷰어 준비 중…</div>}><ArticleReader key={`${projectId}:${reader.attachmentId}`} projectId={projectId} work={reader.work} attachmentId={reader.attachmentId} visible={!!readerActive} onBrowse={() => setReaderVisible(false)} /></Suspense>}
               {inspectorOpen && (
                 <ResizableInspector>
-                <Inspector
-                  work={inspected}
+                <RightPane
+                  context={chatContext}
+                  onReadPdf={attachmentId => { if (inspectorId) void openArticle(inspectorId, attachmentId).catch(onError); }}
+                  settings={snapshot.settings}
+                  onSettings={() => setDialog("settings")}
+                  work={inspected?.id === inspectorId ? inspected : null}
                   projectId={projectId}
                   collections={snapshot.collections}
                   note={

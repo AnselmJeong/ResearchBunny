@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { CodexStatus, CodexModel } from "./codex";
+import type { ChatSession, ChatThreadSummary } from "./chat";
 import type {
   Snapshot,
   ListResult,
@@ -23,6 +24,9 @@ import type {
   LibraryState,
 } from "./types";
 const id = z.string().min(1).max(160);
+const chatContext = z.discriminatedUnion("kind", [z.object({ kind: z.literal("abstract") }).strict(), z.object({ kind: z.literal("pdf-fulltext"), attachmentId: id }).strict()]);
+const chatTarget = { projectId: id, workId: id, context: chatContext.optional(), threadId: id.optional() };
+const pdfTarget = { projectId: id, workId: id, attachmentId: id };
 const ids = z.array(id).max(10000);
 const text = z.string().max(20000);
 const downloadTarget = z.object({
@@ -193,6 +197,8 @@ export const schemas = {
     workId: id.optional(),
   }),
   attachments: z.object({ workId: id }),
+  pdfInfo: z.object(pdfTarget).strict(),
+  pdfReadChunk: z.object({ ...pdfTarget, offset: z.number().int().min(0), length: z.number().int().min(1).max(512 * 1024) }).strict(),
   pdfDownloadPreview: downloadTarget,
   missingPdfs: downloadTarget,
   downloadPdfs: downloadTarget,
@@ -224,11 +230,22 @@ export const schemas = {
   codexLogin: z.object({}),
   codexCancelLogin: z.object({}),
   codexLogout: z.object({}),
+  ollamaModels: z.object({}),
+  chatSession: z.object(chatTarget),
+  chatSend: z.object({ ...chatTarget, requestId: id, message: z.string().trim().min(1).max(8000), searchEnabled: z.boolean() }),
+  chatCancel: z.object({ ...chatTarget, requestId: id }),
+  chatClear: z.object(chatTarget),
+  chatThreads: z.object(chatTarget),
+  chatOpenSource: z.object({ ...chatTarget, messageId: id, index: z.number().int().min(0).max(20) }),
   saveSettings: z.object({
-    aiProvider: z.enum(["codex", "openai"]).default("codex"),
+    aiProvider: z.enum(["ollama", "codex", "openai"]).optional(),
+    ollamaModel: z.string().trim().min(1).max(120).optional(),
     codexModel: z.string().trim().max(120).default(""),
     openalexKey: z.string().max(1000).optional(),
     openaiKey: z.string().max(1000).optional(),
+    ollamaKey: z.string().max(1000).optional(),
+    pubmedKey: z.string().max(1000).optional(),
+    tinyfishKey: z.string().max(1000).optional(),
     model: z.string().trim().min(1).max(120),
     aiEnabled: z.boolean(),
     theme: z.enum(["system", "light", "dark"]),
@@ -238,7 +255,7 @@ export const schemas = {
     inputPricePerMillion: z.number().min(0).max(1000),
     outputPricePerMillion: z.number().min(0).max(1000),
   }),
-  testConnection: z.object({ provider: z.enum(["openalex", "openai"]) }),
+  testConnection: z.object({ provider: z.enum(["openalex", "openai", "ollama", "pubmed", "tinyfish"]) }),
   openExternal: z.object({
     workId: id.optional(),
     kind: z.enum([
@@ -247,6 +264,9 @@ export const schemas = {
       "oa",
       "openalex-settings",
       "openai-settings",
+      "ollama-settings",
+      "pubmed-settings",
+      "tinyfish-settings",
       "data-folder",
     ]),
   }),
@@ -298,6 +318,8 @@ export interface Outputs {
   choosePdfMatch: Run | null;
   choosePdf: Run | null;
   attachments: Attachment[];
+  pdfInfo: { attachmentId: string; name: string; size: number; hash: string };
+  pdfReadChunk: { base64: string; bytesRead: number };
   pdfDownloadPreview: PdfDownloadPreview;
   missingPdfs: MissingPdfs;
   downloadPdfs: Run;
@@ -314,6 +336,13 @@ export interface Outputs {
   codexLogin: void;
   codexCancelLogin: void;
   codexLogout: void;
+  ollamaModels: string[];
+  chatSession: ChatSession;
+  chatThreads: ChatThreadSummary[];
+  chatSend: ChatSession;
+  chatCancel: void;
+  chatClear: ChatSession;
+  chatOpenSource: void;
   saveSettings: Settings;
   testConnection: { message: string };
   openExternal: void;

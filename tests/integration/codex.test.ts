@@ -284,7 +284,7 @@ test("normal plan adapter supplies context and validates structured answer witho
   );
   try {
     service.secrets.openai = "sentinel-paid-key";
-    service.db.pref("ai", { ...DEFAULT_AI, aiEnabled: true });
+    service.db.pref("ai", { ...DEFAULT_AI, aiProvider: "codex", aiEnabled: true });
     const run = makeRun(service.db.projects()[0].id);
     service.db.saveRun(run);
     expect(await service.ai.plan(run, new AbortController().signal)).toEqual({
@@ -326,7 +326,7 @@ test("all AI completion/error routes remain in Codex with saved paid credentials
     const ai = new AIProvider(
       service.db,
       () => "sentinel-paid-key",
-      () => ({ ...DEFAULT_AI, aiEnabled: true }),
+      () => ({ ...DEFAULT_AI, aiProvider: "codex", aiEnabled: true }),
       http,
       client,
     );

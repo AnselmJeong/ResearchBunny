@@ -32,6 +32,9 @@ await build({
     chunkSizeWarningLimit: 1200,
   },
 });
+for (const asset of ["standard_fonts", "cmaps", "wasm", "iccs"]) {
+  await cp(`node_modules/pdfjs-dist/${asset}`, `dist/renderer/pdfjs/${asset}`, { recursive: true });
+}
 for (const [source, name] of [
   ["src/service/index.ts", "service.js"],
   ["src/workers/pdf.ts", "pdf-worker.cjs"],

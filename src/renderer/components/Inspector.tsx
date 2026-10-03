@@ -28,12 +28,12 @@ export function Inspector({
   noteStatus,
   onNote,
   onPatch,
-  onClose,
   onEdit,
   onDiscover,
   onError,
   onInspect,
   seed,
+  onReadPdf,
 }: {
   work: WorkView | null;
   projectId: string;
@@ -42,12 +42,12 @@ export function Inspector({
   noteStatus: string;
   onNote: (text: string) => void;
   onPatch: (patch: Partial<WorkView["state"]>) => void;
-  onClose: () => void;
   onEdit: () => void;
   onDiscover: (mode: DiscoveryMode, ids: string[]) => void;
   onError: (error: unknown) => void;
   onInspect: (id: string) => void;
   seed: boolean;
+  onReadPdf: (attachmentId?: string) => void;
 }) {
   const [tab, setTab] = useState<"abstract" | "evidence" | "notes">("abstract");
   const [attachments, setAttachments] = useState<Attachment[]>([]),
@@ -55,14 +55,16 @@ export function Inspector({
     [tags, setTags] = useState(""),
     [evidenceTitles, setEvidenceTitles] = useState<Record<string, string>>({});
   useEffect(() => {
+    let valid = true;
     setDuplicates(null);
     setAttachments([]);
     setTags(work?.state.tags.join(", ") || "");
     if (work)
       void window.bunny
         .attachments({ workId: work.id })
-        .then(setAttachments)
-        .catch(onError);
+        .then(items => { if (valid) setAttachments(items); })
+        .catch(error => { if (valid) onError(error); });
+    return () => { valid = false; };
   }, [work?.id, work?.attachmentCount]);
   useEffect(() => {
     if (!work?.evidence) return;
@@ -97,12 +99,6 @@ export function Inspector({
   const state = work.state;
   return (
     <aside className="inspector">
-      <div className="inspector-heading">
-        <span>문헌 상세</span>
-        <button className="icon-button" title="상세 닫기" onClick={onClose}>
-          <X size={17} />
-        </button>
-      </div>
       <div className="inspector-scroll">
         <div className="paper-kicker">
           <span>{work.type}</span>
@@ -170,6 +166,7 @@ export function Inspector({
           </div>
         </div>
         <div className="paper-links">
+          {work.attachmentCount > 0 && <button onClick={() => onReadPdf()}><FileText size={13} />원문 보기</button>}
           {work.doi && (
             <button
               onClick={() =>
@@ -462,14 +459,7 @@ export function Inspector({
                   <FileText size={19} />
                   <div>
                     <button
-                      onClick={() =>
-                        void window.bunny
-                          .attachmentAction({
-                            attachmentId: a.id,
-                            action: "open",
-                          })
-                          .catch(onError)
-                      }
+                      onClick={() => onReadPdf(a.id)}
                     >
                       {a.name}
                     </button>

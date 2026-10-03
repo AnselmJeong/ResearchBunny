@@ -53,6 +53,8 @@ export function deleteTrashedWorks(
         .run(JSON.stringify(seed), row.id);
     }
     for (const id of ids) {
+      db.db.prepare("DELETE FROM chat_threads WHERE project_id=? AND work_id=?").run(projectId, id);
+      db.db.prepare("DELETE FROM preferences WHERE key=?").run(`article-chat:${JSON.stringify([projectId, id])}`);
       db.db
         .prepare(
           "DELETE FROM candidates WHERE work_id=? AND run_id IN (SELECT id FROM runs WHERE project_id=?)",

@@ -1,3 +1,9 @@
+import { PdfReader } from "./interchange/pdf-reader";
+import { ArticleChat } from "./chat/service";
+import { ChatProvider } from "./chat/provider";
+import { OllamaCloud } from "./providers/ollama";
+import { searchPubMedIds } from "./search/pubmed-search";
+import { searchWebWithTinyFish } from "./search/web-search";
 import { CodexClient } from "./codex/client";
 import { version } from "../../package.json";
 import { randomUUID } from "node:crypto";
@@ -28,6 +34,9 @@ export class Service {
   oa: OpenAlex;
   ai: AIProvider;
   codex: CodexClient;
+  ollama: OllamaCloud;
+  chat: ArticleChat;
+  reader: PdfReader;
   discovery: Discovery;
   pdf: PdfImports;
   downloads: PdfDownloads;
@@ -35,6 +44,9 @@ export class Service {
   secrets: {
     openalex?: string;
     openai?: string;
+    ollama?: string;
+    pubmed?: string;
+    tinyfish?: string;
     secureStorage?: boolean;
     credentialMigrationRequired?: boolean;
   } = {};
@@ -48,12 +60,16 @@ export class Service {
     this.codex = codex;
     this.db = new Library(root);
     this.oa = new OpenAlex(this.db, () => this.secrets.openalex);
+    this.ollama = new OllamaCloud(() => this.secrets.ollama);
+    this.reader = new PdfReader(this.db, workerPath);
+    this.chat = new ArticleChat(this.db, () => this.settings(), () => this.secrets, new ChatProvider(this.ollama, this.codex, () => this.secrets.openai), emit, undefined, (projectId, workId, attachmentId, signal) => this.reader.context({ projectId, workId, attachmentId }, signal));
     this.ai = new AIProvider(
       this.db,
       () => this.secrets.openai,
-      () => ({ ...DEFAULT_AI, ...this.db.pref<AIConfig>("ai") }),
+      () => this.settings(),
       fetch,
       this.codex,
+      this.ollama,
     );
     this.discovery = new Discovery(this.db, this.oa, emit, this.ai);
     this.pdf = new PdfImports(this.db, this.oa, workerPath, emit);
@@ -61,14 +77,19 @@ export class Service {
     this.classifier = new ArchiveClassifier(this.db, this.ai, emit);
   }
   busy() {
-    return this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0;
+    return this.chat.active.size > 0 || this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0;
   }
   settings(): Settings {
+    const saved = this.db.pref<Partial<AIConfig>>("ai");
     return {
       ...DEFAULT_AI,
-      ...this.db.pref<AIConfig>("ai"),
+      ...saved,
+      ...(saved && !saved.aiProvider ? { aiProvider: "codex" as const } : {}),
       openalexConfigured: !!this.secrets.openalex,
       openaiConfigured: !!this.secrets.openai,
+      ollamaConfigured: !!this.secrets.ollama,
+      pubmedConfigured: !!this.secrets.pubmed,
+      tinyfishConfigured: !!this.secrets.tinyfish,
       secureStorage: this.secrets.secureStorage ?? null,
       credentialMigrationRequired: this.secrets.credentialMigrationRequired,
       theme: this.db.pref<Settings["theme"]>("theme") || "system",
@@ -234,6 +255,8 @@ export class Service {
       case "pdfMatch":
         if (this.busy()) throw new AppError("BUSY", "진행 중인 작업을 완료하거나 취소하세요.");
         return this.pdf.start(args.projectId, args.paths, { mode: "managed", matchExistingOnly: true });
+      case "pdfInfo": return this.reader.info(schemas.pdfInfo.parse(args));
+      case "pdfReadChunk": return this.reader.chunk(schemas.pdfReadChunk.parse(args));
       case "attachments":
         return this.db.attachments(args.workId);
       case "pdfDownloadPreview":
@@ -300,6 +323,13 @@ export class Service {
         if (this.busy())
           throw new AppError("BUSY", "진행 중인 작업이 끝난 뒤 복원하세요.");
         return restoreBackup(args.path, args.destination);
+      case "chatSession": { const p = schemas.chatSession.parse(args); return this.chat.select(p.projectId, p.workId, p.context, p.threadId); }
+      case "chatThreads": { const p = schemas.chatThreads.parse(args); return this.chat.threads(p.projectId, p.workId, p.context); }
+      case "chatSend": return this.chat.start(schemas.chatSend.parse(args));
+      case "chatCancel": { const p = schemas.chatCancel.parse(args); return this.chat.cancel(p.projectId, p.workId, p.requestId, p.context, p.threadId); }
+      case "chatClear": { const p = schemas.chatClear.parse(args); return this.chat.clear(p.projectId, p.workId, p.context, p.threadId); }
+      case "chatSourceUrl": { const p = schemas.chatOpenSource.parse(args); return this.chat.sourceUrl(p.projectId, p.workId, p.messageId, p.index, p.context, p.threadId); }
+      case "ollamaModels": return this.ollama.models();
       case "codexStatus": return this.codex.status();
       case "codexModels":
       case "codexLogin":
@@ -320,6 +350,7 @@ export class Service {
           model,
           aiProvider,
           codexModel,
+          ollamaModel,
           aiEnabled,
           aiMaxInputTokens,
           aiMaxOutputTokens,
@@ -329,8 +360,9 @@ export class Service {
         } = args;
         this.db.pref("ai", {
           model,
-          aiProvider,
+          aiProvider: aiProvider ?? this.settings().aiProvider,
           codexModel,
+          ollamaModel: ollamaModel ?? this.settings().ollamaModel,
           aiEnabled,
           aiMaxInputTokens,
           aiMaxOutputTokens,
@@ -355,6 +387,22 @@ export class Service {
               ? "OpenAlex 연결 확인"
               : "키 없는 제한적 연결 확인 · 지속 사용하려면 키를 등록하세요.",
           };
+        }
+        if (args.provider === "ollama") {
+          const models = await this.ollama.models();
+          if (!models.includes(this.settings().ollamaModel)) throw new AppError("OLLAMA_MODEL", "선택한 Ollama 모델이 목록에 없습니다. 모델 목록을 새로고침하세요.");
+          return { message: `Ollama Cloud 연결 확인 · ${models.length}개 모델 · 생성 호출 없음` };
+        }
+        if (args.provider === "pubmed") {
+          try { await searchPubMedIds("neuroscience", 1, { apiKey: this.secrets.pubmed, signal: AbortSignal.timeout(15000) }); }
+          catch { throw new AppError("PUBMED_CONNECTION", "PubMed 연결 실패. NCBI 키와 네트워크를 확인하세요."); }
+          return { message: this.secrets.pubmed ? "PubMed 연결 확인" : "PubMed 키 없는 연결 확인" };
+        }
+        if (args.provider === "tinyfish") {
+          if (!this.secrets.tinyfish) throw new AppError("API_KEY", "TinyFish 키를 먼저 등록하세요.");
+          try { await searchWebWithTinyFish("site:pubmed.ncbi.nlm.nih.gov neuroscience", { tinyfishApiKey: this.secrets.tinyfish, webSearchEnabled: true }, 1, AbortSignal.timeout(15000)); }
+          catch { throw new AppError("TINYFISH_CONNECTION", "TinyFish 연결 실패. Search API 키·사용 한도·네트워크를 확인하세요."); }
+          return { message: "TinyFish 검색 연결 확인 · 검색 1회 사용" };
         }
         if (!this.secrets.openai)
           throw new AppError("API_KEY", "OpenAI 키를 먼저 등록하세요.");
@@ -411,6 +459,7 @@ export class Service {
         return undoMerge(this.db);
       case "shutdown":
         this.downloads.stopRecoveryMonitor();
+        this.chat.close();
         this.codex.close();
         for (const control of [
           ...this.discovery.active.values(),

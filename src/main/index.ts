@@ -182,10 +182,13 @@ async function command(name: Command, input: any): Promise<any> {
       await credentials.save(args);
       await rpc("init", credentials.secrets);
       {
-        const { openalexKey: _oa, openaiKey: _ai, ...settings } = args;
+        const { openalexKey: _oa, openaiKey: _ai, ollamaKey: _ol, pubmedKey: _pm, tinyfishKey: _tf, ...settings } = args;
         const result = await rpc(name, settings);
         return result;
       }
+    case "chatOpenSource":
+      await Utils.openExternal(await rpc<string>("chatSourceUrl", args));
+      return;
     case "openExternal": {
       if (args.kind === "data-folder") {
         await Utils.openPath(libraryRoot);
@@ -196,6 +199,9 @@ async function command(name: Command, input: any): Promise<any> {
           ? "https://openalex.org/settings/api"
           : args.kind === "openai-settings"
             ? "https://platform.openai.com/api-keys"
+            : args.kind === "ollama-settings" ? "https://ollama.com/settings/keys"
+            : args.kind === "pubmed-settings" ? "https://www.ncbi.nlm.nih.gov/account/settings/"
+            : args.kind === "tinyfish-settings" ? "https://www.tinyfish.ai/"
             : args.workId
               ? await rpc<string>("externalUrl", args)
               : null;
@@ -228,6 +234,7 @@ const hostRpc = BrowserView.defineRPC<BunnyRPC>({
             });
           if (
             ![
+              "pdfInfo", "pdfReadChunk", "chatThreads", "chatSession", "chatSend", "chatCancel", "chatClear", "chatOpenSource", "ollamaModels",
               "snapshot",
               "list",
               "inspect",

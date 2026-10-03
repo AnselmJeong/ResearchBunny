@@ -72,17 +72,18 @@ async function scan(paths: string[]): Promise<string[]> {
 }
 const extractedSchema = z.object({
   title: z.string(), authors: z.string(), dois: z.array(z.string()),
-  pages: z.number().nullable(), text: z.string(), status: z.string(),
+  pages: z.number().nullable(), text: z.string(), status: z.string(), emptyPages: z.number().optional(),
 });
 type Extracted = z.infer<typeof extractedSchema>;
 export function extractPdf(
   path: string,
   workerPath: string,
   signal: AbortSignal,
+  mode: "metadata" | "fulltext" = "metadata",
 ): Promise<Extracted> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
-    const worker = fork(workerPath, [path], {
+    const worker = fork(workerPath, [path, mode], {
       execPath: process.execPath,
       execArgv: [],
       stdio: ["ignore", "ignore", "ignore", "ipc"],
@@ -107,7 +108,7 @@ export function extractPdf(
         text: "",
         status: "추출 제한 또는 실패 · 수동 확인 필요",
       });
-    const timer = setTimeout(fallback, 15000);
+    const timer = setTimeout(fallback, mode === "fulltext" ? 60000 : 15000);
     const abort = () =>
       done(undefined, new AppError("CANCELLED", "취소되었습니다."));
     signal.addEventListener("abort", abort, { once: true });

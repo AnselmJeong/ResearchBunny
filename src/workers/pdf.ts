@@ -17,6 +17,30 @@ async function extract() {
   });
   try {
     const pdf = await loading.promise;
+    if (process.argv[3] === "fulltext") {
+      if (pdf.numPages > 500) throw new Error("Full-text page limit");
+      const pages: string[] = [];
+      let length = 0, emptyPages = 0;
+      for (let n = 1; n <= pdf.numPages; n++) {
+        const page = await pdf.getPage(n);
+        const content = await page.getTextContent();
+        let text = "", lastY: number | undefined;
+        for (const item of content.items) {
+          if (!("str" in item)) continue;
+          const y = item.transform[5];
+          if (lastY !== undefined && Math.abs(y - lastY) > 2) text += "\n";
+          text += item.str + (item.hasEOL ? "\n" : " ");
+          lastY = item.hasEOL ? undefined : y;
+        }
+        if (!text.trim()) emptyPages++;
+        length += text.length;
+        if (length > 2_000_000) throw new Error("Full-text character limit");
+        pages.push(text.trim());
+        page.cleanup();
+      }
+      process.send?.({ title: "", authors: "", dois: [], pages: pdf.numPages, text: pages.join("\n\n"), emptyPages, status: "extracted" });
+      return;
+    }
     const metadata = await pdf.getMetadata();
     const page = await pdf.getPage(1);
     const content = await page.getTextContent();
