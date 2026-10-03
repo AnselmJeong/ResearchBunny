@@ -1,12 +1,12 @@
 # ResearchBunny
 
-관심 논문에서 출발해 참고문헌과 후속 연구를 탐색하고, 선별한 논문을 로컬 아카이브로 보관하는 macOS 앱입니다. [PRD](PRD.md)의 P0 흐름을 구현한 **0.2.9 로컬 시험판**입니다.
+관심 논문에서 출발해 참고문헌과 후속 연구를 탐색하고, 선별한 논문을 로컬 아카이브로 보관하는 macOS 앱입니다. [PRD](PRD.md)의 P0 흐름을 구현한 **0.2.10 로컬 시험판**입니다.
 
-화면과 함께 주요 작업 흐름을 따라가려면 [사용 가이드](Usage.md)를 참고하세요. 새 PDF reader와 AI 대화 기록은 [0.2.9 릴리스 기록](docs/release-0.2.9.md)에 정리했습니다.
+화면과 함께 주요 작업 흐름을 따라가려면 [사용 가이드](Usage.md)를 참고하세요. 프로젝트 전환·생성 개선은 [0.2.10 릴리스 기록](docs/release-0.2.10.md), PDF reader와 AI 대화 기록은 [0.2.9 릴리스 기록](docs/release-0.2.9.md)에 정리했습니다.
 
 ## 설치와 실행
 
-0.2.9는 Electrobun 1.18.1 + Bun 1.3.8 + macOS 기본 WebKit으로 실행합니다. Chromium/CEF를 포함하지 않습니다.
+0.2.10은 Electrobun 1.18.1 + Bun 1.3.8 + macOS 기본 WebKit으로 실행합니다. Chromium/CEF를 포함하지 않습니다.
 
 - 배포 DMG: `out/electrobun/stable-macos-arm64-ResearchBunny.dmg`
 - 앱: `build/stable-macos-arm64/ResearchBunny.app`

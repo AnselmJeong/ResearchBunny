@@ -263,34 +263,152 @@ small {
   color: var(--text);
 }
 .project-switch {
-  border: 1px solid var(--border);
-  background: var(--panel);
-  border-radius: 7px;
-  display: flex;
-  align-items: center;
-  padding: 7px 5px 7px 9px;
-  margin-bottom: 22px;
-  gap: 4px;
+  flex: none;
+  min-width: 0;
+  margin-bottom: 14px;
 }
-.project-monogram {
+.project-trigger {
+  width: 100%;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  background: transparent;
+  border-radius: 7px;
+  text-align: left;
+}
+.project-trigger:hover,
+.project-trigger[aria-expanded="true"] {
+  background: var(--panel);
+  border-color: var(--muted);
+}
+.project-trigger-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.project-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.project-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.project-trigger > svg {
+  flex: none;
+  color: var(--muted);
+}
+.project-popover {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  padding: 5px;
+  width: 280px;
+  max-width: calc(100vw - 24px);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 8px 28px #172a2026;
+  overflow: auto;
+}
+.project-options {
+  max-height: min(320px, 50vh);
+  overflow: auto;
+  scrollbar-width: thin;
+  padding: 3px;
+}
+.project-option,
+.project-new {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 25px;
-  height: 25px;
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 38px;
+  padding: 9px 10px;
+  gap: 12px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  text-align: left;
+  line-height: 1.5;
+  white-space: normal;
+}
+.project-option > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.project-option > svg {
+  flex: none;
+  color: var(--accent);
+}
+.project-option[aria-checked="true"] {
   background: var(--accent-soft);
   color: var(--accent);
-  border-radius: 5px;
-  font-weight: 700;
-  flex: none;
-}
-.project-switch select {
-  border: 0;
-  padding: 4px 0;
-  background: transparent;
-  width: 112px;
   font-weight: 600;
-  appearance: none;
+}
+.project-option:hover,
+.project-new:hover {
+  background: var(--soft);
+}
+.project-menu-footer {
+  margin-top: 4px;
+  padding: 5px 3px 3px;
+  border-top: 1px solid var(--border);
+}
+.project-new {
+  gap: 8px;
+  color: var(--accent);
+}
+.project-create {
+  padding: 9px;
+}
+.project-create-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 16px -4px;
+}
+.project-create .field {
+  margin: 0;
+  font-size: 12px;
+}
+.project-create input,
+.project-create textarea {
+  width: 100%;
+  font-size: 13px;
+}
+.project-question {
+  margin-top: 16px;
+}
+.project-question summary {
+  color: var(--muted);
+  font-size: 12px;
+}
+.project-question summary span {
+  font-size: 10px;
+  margin-left: 4px;
+}
+.project-question[open] summary {
+  margin-bottom: 8px;
+}
+.project-create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+.project-error {
+  margin: 10px 4px 4px;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 .sidebar nav {
   overflow: auto;
@@ -2005,9 +2123,6 @@ html[data-theme="dark"] .graph-wrap {
   .brand {
     gap: 7px;
   }
-  .project-switch select {
-    width: 100px;
-  }
   .inspector {
     width: 305px;
     min-width: 270px;
@@ -2140,6 +2255,22 @@ html[data-theme="dark"] .graph-wrap {
   flex: 1;
   min-width: 0;
 }
+.breadcrumb-project {
+  min-width: 0;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.topbar .breadcrumb > svg {
+  flex: none;
+}
+.topbar .breadcrumb > strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .run-wayfinding {
   min-width: 0;
 }
@@ -2229,10 +2360,6 @@ html[data-theme="dark"] .graph-wrap {
 .sidebar .recent-run {
   font-size: 11px;
   min-height: 30px;
-}
-.project-switch {
-  margin-top: 0;
-  margin-bottom: 14px;
 }
 .topbar {
   height: 62px;

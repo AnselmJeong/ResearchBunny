@@ -66,6 +66,7 @@ import {
 import { HelpTooltip } from "./components/HelpTooltip";
 import { ArchiveTree } from "./components/ArchiveTree";
 import { ResizableSidebar } from "./components/ResizableSidebar";
+import { ProjectSwitcher } from "./components/ProjectSwitcher";
 import type { Input } from "../shared/contracts";
 import { Graph } from "./components/Graph";
 import { Filters } from "./components/Filters";
@@ -115,7 +116,6 @@ type Dialog =
   | "edit"
   | "seeds"
   | "export"
-  | "project"
   | "collection"
   | "history"
   | "bulk"
@@ -179,7 +179,6 @@ export function App() {
     count: number;
   } | null>(null);
   const [name, setName] = useState(""),
-    [question, setQuestion] = useState(""),
     [bulkReason, setBulkReason] = useState(""),
     [bulkTags, setBulkTags] = useState(""),
     [bulkCollection, setBulkCollection] = useState(""),
@@ -309,9 +308,6 @@ export function App() {
         setNavigation(restored);
         applyView(restored.views[restored.keys[restored.index]]);
         setHydratedProject(current);
-        setQuestion(
-          data.projects.find((p) => p.id === current)?.question || "",
-        );
         setList(EMPTY);
         setRevision((r) => r + 1);
       }
@@ -773,36 +769,18 @@ export function App() {
           <Bunny />
           <strong>ResearchBunny</strong>
         </div>
-        <div className="project-switch">
-          <span className="project-monogram">
-            {currentProject?.name[0] || "R"}
-          </span>
-          <select
-            aria-label="프로젝트"
-            value={projectId}
-            onChange={(e) => {
-              void persistNavigation().catch(onError);
-              setProjectId(e.target.value);
-            }}
-          >
-            {snapshot.projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          <button
-            className="icon-button"
-            title="새 프로젝트"
-            onClick={() => {
-              setName("");
-              setQuestion("");
-              setDialog("project");
-            }}
-          >
-            <Plus size={15} />
-          </button>
-        </div>
+        <ProjectSwitcher projects={snapshot.projects} projectId={projectId}
+          onSelect={async id => {
+            await persistNavigation();
+            setProjectId(id);
+          }}
+          onCreate={async (name, question) => {
+            await persistNavigation();
+            const project = await window.bunny.createProject({ name, question });
+            setSnapshot(current => current && ({ ...current, projects: [...current.projects.filter(p => p.id !== project.id), project] }));
+            setProjectId(project.id);
+            flash("새 프로젝트를 만들었습니다.");
+          }} />
         <nav>
           <button
             className={!fullPage && scope === "run" ? "active" : ""}
@@ -1059,7 +1037,7 @@ export function App() {
             </div>
           ) : (
             <div className="breadcrumb">
-              {currentProject?.name}
+              <span className="breadcrumb-project" title={currentProject?.name}>{currentProject?.name}</span>
               <ChevronRight size={13} />
               <strong>
                 {dialog === "settings"
@@ -1977,23 +1955,16 @@ export function App() {
           onDone={flash}
         />
       )}
-      {(dialog === "project" || dialog === "collection") && (
+      {dialog === "collection" && (
         <Modal
-          title={dialog === "project" ? "새 프로젝트" : "새 컬렉션"}
+          title="새 컬렉션"
           onClose={() => setDialog(null)}
         >
           <form
             onSubmit={(e) => {
               e.preventDefault();
               void task(async () => {
-                if (dialog === "project") {
-                  await persistNavigation();
-                  const p = await window.bunny.createProject({
-                    name,
-                    question,
-                  });
-                  setProjectId(p.id);
-                } else await window.bunny.createCollection({ projectId, name });
+                await window.bunny.createCollection({ projectId, name });
                 setDialog(null);
               });
             }}
@@ -2007,16 +1978,6 @@ export function App() {
                 required
               />
             </label>
-            {dialog === "project" && (
-              <label className="field">
-                연구 질문
-                <textarea
-                  value={question}
-                  onChange={(e) => setQuestion(e.target.value)}
-                  rows={3}
-                />
-              </label>
-            )}
             <footer className="modal-footer">
               <button type="button" onClick={() => setDialog(null)}>
                 취소
