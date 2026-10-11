@@ -137,6 +137,8 @@ export interface ShelfHit {
 export interface ShelfSearchResult {
   hits: ShelfHit[];
   semantic: boolean;
+  /** The query was a DOI, PMID or OpenAlex ID and was looked up directly. */
+  identifier?: boolean;
 }
 
 export interface ParsedFilename {

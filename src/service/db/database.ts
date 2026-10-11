@@ -24,6 +24,7 @@ import {
   titleSimilarity,
   filterReasons,
 } from "../../shared/domain";
+import type { ShelfSearchResult } from "../../shared/shelf";
 
 const SCHEMA = 3;
 const ROOT_FOLDER_LABEL: Record<string, string> = { "": "수신함" };
@@ -635,7 +636,7 @@ export class Library {
     offset: number;
     limit: number;
     sort: string;
-  }): ListResult {
+  }, search?: ShelfSearchResult): ListResult {
     const { projectId, scope, scopeId } = args;
     let sql =
       "SELECT pw.work_id AS id FROM project_works pw WHERE pw.project_id=?";
@@ -673,16 +674,19 @@ export class Library {
       if (scope === "pending")
         sql += " AND coalesce(json_extract(state,'$.pendingDismissed'),0)=0";
     }
-    const rows =
-      scope === "shelf"
+    // A shelf search replaces the folder listing with its ranked hits.
+    const rows = search
+      ? search.hits.map((hit) => ({ id: hit.workId }))
+      : scope === "shelf"
         ? this.shelfScope(scopeId || "all").map((id) => ({ id }))
         : (this.db.prepare(sql).all(...params) as { id: string }[]);
+    const hits = new Map(search?.hits.map((hit) => [hit.workId, hit]));
     let works = this.views(projectId, rows.map((r) => r.id), scope === "run" ? scopeId : undefined);
     if (scope === "run" && this.shelfHints) {
       const hints = this.shelfHints(works.filter((w) => !w.shelf));
       for (const w of works) if (!w.shelf && hints.has(w.id)) w.shelf = hints.get(w.id);
     }
-    if (args.query) {
+    if (args.query && !search) {
       const q = args.query.toLowerCase();
       works = works.filter((w) =>
         `${w.title} ${w.authors.join(" ")} ${w.abstract || ""} ${w.citekey} ${w.state.note} ${w.state.tags.join(" ")}`
@@ -699,6 +703,7 @@ export class Library {
         const i = reasons.indexOf("사용자 제외");
         if (i >= 0) reasons.splice(i, 1);
       }
+      const hit = hits.get(w.id);
       if (w.evidence) w.evidence.hidden = reasons;
       else
         w.evidence = {
@@ -707,8 +712,12 @@ export class Library {
           sharedIds: [],
           denominator: 0,
           relation: "local",
-          score: null,
-          reasons: [],
+          score: hit?.score ?? null,
+          reasons: hit
+            ? [search?.identifier ? "식별자 일치"
+              : hit.semanticRank && hit.lexicalRank ? "의미와 검색어 모두 일치"
+              : hit.semanticRank ? "의미가 가까움" : "검색어 일치"]
+            : [],
           hidden: reasons,
           deferred: false,
           scope: scope === "shelf" ? "서고" : "로컬 아카이브",
@@ -717,7 +726,7 @@ export class Library {
       if (reasons.length) hidden++;
       if (args.showHidden || !reasons.length) kept.push(w);
     }
-    if (scope === "shelf" && args.sort === "rank")
+    if (scope === "shelf" && args.sort === "rank" && !search)
       kept.sort((a, b) => (b.year || 0) - (a.year || 0) || a.title.localeCompare(b.title));
     // Shelf matches stay in their own pinned group instead of competing on score.
     const pinned = scope === "run"
@@ -750,6 +759,7 @@ export class Library {
       works: page,
       context,
       ...(scope === "run" ? { shelf: pinned } : {}),
+      ...(search ? { search: { semantic: search.semantic, identifier: !!search.identifier } } : {}),
       total: kept.length,
       hidden,
       deferred,

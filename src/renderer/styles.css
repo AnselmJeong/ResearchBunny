@@ -3737,3 +3737,18 @@ html[data-theme="dark"] .selection-bar .primary {
 .shelf-candidate > button { margin-left: auto; }
 .shelf-found { margin: 6px 0; color: var(--accent); font-size: 12px; font-weight: 600; }
 .shelf-only-note { padding: 18px 24px; }
+.shelf-search-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 24px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.shelf-search-actions { display: flex; gap: 12px; flex-shrink: 0; }
+.list-toolbar .shelf-search-submit { color: var(--accent); font-weight: 600; }
+.shelf-search-icon { display: inline-flex; }

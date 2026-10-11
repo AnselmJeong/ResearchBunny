@@ -9,6 +9,18 @@ export function normalizeDoi(value: unknown): string | null {
     .toLowerCase();
   return /^10\.\d{4,9}\/\S+$/.test(doi) ? doi : null;
 }
+/** True when a link only resolves `doi`; OpenAlex often reports the DOI link as the landing page. */
+export function isDoiLink(url: string | null | undefined, doi: string | null | undefined): boolean {
+  if (!url || !doi) return false;
+  let value = url;
+  try {
+    value = decodeURIComponent(url);
+  } catch {
+    // keep the raw link
+  }
+  const target = normalizeDoi(doi);
+  return !!target && normalizeDoi(value) === target;
+}
 export function normalizePmid(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const match = value.trim().match(/^(?:pmid:\s*|https?:\/\/pubmed\.ncbi\.nlm\.nih\.gov\/)?([1-9]\d*)\/?$/i);

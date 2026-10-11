@@ -5,9 +5,13 @@ import { normalizeDoi, normalizeOpenAlex, normalizePmid, titleSimilarity } from 
 import type { ShelfMembership, Work } from "../../shared/types";
 import { titleKey, type ShelfFileInfo, type ShelfHit, type ShelfRelated, type ShelfRelatedItem, type ShelfSearchResult } from "../../shared/shelf";
 
+// With OR, a function word would match almost every paper and fill the lexical list.
+const STOPWORDS = new Set(
+  "about after an and are as at be between by can do does for from has have how in into is it its of on or than that the their these this those to via vs was were what when which who why with".split(" "),
+);
 /** Quote each term so user text can never become FTS5 syntax; OR lets BM25 rank partial matches. */
 export function ftsQuery(text: string): string | null {
-  const terms = [...new Set((text.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}]{2,}/gu) || []))].slice(0, 32);
+  const terms = [...new Set((text.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}]{2,}/gu) || []))].filter((t) => !STOPWORDS.has(t)).slice(0, 32);
   return terms.length ? terms.map((t) => `"${t}"`).join(" OR ") : null;
 }
 /** Reciprocal rank fusion, k = 60 as in mergeScholarlyResults. */
@@ -63,7 +67,7 @@ export class ShelfQueries {
     if (identifier) {
       const id = this.db.findIdentifier(identifier[0], identifier[1]);
       const hits = id && allowed.has(id) ? [id] : [];
-      return { hits: this.hits(hits, new Map(hits.map((h) => [h, 1])), [], hits), semantic: false };
+      return { hits: this.hits(hits, new Map(hits.map((h) => [h, 1])), [], []), semantic: false, identifier: true };
     }
     const lexical: string[] = [];
     const fts = ftsQuery(query);

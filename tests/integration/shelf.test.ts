@@ -352,6 +352,46 @@ test("related papers, hybrid search and lexical fallback when Ollama is off", as
   });
 });
 
+test("the shelf list query is a ranked search scoped to the folder, and filters still apply", async () => {
+  await fixture(async ({ service, dir, projectId, ollama }) => {
+    await configure(service, dir, ollama.url);
+    const smith = fileOf(service, SMITH)!, kim = fileOf(service, KIM)!, park = fileOf(service, PARK)!;
+    const search = (query: string, scopeId: string = SHELF_ALL, filters = DEFAULT_FILTERS): Promise<ListResult> =>
+      service.call("list", { projectId, scope: "shelf", scopeId, query, filters, showHidden: false, offset: 0, limit: 50, sort: "rank" });
+
+    // The words are not one substring of any record, so the old filter found nothing.
+    const found = await search("interoceptive prediction errors anxiety heartbeat");
+    expect(found.search).toEqual({ semantic: true, identifier: false });
+    expect(found.works[0]).toMatchObject({ id: smith.work_id, evidence: { reasons: ["의미와 검색어 모두 일치"] } });
+    expect(found.works.map((w) => w.id)).not.toContain(park.work_id);
+    expect(found.total).toBe(found.ids.length);
+
+    // A folder search only looks inside that folder (and its subfolders).
+    const domainB = await search("hearing cognitive impairment interoceptive anxiety", park.folder_id);
+    expect(domainB.works.map((w) => w.id)).toEqual([park.work_id]);
+    const domainA = (service.db.db.prepare("SELECT id FROM shelf_folders WHERE rel_path='01 Domain A'").get() as { id: string }).id;
+    expect((await search("dopamine memory navigation", domainA)).works[0].id).toBe(kim.work_id);
+
+    // Filters narrow the ranked hits instead of replacing them.
+    const filtered = await search("interoceptive prediction errors anxiety heartbeat", SHELF_ALL, { ...DEFAULT_FILTERS, yearTo: 2023 });
+    expect(filtered.works.map((w) => w.id)).not.toContain(smith.work_id);
+    expect(filtered.hidden).toBeGreaterThan(0);
+
+    const doi = await search("10.2000/dopamine");
+    expect(doi.search).toEqual({ semantic: false, identifier: true });
+    expect(doi.works.map((w) => [w.id, w.evidence?.reasons[0]])).toEqual([[kim.work_id, "식별자 일치"]]);
+
+    // Without Ollama only the word index answers, and the list says so.
+    ollama.setUp(false);
+    service.shelf["modelKey"] = null;
+    const lexical = await search("dopamine");
+    expect(lexical.search).toEqual({ semantic: false, identifier: false });
+    expect(lexical.works.map((w) => [w.id, w.evidence?.reasons[0]])).toEqual([[kim.work_id, "검색어 일치"]]);
+    // Function words alone match nothing.
+    expect((await search("of the in")).works).toEqual([]);
+  });
+});
+
 test("searches look in the shelf first, pin shelf hits, badge identity matches and spend no API budget offline", async () => {
   await fixture(async ({ service, dir, projectId, ollama, calls }) => {
     await configure(service, dir, ollama.url);

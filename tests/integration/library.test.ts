@@ -8,6 +8,7 @@ import { Library } from "../../src/service/db/database";
 import {
   blankWork,
   normalizeDoi,
+  isDoiLink,
   restoreAbstract,
   relatedness,
   filterReasons,
@@ -119,6 +120,10 @@ async function finished(db: Library, id: string) {
 test("DOI normalization and sparse abstracts distinguish null from known empty", () => {
   assert.equal(normalizeDoi(" HTTPS://doi.org/10.1234/AbCd "), "10.1234/abcd");
   assert.equal(normalizeDoi("not-a-doi"), null);
+  // OpenAlex landing pages that are only the DOI link duplicate the DOI button.
+  assert.equal(isDoiLink("https://doi.org/10.1002/%28SICI%291097-0258", "10.1002/(sici)1097-0258"), true);
+  assert.equal(isDoiLink("https://www.nature.com/articles/x", "10.1038/x"), false);
+  assert.equal(isDoiLink("https://doi.org/10.1/other", "10.1234/abcd"), false);
   assert.equal(restoreAbstract({ world: [1], hello: [0] }), "hello world");
   assert.equal(restoreAbstract(null), null);
   assert.equal(restoreAbstract({ a: [0], b: [0] }), null);

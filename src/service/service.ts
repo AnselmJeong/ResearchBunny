@@ -32,6 +32,7 @@ import { planPdfExport, pdfExportTargets, previewPdfExport, exportPdfFolders } f
 import { schemas } from "../shared/contracts";
 import { Shelf } from "./shelf/indexer";
 import { ShelfQueries } from "./shelf/search";
+import { SHELF_ALL } from "../shared/shelf";
 import { searchEvidence, type SearchKeys } from "./chat/search";
 import type { ChatSource } from "../shared/chat";
 export class Service {
@@ -218,6 +219,11 @@ export class Service {
         return;
       }
       case "list":
+        // In the shelf the query is a hybrid (meaning + words) search; elsewhere it filters by substring.
+        if (args.scope === "shelf" && args.query?.trim() && this.shelf.root()) {
+          const search = await this.shelfQueries.search(args.query.trim(), { limit: 200, folderIds: [args.scopeId || SHELF_ALL] });
+          return this.db.list(args, search);
+        }
         return this.db.list(args);
       case "classifyArchive":
         if (this.busy()) throw new AppError("BUSY", "진행 중인 작업이 끝난 뒤 자동 분류하세요.");

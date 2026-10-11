@@ -145,6 +145,8 @@ export function App() {
     [scopeId, setScopeId] = useState("");
   const [query, setQuery] = useState(""),
     [localQuery, setLocalQuery] = useState(""),
+    // The shelf search embeds the query, so it runs on Enter instead of on every keystroke.
+    [searchDraft, setSearchDraft] = useState(""),
     [sort, setSort] = useState<
       "rank" | "year" | "citations" | "title" | "updated"
     >("rank"),
@@ -156,6 +158,7 @@ export function App() {
     [filtersOpen, setFiltersOpen] = useState(false),
     [limit, setLimit] = useState(50);
   const [offset, setOffset] = useState(0);
+  useEffect(() => setSearchDraft(localQuery), [localQuery]);
   const [list, setList] = useState<ListResult>(EMPTY),
     [selected, setSelected] = useState<string[]>([]),
     [inspectorId, setInspectorId] = useState<string | null>(null),
@@ -526,6 +529,9 @@ export function App() {
       !classification.topics.some(topic => topic.id === scopeId)) navigate("archive");
   }, [classification, hydratedProject, projectId, scope, scopeId]);
   const trail = scope === "run" ? runPath(snapshot?.runs || [], scopeId) : [];
+  // In the shelf the list query is a ranked search, not a word filter.
+  const shelfSearch = scope === "shelf" && !!localQuery.trim();
+  const shelfScopeAll = (scopeId || SHELF_ALL) === SHELF_ALL;
   const inspect = (id: string) => {
     readerRequest.current++;
     setReaderVisible(false);
@@ -1390,23 +1396,62 @@ export function App() {
                   )}
                 </div>
                 <div className="list-toolbar">
-                  <div className="local-search">
-                    <Search size={14} />
-                    <input
-                      aria-label="현재 문헌에서 찾기"
-                      placeholder={
-                        scope === "run"
-                          ? "결과 내 검색"
-                          : scope === "collection"
-                            ? "컬렉션에서 찾기"
-                            : scope === "shelf"
-                              ? "서고 폴더에서 찾기"
+                  {scope === "shelf" ? (
+                    <form
+                      className="local-search shelf-search"
+                      role="search"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        // Read the field itself: Enter can commit a Hangul syllable in the same keystroke.
+                        const field = e.currentTarget.elements.namedItem("q") as HTMLInputElement;
+                        setLocalQuery(field.value.trim());
+                        setOffset(0);
+                      }}
+                    >
+                      <span className="shelf-search-icon" data-help="제목·초록의 의미가 가까운 논문을 관련도순으로 보여 줍니다. 한국어 질의도 됩니다. 단어가 들어 있는지로 거르려면 필터의 포함어를 쓰세요.">
+                        {loading && shelfSearch ? <LoaderCircle size={14} className="spin" aria-hidden="true" /> : <Search size={14} aria-hidden="true" />}
+                      </span>
+                      <input
+                        name="q"
+                        aria-label="서고에서 의미로 검색"
+                        placeholder={shelfScopeAll ? "서고 전체에서 주제·질문으로 검색" : "이 폴더에서 주제·질문으로 검색"}
+                        value={searchDraft}
+                        onChange={(e) => setSearchDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape" && (searchDraft || localQuery)) {
+                            e.preventDefault();
+                            setLocalQuery("");
+                            setSearchDraft("");
+                          }
+                        }}
+                      />
+                      {searchDraft.trim() && searchDraft.trim() !== localQuery.trim() && (
+                        <button type="submit" className="shelf-search-submit" aria-label="서고 검색 실행">검색</button>
+                      )}
+                      {(searchDraft || localQuery) && (
+                        <button type="button" className="icon-button" title="검색 지우기" aria-label="검색 지우기"
+                          onClick={() => { setLocalQuery(""); setSearchDraft(""); }}>
+                          <X size={13} />
+                        </button>
+                      )}
+                    </form>
+                  ) : (
+                    <div className="local-search">
+                      <Search size={14} />
+                      <input
+                        aria-label="현재 문헌에서 찾기"
+                        placeholder={
+                          scope === "run"
+                            ? "결과 내 검색"
+                            : scope === "collection"
+                              ? "컬렉션에서 찾기"
                               : "아카이브에서 찾기"
-                      }
-                      value={localQuery}
-                      onChange={(e) => setLocalQuery(e.target.value)}
-                    />
-                  </div>
+                        }
+                        value={localQuery}
+                        onChange={(e) => setLocalQuery(e.target.value)}
+                      />
+                    </div>
+                  )}
                   {scope !== "run" && (
                     <div
                       className="reading-filter"
@@ -1443,7 +1488,7 @@ export function App() {
                     value={sort}
                     onChange={(e) => setSort(e.target.value as typeof sort)}
                   >
-                    <option value="rank">기본 순서</option>
+                    <option value="rank">{shelfSearch ? "관련도순" : "기본 순서"}</option>
                     <option value="year">최신순</option>
                     <option value="citations">피인용수순</option>
                     <option value="title">제목순</option>
@@ -1457,6 +1502,32 @@ export function App() {
                     <Plus size={16} />
                   </button>
                 </div>
+                {shelfSearch && (
+                  <div className="shelf-search-status" role="status">
+                    <span>
+                      {loading
+                        ? "서고에서 찾는 중…"
+                        : `‘${localQuery.trim()}’ 관련 ${list.total.toLocaleString()}편${sort === "rank" ? " · 관련도순" : ""}`}
+                      {!loading && list.search && !list.search.semantic && !list.search.identifier &&
+                        " · Ollama를 쓸 수 없어 검색어가 들어 있는 논문만 찾았습니다."}
+                    </span>
+                    <span className="shelf-search-actions">
+                      {!shelfScopeAll && (
+                        <button className="text-button" onClick={() => {
+                          const q = localQuery;
+                          navigate("shelf", SHELF_ALL);
+                          setLocalQuery(q);
+                          setOffset(0);
+                        }}>
+                          서고 전체에서 찾기
+                        </button>
+                      )}
+                      <button className="text-button" onClick={() => { setLocalQuery(""); setSearchDraft(""); }}>
+                        검색 지우기
+                      </button>
+                    </span>
+                  </div>
+                )}
                 {filtersOpen && (
                   <Filters value={filters} onChange={setFilters} />
                 )}
@@ -1543,6 +1614,8 @@ export function App() {
                       <h2>
                         {list.hidden
                           ? "조건에 맞는 문헌이 없습니다."
+                          : shelfSearch
+                            ? `‘${localQuery.trim()}’ 관련 논문을 찾지 못했습니다.`
                           : scope === "archive"
                             ? "첫 문헌부터 시작하세요."
                             : scope === "shelf"
@@ -1556,6 +1629,8 @@ export function App() {
                       <p>
                         {list.hidden
                           ? "필터 조건을 완화하거나 초기화해 주세요."
+                          : shelfSearch
+                            ? "다른 표현으로 찾거나 서고 전체에서 검색해 보세요."
                           : "주제나 DOI로 검색하고 관심 논문을 골라보세요. 기존 BibTeX와 PDF로도 시작할 수 있습니다."}
                       </p>
                       <div className="inline-actions">

@@ -1,4 +1,4 @@
-import { pmidOf } from "../../shared/domain";
+import { isDoiLink, pmidOf } from "../../shared/domain";
 import { useEffect, useState } from "react";
 import { RelatedShelf } from "./RelatedShelf";
 import type { ShelfFileDetails } from "../../shared/contracts";
@@ -227,7 +227,7 @@ export function Inspector({
               DOI <ArrowUpRight size={13} />
             </button>
           )}
-          {work.url && (
+          {work.url && !isDoiLink(work.url, work.doi) && (
             <button
               onClick={() =>
                 void window.bunny
@@ -235,7 +235,7 @@ export function Inspector({
                   .catch(onError)
               }
             >
-              원문 페이지 <ArrowUpRight size={13} />
+              {/^https:\/\/openalex\.org\//i.test(work.url) ? "OpenAlex" : "원문 페이지"} <ArrowUpRight size={13} />
             </button>
           )}
           {work.oaUrl && (

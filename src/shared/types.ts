@@ -370,6 +370,8 @@ export interface ListResult {
   context?: WorkView[];
   /** Run results found in the shelf, pinned above external results. */
   shelf?: WorkView[];
+  /** Set when a shelf list was ranked by a search; `semantic` is false when only words matched (Ollama off). */
+  search?: { semantic: boolean; identifier: boolean };
   total: number;
   hidden: number;
   deferred: number;
