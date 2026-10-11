@@ -1989,6 +1989,7 @@ export function App() {
         <ImportDialog
           projectId={projectId}
           collections={snapshot.collections}
+          shelf={snapshot.shelf.configured}
           onClose={() => setDialog(null)}
           onError={onError}
           onImported={(r) => {

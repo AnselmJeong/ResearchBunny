@@ -1,4 +1,5 @@
-// Shelf ("서고"): a read-only, app-wide PDF library kept outside projects.
+// Shelf ("서고"): the app-wide PDF library kept outside projects. Indexing is
+// read-only; the app's own downloads and imports are added to the root (inbox).
 export const DEFAULT_SHELF_EXCLUDE = ["_system", "_news", "_to_delete", "_duplicated", "_summaries"];
 export const DEFAULT_EMBED_MODEL = "embeddinggemma-2:latest";
 export const DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434";
@@ -40,7 +41,8 @@ export interface ShelfFileInfo {
   pages?: number | null;
   extraction?: string;
   resolution?: {
-    method: "hash" | "doi" | "title" | "manual" | "provisional";
+    /** `app`: downloaded or imported by the app and stored in the inbox for this work. */
+    method: "hash" | "app" | "doi" | "title" | "manual" | "provisional";
     similarity?: number;
     doi?: string;
     note?: string;
@@ -105,9 +107,18 @@ export interface OllamaStatus {
 }
 export interface ShelfStatusResult {
   summary: ShelfSummary;
+  /** PDFs still kept in the app's own folder, which can be moved into the inbox. */
+  managed: number;
   config: ShelfConfig | null;
   ollama: OllamaStatus;
   failures: { fileId: string; path: string; reason: string }[];
+}
+export interface ShelfAdoptResult {
+  moved: number;
+  linked: number;
+  /** Papers the shelf already holds as another file; their app copies stay. */
+  kept: string[];
+  failed: { workId: string; reason: string }[];
 }
 export interface ShelfRelatedItem {
   workId: string;
@@ -147,15 +158,53 @@ export interface ParsedFilename {
 /** Parse the library's `연도 - 저자 - 제목.pdf` naming convention. */
 export function parseShelfFilename(name: string): ParsedFilename | null {
   const base = name.replace(/\.pdf$/i, "").normalize("NFC").trim();
-  const match = base.match(/^(\d{4})\s+-\s+(.+?)\s+-\s+(.+)$/);
+  const match = base.match(/^(\d{4}|n\.d\.)\s+-\s+(.+?)\s+-\s+(.+)$/i);
   if (!match) return null;
   const year = Number(match[1]);
   const authors = match[2]
     .replace(/,?\s*et\s+al\.?$/i, "")
     .split(/\s*(?:,|;|&|\band\b)\s*/i)
     .map((a) => a.trim())
-    .filter((a) => a && !/^et\s+al\.?$/i.test(a));
+    .filter((a) => a && !/^et\s+al\.?$/i.test(a) && !/^unknown$/i.test(a));
   return { year: year >= 1500 && year <= 2200 ? year : null, authors, title: match[3].trim() };
+}
+
+/**
+ * Last word of the family name from "Given Family" (OpenAlex) or "Family, Given"
+ * (PubMed, BibTeX). The shelf drops particles ("van der Wal" → "Wal", 86 of 109
+ * names) and writes all-caps names in title case.
+ */
+export function familyName(name: string): string {
+  const clean = name.normalize("NFC").replace(/\s+/g, " ").trim();
+  const family = clean.includes(",") ? clean.split(",")[0].trim() : clean;
+  const last = family.split(" ").filter((t) => !/^(?:jr|sr|ii|iii|iv)\.?$/i.test(t)).pop() || "";
+  return /\p{Ll}/u.test(last) || last.length < 2 ? last : last.toLowerCase().replace(/(^|[-‐'’])(\p{L})/gu, (_, sep: string, ch: string) => sep + ch.toUpperCase());
+}
+/** Long shelf names are cut at a word and end in " ...", 240 bytes in all. */
+const MAX_FILENAME_BYTES = 240;
+const encoder = new TextEncoder();
+const bytes = (text: string) => encoder.encode(text).length;
+/**
+ * The shelf's `연도 - 저자 - 제목.pdf` name (inverse of parseShelfFilename):
+ * one author `Kim`, two `Kim, Lee`, more `Kim et al.`; ':' becomes ';' and
+ * characters that are unsafe in file names are dropped.
+ */
+export function formatShelfFilename(work: { year: number | null; authors: string[]; title: string }): string {
+  const names = work.authors.map(familyName).filter(Boolean);
+  const authors = names.length === 0 ? "Unknown" : names.length === 1 ? names[0] : names.length === 2 ? `${names[0]}, ${names[1]}` : `${names[0]} et al.`;
+  const clean = (text: string) => text.normalize("NFC").replace(/<[^>]+>/g, "").replace(/\s*:\s*/g, "; ").replace(/[?*"<>|\\/]|\p{Cc}/gu, "").replace(/\s+/g, " ").trim();
+  const head = `${work.year ?? "n.d."} - ${clean(authors)} - `;
+  let title = clean(work.title).replace(/[.\s]+$/, "") || "Untitled";
+  if (bytes(head + title + ".pdf") > MAX_FILENAME_BYTES) {
+    const room = MAX_FILENAME_BYTES - bytes(head + " ....pdf");
+    let cut = "";
+    for (const char of title) {
+      if (bytes(cut + char) > room) break;
+      cut += char;
+    }
+    title = `${cut.replace(/\s+\S*$/, "").trim() || cut.trim()} ...`;
+  }
+  return `${head}${title}.pdf`;
 }
 
 /** Accent- and case-insensitive surname token for first-author checks. */

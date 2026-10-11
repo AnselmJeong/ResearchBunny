@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { FolderOpen, LibraryBig, LoaderCircle, Pause, Play, RefreshCw } from "lucide-react";
-import { DEFAULT_EMBED_MODEL, DEFAULT_OLLAMA_URL, DEFAULT_SHELF_EXCLUDE, isLoopbackUrl, type ShelfStatusResult } from "../../shared/shelf";
+import { DEFAULT_EMBED_MODEL, DEFAULT_OLLAMA_URL, DEFAULT_SHELF_EXCLUDE, isLoopbackUrl, type ShelfAdoptResult, type ShelfStatusResult } from "../../shared/shelf";
 import type { Input } from "../../shared/contracts";
 
 const STATUS_LABELS: [keyof ShelfStatusResult["summary"]["counts"]["statuses"], string][] = [
@@ -14,6 +14,7 @@ export function ShelfSettings({ onError, onChanged }: { onError: (error: unknown
   const [model, setModel] = useState(DEFAULT_EMBED_MODEL);
   const [ollamaUrl, setOllamaUrl] = useState(DEFAULT_OLLAMA_URL);
   const [busy, setBusy] = useState(false);
+  const [adopted, setAdopted] = useState<ShelfAdoptResult | null>(null);
   const load = (initial = false) => window.bunny.shelfStatus({}).then((next) => {
     setStatus(next);
     if (initial && next.config) {
@@ -46,7 +47,7 @@ export function ShelfSettings({ onError, onChanged }: { onError: (error: unknown
   const remote = !isLoopbackUrl(ollamaUrl);
   return <section id="settings-shelf" className="settings-group shelf-settings">
     <h3><LibraryBig size={16} /> 서고</h3>
-    <p className="subtle">이미 정리해 둔 PDF 폴더를 읽기 전용으로 색인합니다. 파일을 옮기거나 이름을 바꾸거나 새 파일을 만들지 않습니다. 서고 논문은 모든 프로젝트에서 열람·추천·검색에 쓰이고, 프로젝트에 저장할 때만 아카이브에 들어갑니다.</p>
+    <p className="subtle">이미 정리해 둔 PDF 폴더를 색인합니다. 앱이 내려받거나 가져온 PDF는 서고 맨 위 폴더(수신함)에 <code>연도 - 저자 - 제목.pdf</code>로 저장하고, 서고 파일을 옮기거나 이름을 바꾸거나 지우지 않습니다. 서고 논문은 모든 프로젝트에서 열람·추천·검색에 쓰이고, 프로젝트에 저장할 때만 아카이브에 들어갑니다.</p>
     <label className="field">서고 위치
       <span className="inline-field">
         <input value={path} placeholder="/Volumes/LIBRARY/Articles" onChange={(e) => setPath(e.target.value)} />
@@ -104,6 +105,12 @@ export function ShelfSettings({ onError, onChanged }: { onError: (error: unknown
         <button disabled={busy || running} onClick={() => void control("reembed")}>임베딩 다시 만들기</button>
         {job?.state === "confirm" && <button disabled={busy} onClick={() => void control("confirmMissing")}>사라진 파일 반영</button>}
       </div>
+      {(!!status?.managed || adopted) && <div className="inline-actions">
+        <span className="subtle" role="status">{adopted
+          ? `수신함으로 옮김 ${adopted.moved}개 · 서고 파일에 연결 ${adopted.linked}개${adopted.kept.length ? ` · 서고에 다른 파일로 있어 그대로 둠 ${adopted.kept.length}편` : ""}${adopted.failed.length ? ` · 실패 ${adopted.failed.length}개` : ""}`
+          : `앱 폴더에 보관 중인 PDF ${status!.managed.toLocaleString()}개`}</span>
+        {!!status?.managed && <button disabled={busy || running} onClick={() => void act(async () => setAdopted(await window.bunny.shelfAdopt({})))}>서고 수신함으로 옮기기</button>}
+      </div>}
       {!!status?.failures.length && <details className="settings-advanced">
         <summary>실패 {status.failures.length}건</summary>
         <ul className="shelf-failures">{status.failures.map((f) => <li key={f.fileId}><strong>{f.path}</strong><span className="subtle"> · {f.reason}</span></li>)}</ul>
