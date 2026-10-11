@@ -1,12 +1,12 @@
 import { test, expect } from "bun:test";
-import { mkdtemp, mkdir, writeFile, readdir, stat, rename, rm, copyFile } from "node:fs/promises";
-import { join, resolve, relative } from "node:path";
+import { mkdtemp, mkdir, writeFile, readdir, stat, rename, rm, copyFile, utimes } from "node:fs/promises";
+import { basename, join, resolve, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { Service } from "../../src/service/service";
 import { Library } from "../../src/service/db/database";
 import { blankWork } from "../../src/shared/domain";
-import { DEFAULT_FILTERS, type Run, type Work, type ListResult } from "../../src/shared/types";
+import { AppError, DEFAULT_FILTERS, type Run, type Work, type ListResult, type MissingPdfs } from "../../src/shared/types";
 import { hasValidPdf } from "../../src/service/interchange/pdf";
 import { mergeWorks, undoMerge } from "../../src/service/db/merge";
 import { deleteTrashedWorks } from "../../src/service/db/trash";
@@ -429,6 +429,66 @@ test("full-text jobs link shelf PDFs instead of downloading; deletion and merges
     expect(fileOf(service, SMITH)!.work_id).toBe(smith.work_id);
     expect(service.db.db.prepare("SELECT count(*) AS n FROM work_embeddings WHERE work_id=?").get(smith.work_id)).toEqual({ n: 1 });
     expect((await service.call("shelfSearch", { projectId, query: "interoceptive", limit: 5 })).hits[0].workId).toBe(smith.work_id);
+  });
+});
+
+test("full-text jobs look in the shelf before Chrome, the download folder and the network, also while the shelf is offline", async () => {
+  await fixture(async ({ service, dir, projectId, ollama, root }) => {
+    await configure(service, dir, ollama.url);
+    const smith = fileOf(service, SMITH)!, kim = fileOf(service, KIM)!;
+    // The shelf's own paper (merged by DOI), one with stop-word and punctuation differences, and two papers it lacks.
+    // Runs go in id order, so the variant comes after both downloads.
+    const variant = service.db.upsert(blankWork({ id: "z-variant", title: "The Dopamine Dynamics & Memory-Guided Behavior", authors: ["Min Kim"], year: 2023, citekey: "" })).work;
+    const stranger = service.db.upsert(blankWork({ id: "0-stranger", title: "Memory-guided behavior and dopamine dynamics", authors: ["Z Nobody"], year: 2023, citekey: "" })).work;
+    const absent = service.db.upsert(blankWork({ id: "0-absent", title: "Sleep spindles and overnight memory consolidation", year: 2019, doi: "10.5000/sleep", citekey: "" })).work;
+    service.db.mutate(projectId, [smith.work_id, variant.id, stranger.id, absent.id], { screening: "included" });
+    // Smith's PDF was also downloaded in Chrome; recovering it would duplicate the shelf file.
+    const downloads = join(root, "Downloads");
+    await pdf(join(downloads, "smith.pdf"), ["Interoceptive prediction errors in anxiety", "10.1000/intero"]);
+    await utimes(join(downloads, "smith.pdf"), new Date(Date.now() - 60000), new Date(Date.now() - 60000));
+    const tried: string[] = [];
+    let linkedBeforeNetwork = false;
+    service.downloads["browser"].retrieve = async (work) => {
+      if (!tried.length) linkedBeforeNetwork = service.db.attachments(variant.id).length === 1;
+      tried.push(work.id);
+      throw new AppError("CHROME_TIMEOUT", "no browser in tests");
+    };
+    service.downloads["engine"].retrieve = async (work) => { tried.push(work.id); throw new AppError("FULLTEXT_UNAVAILABLE", "no network in tests"); };
+    // The NAS is unmounted: Smith's linked shelf PDF cannot be verified.
+    await rename(dir, `${dir}-unmounted`);
+    expect(await hasValidPdf(service.db, smith.work_id)).toBe(false);
+
+    const missing: MissingPdfs = await service.call("missingPdfs", { projectId, scope: "archive" });
+    expect(missing).toMatchObject({ total: 4, existing: 0, shelf: 1, eligible: 4 });
+    const byId = new Map(missing.items.map((item) => [item.workId, item]));
+    expect(byId.get(smith.work_id)).toMatchObject({ status: "missing", message: expect.stringContaining("서고") });
+    expect(byId.get(smith.work_id)!.shelf).toBeUndefined();
+    expect(byId.get(variant.id)!.shelf).toEqual([{ fileId: kim.id, name: basename(KIM), folder: "01 Domain A/Leaf Y" }]);
+    expect(byId.get(stranger.id)!.shelf).toBeUndefined();
+
+    const run: Run = await service.call("downloadPdfs", { projectId, scope: "archive", useBrowser: true, downloadDirectory: downloads });
+    while (service.downloads.active.size) await Bun.sleep(10);
+    const items = new Map(service.db.run(run.id).download!.items.map((item) => [item.workId, item]));
+    expect(tried.sort()).toEqual([absent.id, absent.id, stranger.id, stranger.id].sort());
+    expect(linkedBeforeNetwork).toBe(true);
+    expect(items.get(smith.work_id)).toMatchObject({ status: "skipped", message: expect.stringContaining("다운로드하지 않았습니다") });
+    expect(items.get(variant.id)).toMatchObject({ status: "completed", message: "서고 PDF 연결 · 다운로드 없음 (01 Domain A/Leaf Y)" });
+    expect(service.db.attachments(smith.work_id).map((a) => a.mode)).toEqual(["linked"]);
+    expect(service.db.attachments(variant.id)).toEqual([expect.objectContaining({ mode: "linked", shelfFileId: kim.id })]);
+    expect(await readdir(join(service.db.root, "attachments")).catch(() => [])).toEqual([]);
+
+    // Recovering Chrome downloads in the background leaves shelf papers alone as well.
+    const failed = service.db.run(run.id);
+    failed.download!.items.find((item) => item.workId === smith.work_id)!.status = "failed";
+    service.db.saveRun(failed);
+    await service.downloads.recoverCompleted();
+    expect(service.db.attachments(smith.work_id)).toHaveLength(1);
+
+    await rename(`${dir}-unmounted`, dir);
+    expect(await hasValidPdf(service.db, smith.work_id)).toBe(true);
+    expect(await hasValidPdf(service.db, variant.id)).toBe(true);
+    await service.downloads.syncHistory();
+    expect(service.db.run(run.id).download!.items.find((item) => item.workId === smith.work_id)).toMatchObject({ status: "completed" });
   });
 });
 

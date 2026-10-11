@@ -90,7 +90,7 @@ export class Service {
     this.pdf = new PdfImports(this.db, this.oa, workerPath, emit);
     this.downloads = new PdfDownloads(this.db, workerPath, emit);
     this.downloads.shelf = {
-      match: (work) => this.shelf.root() ? this.shelfQueries.matchShelf(work).map((m) => ({ fileId: m.fileId, name: m.path.split("/").pop() || m.title, folder: m.folder })) : [],
+      match: (work) => this.shelf.root() ? this.shelfQueries.heldBy(work).map((m) => ({ fileId: m.fileId, name: m.path.split("/").pop() || m.title, folder: m.folder, own: m.own })) : [],
       attach: (fileId, workId) => this.shelf.attachTo(fileId, workId),
     };
     this.classifier = new ArchiveClassifier(this.db, this.ai, emit);
