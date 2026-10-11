@@ -484,6 +484,12 @@ export function App() {
     () => [...(list.context || []), ...list.works],
     [list.context, list.works],
   );
+  const graphContextIds = useMemo(
+    () => (list.context || []).map((work) => work.id),
+    [list.context],
+  );
+  // A graph scope whose papers are all unlinked still shows the graph and why it is empty.
+  const graphScope = graphView && list.total > 0;
   const allPageSelected = list.works.length > 0 &&
     list.works.every((work) => selected.includes(work.id));
   const somePageSelected = list.works.some((work) => selected.includes(work.id));
@@ -1575,11 +1581,11 @@ export function App() {
                       <LoaderCircle size={24} className="spin" />
                       <span>문헌을 불러오는 중…</span>
                     </div>
-                  ) : !list.works.length && list.shelf?.length ? (
+                  ) : !list.works.length && !graphScope && list.shelf?.length ? (
                     <p className="subtle shelf-only-note">
                       {currentRun?.rankingVersion === "shelf-v1" ? "서고에서만 찾았습니다. 외부 검색은 검색 버튼으로 실행하세요." : "서고 밖 검색 결과가 없거나 필터로 숨겨졌습니다."}
                     </p>
-                  ) : !list.works.length ? (
+                  ) : !list.works.length && !graphScope ? (
                     <div className="empty-state">
                       <div className="empty-graphic">
                         <div className="orbit-node n1" />
@@ -1802,8 +1808,10 @@ export function App() {
                     <Graph
                       works={graphWorks}
                       topics={snapshot.classification.topics}
+                      subfolders={list.subfolders}
                       resultTotal={list.total}
-                      contextIds={(list.context || []).map((work) => work.id)}
+                      connected={list.graph?.connected}
+                      contextIds={graphContextIds}
                       edges={list.edges}
                       selected={selected}
                       seeds={seeds}
@@ -1818,8 +1826,9 @@ export function App() {
                 </div>
                 <div className="results-footer">
                   <span>
-                    {displayWindow.offset + (list.works.length ? 1 : 0)}–
-                    {displayWindow.offset + list.works.length} / {list.total}편
+                    {graphView
+                      ? `연결된 ${list.works.length.toLocaleString()}편 / ${list.total.toLocaleString()}편`
+                      : `${displayWindow.offset + (list.works.length ? 1 : 0)}–${displayWindow.offset + list.works.length} / ${list.total}편`}
                     {scope === "run" &&
                     currentRun?.total !== null &&
                     currentRun?.total !== undefined

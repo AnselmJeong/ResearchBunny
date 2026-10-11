@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useMemo } from "react";
 import cytoscape, { type Core, type ElementDefinition } from "cytoscape";
 import { Focus, ZoomIn, ZoomOut, Waypoints, RotateCcw } from "lucide-react";
 import type { WorkView, ArchiveTopic } from "../../shared/types";
-import { archiveNodeColor, UNCLASSIFIED_COLOR } from "../../shared/classification";
+import { archiveNodeColor, subfolderColors, UNCLASSIFIED_COLOR } from "../../shared/classification";
 import { citationWarnings, citationNodeDiameter, incomingCitationCounts, GRAPH_LIMIT } from "../../shared/graph";
 import { similarityEdges } from "../../shared/domain";
 import {
@@ -14,7 +14,9 @@ import {
 export function Graph({
   works,
   topics,
+  subfolders,
   resultTotal,
+  connected,
   contextIds,
   edges,
   selected,
@@ -28,7 +30,10 @@ export function Graph({
 }: {
   works: WorkView[];
   topics: ArchiveTopic[];
+  subfolders?: Record<string, string>;
   resultTotal: number;
+  /** Papers in scope linked to another paper, before the node limit. */
+  connected?: number;
   contextIds: string[];
   edges: { source: string; target: string }[];
   selected: string[];
@@ -67,16 +72,35 @@ export function Graph({
     [label, setLabel] = useState(true),
     [similarity, setSimilarity] = useState(true);
   const [topicColors, setTopicColors] = useState(true);
-  const colorByTopic = topicColors && topics.length > 0;
-  const display = useMemo(() => works.slice(0, GRAPH_LIMIT), [works]);
   const visibleEdges = useMemo(() => {
-    const ids = new Set(display.map((work) => work.id));
+    const ids = new Set(works.map((work) => work.id));
     return edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target));
-  }, [display, edges]);
+  }, [works, edges]);
   const warnings = useMemo(
-    () => citationWarnings(display, visibleEdges),
-    [display, visibleEdges],
+    () => citationWarnings(works, visibleEdges),
+    [works, visibleEdges],
   );
+  const citationLinks = useMemo(
+    () => visibleEdges
+      .filter((edge) => showQuestionable || !warnings.has(`${edge.source}:${edge.target}`))
+      .slice(0, 3000),
+    [visibleEdges, warnings, showQuestionable],
+  );
+  const relatedLinks = useMemo(
+    () => similarity ? similarityEdges(works).slice(0, 1000) : [],
+    [works, similarity],
+  );
+  // Singletons say nothing in a citation graph; this also drops papers whose links are switched off or capped.
+  const display = useMemo(() => {
+    const linked = new Set([...citationLinks, ...relatedLinks].flatMap((edge) => [edge.source, edge.target]));
+    return works.filter((work) => linked.has(work.id) || contextIds.includes(work.id));
+  }, [works, citationLinks, relatedLinks, contextIds]);
+  const folderPalette = useMemo(
+    () => subfolders ? subfolderColors(display.map((work) => work.id), subfolders) : null,
+    [display, subfolders],
+  );
+  const byFolder = !!folderPalette?.groups.length;
+  const colorByTopic = topicColors && (byFolder || topics.length > 0);
   const incomingCitations = useMemo(
     () => incomingCitationCounts(
       display.map((work) => work.id),
@@ -90,6 +114,7 @@ export function Graph({
     contextIds.includes(work.id),
   ).length;
   const resultCount = display.length - extraCount;
+  const isolatedCount = connected === undefined ? 0 : resultTotal - connected;
   const visibleTopics = topics.filter(topic => display.some(work => work.state.screening === "included" && work.archiveTopicId === topic.id));
   const hasUnclassified = display.some(work => archiveNodeColor(work, topics) === UNCLASSIFIED_COLOR);
   useEffect(() => {
@@ -264,7 +289,7 @@ export function Graph({
     );
     instance.on("dragfreeon", "node", () => {
       if (!callbacks.current.timeline)
-        callbacks.current.onPositions(capturePositions(instance));
+        callbacks.current.onPositions({ ...callbacks.current.positions, ...capturePositions(instance) });
     });
     const resize = new ResizeObserver(() => instance.resize());
     resize.observe(host.current);
@@ -306,21 +331,16 @@ export function Graph({
         label: labeled.has(w.id) ? paperLabel(w) : "",
         fullLabel: paperLabel(w),
         diameter: citationNodeDiameter(incomingCitations.get(w.id) ?? 0, maximumCitations),
-        topicColor: archiveNodeColor(w, topics) || UNCLASSIFIED_COLOR,
+        topicColor: byFolder ? folderPalette!.color(w.id) : archiveNodeColor(w, topics) || UNCLASSIFIED_COLOR,
       },
       position: positions[w.id],
       classes: [
         seeds.includes(w.id) ? "seed" : "",
         w.state.screening === "included" ? "saved" : "",
-        colorByTopic && w.state.screening === "included" ? "topic-colored" : "",
+        colorByTopic && (byFolder || w.state.screening === "included") ? "topic-colored" : "",
       ].join(" "),
     }));
-    for (const edge of visibleEdges
-      .filter(
-        (edge) =>
-          showQuestionable || !warnings.has(`${edge.source}:${edge.target}`),
-      )
-      .slice(0, 3000))
+    for (const edge of citationLinks)
       definitions.push({
         data: {
           id: edge.source + "-" + edge.target,
@@ -331,13 +351,11 @@ export function Graph({
           ? "questionable"
           : "",
       });
-    if (similarity)
-      for (const edge of similarityEdges(display).slice(0, 500)) {
-        definitions.push({
-          data: { id: `similarity-${edge.source}-${edge.target}`, ...edge },
-          classes: "similarity",
-        });
-      }
+    for (const edge of relatedLinks)
+      definitions.push({
+        data: { id: `similarity-${edge.source}-${edge.target}`, ...edge },
+        classes: "similarity",
+      });
     const oldIds = instance
       .nodes()
       .map((node) => node.id())
@@ -359,7 +377,9 @@ export function Graph({
         callbacks.current.positions,
         reset,
       );
-      if (!timeline) callbacks.current.onPositions(capturePositions(instance));
+      // Keep coordinates of papers a toggle hid, so showing them again needs no new layout.
+      if (!timeline)
+        callbacks.current.onPositions({ ...callbacks.current.positions, ...capturePositions(instance) });
       previousTimeline.current = timeline;
       appliedRevision.current = layoutRevision;
     }
@@ -368,17 +388,18 @@ export function Graph({
     // Selection and position updates must not recompute layout.
   }, [
     display,
-    visibleEdges,
+    citationLinks,
+    relatedLinks,
     warnings,
     incomingCitations,
     maximumCitations,
     seeds,
     timeline,
-    showQuestionable,
-    similarity,
     layoutRevision,
     topics,
     colorByTopic,
+    byFolder,
+    folderPalette,
   ]);
   useEffect(() => {
     const instance = cy.current;
@@ -421,6 +442,12 @@ export function Graph({
   return (
     <div className={`graph-wrap${colorByTopic ? " topic-mode" : ""}`}>
       <div ref={host} className="graph-canvas" aria-label="논문 인용 그래프" />
+      {!display.length && (
+        <div className="graph-empty" role="status">
+          <strong>서로 연결된 논문이 없습니다.</strong>
+          <span>현재 범위 {resultTotal.toLocaleString()}편 사이에 표시할 인용·관련 연결이 없습니다. 목록 보기에서 확인하세요.</span>
+        </div>
+      )}
       {timeline && (
         <div className="year-legend">
           {years.map((y) => (
@@ -477,9 +504,9 @@ export function Graph({
           />
           관련 문헌 연결
         </label>
-        {topics.length > 0 && <label>
+        {(byFolder || topics.length > 0) && <label>
           <input type="checkbox" checked={topicColors} onChange={event => setTopicColors(event.target.checked)} />
-          소주제 색상
+          {byFolder ? "하위 폴더 색상" : "소주제 색상"}
         </label>}
         {warnings.size > 0 && (
           <label>
@@ -531,7 +558,16 @@ export function Graph({
         </details>
       )}
       <div className="graph-legend">
-        {colorByTopic && <div className="graph-topic-legend" aria-label="소주제 색상 범례">
+        {colorByTopic && byFolder && <div className="graph-topic-legend" aria-label="하위 폴더 색상 범례">
+          {folderPalette!.groups.map(group => <span key={group.path} title={group.path}>
+            <i className="topic-swatch" style={{ backgroundColor: group.color }} />{group.name}
+          </span>)}
+          {(folderPalette!.loose || folderPalette!.others > 0) && <span title="색은 표시된 논문이 많은 하위 폴더부터 붙습니다.">
+            <i className="topic-swatch" style={{ backgroundColor: UNCLASSIFIED_COLOR }} />
+            {[folderPalette!.loose ? "폴더에 직접 보관" : "", folderPalette!.others ? `기타 폴더 ${folderPalette!.others}개` : ""].filter(Boolean).join(" · ")}
+          </span>}
+        </div>}
+        {colorByTopic && !byFolder && <div className="graph-topic-legend" aria-label="소주제 색상 범례">
           {visibleTopics.map(topic => <span key={topic.id} title={topic.description}>
             <i className="topic-swatch" style={{ backgroundColor: topic.color }} />{topic.name}
           </span>)}
@@ -586,11 +622,12 @@ export function Graph({
             확인 필요 인용
           </span>
         )}
-        <span>
-          현재 범위 {resultTotal}편 중 {resultCount}편 표시
+        <span title="다른 논문과 인용(확인 필요 인용 제외)이나 관련 문헌으로 이어진 논문만 그립니다.">
+          현재 범위 {resultTotal.toLocaleString()}편 중 {resultCount.toLocaleString()}편 표시
           {extraCount > 0 ? ` · 출발 문헌 ${extraCount}편 추가` : ""}
-          {resultCount < resultTotal
-            ? " · 최대 500노드, 필터로 범위를 좁히세요"
+          {isolatedCount > 0 ? ` · 연결 없는 ${isolatedCount.toLocaleString()}편 숨김` : ""}
+          {connected !== undefined && connected > GRAPH_LIMIT
+            ? ` · 연결된 ${connected.toLocaleString()}편 중 연결이 많은 ${GRAPH_LIMIT.toLocaleString()}편까지, 필터로 범위를 좁히세요`
             : ""}
         </span>
         <span>드래그한 노드만 이동 · Shift+드래그로 선택</span>

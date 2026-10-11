@@ -803,20 +803,66 @@ test("reading filters apply before pagination and preserve the archived inventor
   }));
 
 
-test("archive graph loads all 76 papers and their edges without pending papers", () => fixture((db) => {
+test("archive graph draws only linked papers from all 76 and keeps the list window", () => fixture((db) => {
   const projectId = db.projects()[0].id;
   const papers = Array.from({ length: 76 }, (_, n) => db.upsert(fromOpenAlex(raw(n + 500, `Graph archive ${n}`))).work);
   db.mutate(projectId, papers.map((work) => work.id), { screening: "included" });
   const pending = db.upsert(fromOpenAlex(raw(999, "Pending should not appear"))).work;
   db.ensureMembership(projectId, pending.id);
   db.db.prepare("INSERT OR IGNORE INTO citations VALUES(?,?)").run(papers[75].id, papers[0].openalex);
+  // Related works link two papers without any citation between them.
+  const related = { ...papers[40], related: [papers[41].openalex!] };
+  db.db.prepare("UPDATE works SET data=? WHERE id=?").run(JSON.stringify(related), related.id);
+  db.db.prepare("INSERT OR IGNORE INTO citations VALUES(?,?)").run(pending.id, papers[1].openalex);
   const args = { projectId, scope: "archive", query: "", filters: DEFAULT_FILTERS, showHidden: false, sort: "rank", ...resultWindow(true, 50, 50) };
   const graph = db.list(args);
   assert.equal(graph.total, 76);
-  assert.equal(graph.works.length, 76);
+  assert.equal(graph.ids.length, 76);
+  assert.deepEqual(new Set(graph.works.map((work) => work.id)), new Set([papers[0], papers[75], papers[40], papers[41]].map((work) => work.id)));
+  assert.deepEqual(graph.graph, { connected: 4 });
   assert.equal(graph.context?.length, 0);
-  assert(graph.works.every((work) => work.state.screening === "included"));
   assert(!graph.ids.includes(pending.id));
-  assert(graph.edges.some((edge) => edge.source === papers[75].id && edge.target === papers[0].id));
-  assert.equal(db.list({ ...args, ...resultWindow(false, 50, 0) }).works.length, 50);
+  assert.deepEqual(graph.edges, [{ source: papers[75].id, target: papers[0].id }]);
+  assert.equal(graph.subfolders, undefined);
+  const page = db.list({ ...args, ...resultWindow(false, 50, 0) });
+  assert.equal(page.works.length, 50);
+  assert.equal(page.graph, undefined);
+}));
+
+test("shelf graph colours by the subfolder directly below the listed folder", () => fixture((db) => {
+  const projectId = db.projects()[0].id;
+  db.db.prepare("INSERT INTO shelf_roots VALUES('r','/shelf','shelf','[]','2026-01-01',NULL)").run();
+  const folders = ["", "Neuro", "Neuro/Dopamine", "Neuro/Sleep", "Neuro/Sleep/deep", "Psych"];
+  for (const path of folders)
+    db.db.prepare("INSERT INTO shelf_folders VALUES(?,?,?,?,?,1)").run(`f:${path}`, "r", path, path ? `f:${path.split("/").slice(0, -1).join("/")}` : null, path.split("/").pop()!);
+  const file = (work: { id: string }, path: string) =>
+    db.db.prepare("INSERT INTO shelf_files VALUES(?,?,?,?,1,1,NULL,NULL,NULL,?,NULL,'resolved','ok','{}','2026-01-01',NULL)")
+      .run(`file:${path}`, "r", `f:${path.split("/").slice(0, -1).join("/")}`, path, work.id);
+  const [a, b, c, d, e, f] = [
+    raw(701, "Dopamine A", [702]),
+    raw(702, "Sleep B"),
+    raw(703, "Loose C", [701]),
+    raw(704, "Psych D", [701]),
+    raw(705, "Isolated E"),
+    raw(706, "Copied F", [702]),
+  ].map((item) => db.upsert(fromOpenAlex(item)).work);
+  file(a, "Neuro/Dopamine/a.pdf");
+  file(b, "Neuro/Sleep/deep/b.pdf");
+  file(c, "Neuro/c.pdf");
+  file(d, "Psych/d.pdf");
+  file(e, "Neuro/Dopamine/e.pdf");
+  file(f, "Psych/f.pdf");
+  file(f, "Neuro/Sleep/f.pdf");
+  const args = { projectId, scope: "shelf", scopeId: "f:Neuro", query: "", filters: DEFAULT_FILTERS, showHidden: false, sort: "rank", ...resultWindow(true, 50, 0) };
+  const neuro = db.list(args);
+  assert.equal(neuro.total, 5);
+  assert.deepEqual(new Set(neuro.works.map((work) => work.id)), new Set([a.id, b.id, c.id, f.id]));
+  // The Psych copy of F lies outside the listed folder; C sits in it directly.
+  assert.deepEqual(neuro.subfolders, { [a.id]: "Neuro/Dopamine", [b.id]: "Neuro/Sleep", [f.id]: "Neuro/Sleep" });
+  const all = db.list({ ...args, scopeId: "all" });
+  assert.deepEqual(new Set(all.works.map((work) => work.id)), new Set([a.id, b.id, c.id, d.id, f.id]));
+  assert.deepEqual(all.subfolders, { [a.id]: "Neuro", [b.id]: "Neuro", [c.id]: "Neuro", [d.id]: "Psych", [f.id]: "Neuro" });
+  const leaf = db.list({ ...args, scopeId: "f:Neuro/Dopamine" });
+  assert.equal(leaf.works.length, 0);
+  assert.deepEqual(leaf.subfolders, {});
 }));

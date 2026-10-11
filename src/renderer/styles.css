@@ -3224,6 +3224,10 @@ html[data-theme="dark"] .selection-bar .primary {
 .graph-edge-key.related { border-top: 2px dashed var(--graph-related); }
 
 .graph-edge-key.questionable { border-top: 3px dotted var(--danger); }
+/* The notice shares the canvas cell; the canvas must be pinned too or auto-placement moves it down a row. */
+.graph-canvas, .graph-empty { grid-row: 1; grid-column: 1; }
+.graph-empty { position: relative; z-index: 5; align-self: center; justify-self: center; display: grid; gap: 6px; max-width: 360px; padding: 0 16px; text-align: center; font-size: 12px; line-height: 1.7; color: var(--muted); pointer-events: none; }
+.graph-empty strong { font-size: 14px; font-weight: 600; color: var(--text); }
 .graph-warnings { margin: 0 16px 8px; padding: 8px 10px; max-height: 180px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); font-size: 12px; }
 .graph-warnings summary { color: var(--danger); font-weight: 600; }
 .graph-warnings p { margin: 8px 0; color: var(--muted); line-height: 1.6; }

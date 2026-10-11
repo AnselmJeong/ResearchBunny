@@ -23,8 +23,10 @@ import {
   normalizeOpenAlex,
   titleSimilarity,
   filterReasons,
+  similarityEdges,
 } from "../../shared/domain";
 import type { ShelfSearchResult } from "../../shared/shelf";
+import { citationWarnings, graphNodeIds } from "../../shared/graph";
 
 const SCHEMA = 3;
 const ROOT_FOLDER_LABEL: Record<string, string> = { "": "수신함" };
@@ -597,13 +599,13 @@ export class Library {
   }
   edges(ids: string[]): { source: string; target: string }[] {
     if (!ids.length) return [];
-    // Restrict citing rows in SQL: the citation table grows with every shelf paper.
-    const list = JSON.stringify([...new Set(ids)]);
+    // Walk out from the listed papers' own references. Left to itself, SQLite drives this
+    // from every OpenAlex identifier and probes each listed id: seconds for a whole shelf.
     return this.db
       .prepare(
-        "SELECT DISTINCT c.citing_id AS source,i.work_id AS target FROM citations c JOIN identifiers i ON i.provider='openalex' AND i.value=c.cited_external WHERE c.citing_id IN (SELECT value FROM json_each(?)) AND i.work_id IN (SELECT value FROM json_each(?)) AND i.work_id!=c.citing_id",
+        "WITH listed(id) AS MATERIALIZED (SELECT DISTINCT value FROM json_each(?)) SELECT DISTINCT c.citing_id AS source,i.work_id AS target FROM listed s CROSS JOIN citations c ON c.citing_id=s.id CROSS JOIN identifiers i ON i.provider='openalex' AND i.value=c.cited_external WHERE i.work_id IN listed AND i.work_id!=c.citing_id",
       )
-      .all(list, list) as { source: string; target: string }[];
+      .all(JSON.stringify(ids)) as { source: string; target: string }[];
   }
   /** Shelf work ids for a folder (with descendants) or a virtual shelf folder. */
   shelfScope(scopeId: string): string[] {
@@ -626,6 +628,29 @@ export class Library {
     }
     return rows.map((r) => r.id);
   }
+  /** Each work's subfolder directly below a shelf scope; works filed only at its top level have none. */
+  shelfSubfolders(scopeId: string, workIds: string[]): Record<string, string> {
+    if (!workIds.length) return {};
+    const folder = ["all", "inbox", "review"].includes(scopeId)
+      ? null
+      : (this.db.prepare("SELECT root_id,rel_path FROM shelf_folders WHERE id=?").get(scopeId) as { root_id: string; rel_path: string } | undefined);
+    const base = folder?.rel_path ?? "";
+    const inside = folder
+      ? "fo.root_id=? AND substr(fo.rel_path,1,length(?)+1)=?||'/'"
+      : "fo.rel_path!=''";
+    const rows = this.db.prepare(
+      `SELECT f.work_id AS id,fo.rel_path AS folder FROM shelf_files f JOIN shelf_folders fo ON fo.id=f.folder_id
+       WHERE f.status!='missing' AND f.work_id IN (SELECT value FROM json_each(?)) AND ${inside}
+       ORDER BY json_extract(f.info,'$.duplicateOf') IS NOT NULL,f.rel_path`,
+    ).all(JSON.stringify(workIds), ...(folder ? [folder.root_id, base, base] : [])) as { id: string; folder: string }[];
+    const result: Record<string, string> = {};
+    for (const { id, folder: path } of rows) {
+      if (id in result) continue;
+      const rest = base ? path.slice(base.length + 1) : path;
+      result[id] = (base ? base + "/" : "") + rest.split("/")[0];
+    }
+    return result;
+  }
   list(args: {
     projectId: string;
     scope: string;
@@ -636,6 +661,8 @@ export class Library {
     offset: number;
     limit: number;
     sort: string;
+    /** Graphs draw linked papers from the whole scope instead of a list page. */
+    graph?: boolean;
   }, search?: ShelfSearchResult): ListResult {
     const { projectId, scope, scopeId } = args;
     let sql =
@@ -741,7 +768,6 @@ export class Library {
       kept.sort((a, b) => a.title.localeCompare(b.title));
     if (args.sort === "updated")
       kept.sort((a, b) => b.state.updatedAt.localeCompare(a.state.updatedAt));
-    const page = kept.slice(args.offset, args.offset + args.limit);
     const run = scope === "run" && scopeId ? this.run(scopeId) : null;
     const contextIds = run
       ? [
@@ -751,6 +777,34 @@ export class Library {
           ]),
         ]
       : [];
+    if (args.graph) {
+      const keptIds = new Set(kept.map((w) => w.id));
+      const pool = [...kept, ...this.views(projectId, contextIds.filter((id) => !keptIds.has(id)))];
+      const citations = this.edges(pool.map((w) => w.id));
+      const warnings = citationWarnings(pool, citations);
+      // Questionable citations are hidden by default, so they cannot keep a paper on the graph.
+      const links = [
+        ...citations.filter((e) => !warnings.has(`${e.source}:${e.target}`)),
+        ...similarityEdges(pool),
+      ];
+      const chosen = graphNodeIds([...keptIds], contextIds, links);
+      const shown = new Set(chosen.ids), drawn = new Set([...chosen.ids, ...contextIds]);
+      const page = kept.filter((w) => shown.has(w.id));
+      return {
+        works: page,
+        context: pool.filter((w) => drawn.has(w.id) && !shown.has(w.id)),
+        ...(scope === "run" ? { shelf: pinned } : {}),
+        ...(search ? { search: { semantic: search.semantic, identifier: !!search.identifier } } : {}),
+        total: kept.length,
+        hidden,
+        deferred,
+        ids: kept.map((w) => w.id),
+        edges: citations.filter((e) => drawn.has(e.source) && drawn.has(e.target)),
+        graph: { connected: chosen.connected },
+        ...(scope === "shelf" ? { subfolders: this.shelfSubfolders(scopeId || "all", page.map((w) => w.id)) } : {}),
+      };
+    }
+    const page = kept.slice(args.offset, args.offset + args.limit);
     const context = this.views(
       projectId,
       contextIds.filter((id) => !page.some((w) => w.id === id)),
