@@ -19,3 +19,13 @@ Library schema stays at 3; 0.3.0 can still open libraries used by 0.3.1.
 - New tests cover the four folder-change cases end to end (remount under another name while a scan runs, subfolder, parent, unrelated folder): file ids and embeddings kept, attachments and project links re-pathed, dropped files turned into plain links, shelf-only works removed, no OpenAlex calls for kept files, and the folder listing unchanged. Path mapping is tested with decomposed (NFD) Korean folder names.
 - Folder changes on a synthetic 8,300-file shelf with realistic identifier, snapshot and candidate tables: remount 0.6 s (60 s before the new indexes), unrelated folder 0.7 s (over 69 s before). New indexes on `attachments` (`shelfFileId`) and on `work_id` in the tables referencing works; schema version unchanged.
 - The real renderer was checked against a synthetic shelf: the remount preview and change, the warning for an unrelated folder, typing a subfolder path, and the sidebar tree after narrowing.
+- The extracted stable app passed the restricted-PATH packaged runtime test and strict signature verification.
+
+## Installation
+
+- Backed up the previous app and a consistent SQLite snapshot under `~/Library/Application Support/ResearchBunny/app-backups/20261011-213654-shelf-folder-0.3.1` (integrity ok, schema 3, **10,121 works**, **8,342 attachments**, **8,348 shelf files**). The replaced 0.3.0 bundle is kept there as `ResearchBunny-0.3.0-installed.app`.
+- Replaced `/Applications/ResearchBunny.app` with version **0.3.1**; all **441 files** match the package and strict signature verification passed. The installed app opened the existing library and created the new indexes.
+
+Artifacts: `out/electrobun/stable-macos-arm64-ResearchBunny.dmg` and `out/electrobun/stable-macos-arm64-ResearchBunny.app.tar.zst`. Local validation logs are under `.qa/release-0.3.1/`.
+
+Local ad-hoc signing on macOS Apple Silicon; no Developer ID signing or Apple notarization.
