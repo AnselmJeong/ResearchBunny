@@ -103,6 +103,8 @@ const READ = {
   reading: "읽는 중",
   read: "읽음",
 };
+// Collection ids are UUIDs, so this select value never collides with a real collection.
+const NEW_COLLECTION = "new";
 const EMPTY: ListResult = {
   works: [],
   total: 0,
@@ -189,6 +191,7 @@ export function App() {
     [bulkReason, setBulkReason] = useState(""),
     [bulkTags, setBulkTags] = useState(""),
     [bulkCollection, setBulkCollection] = useState(""),
+    [bulkCollectionName, setBulkCollectionName] = useState(""),
     [basis, setBasis] = useState<"selected" | "archive">("selected");
   const [drafts, setDrafts] = useState<
     Record<string, { text: string; projectId: string; failed?: boolean }>
@@ -571,6 +574,28 @@ export function App() {
       () => window.bunny.mutateWorks({ projectId, ids, patch: update }),
       message,
     );
+  const saveToCollection = (target: string) => {
+    const ids = [...selected],
+      creating = target === NEW_COLLECTION,
+      newName = bulkCollectionName.trim(),
+      existing = snapshot?.collections.find((c) => c.id === target);
+    if (busy || !ids.length || (creating ? !newName : !existing)) return;
+    void task(
+      async () => {
+        let collectionId = target;
+        if (creating) {
+          collectionId = (
+            await window.bunny.createCollection({ projectId, name: newName })
+          ).id;
+          // Point the picker at the new collection now, so a failed save retries it instead of creating a duplicate.
+          setBulkCollection(collectionId);
+          setBulkCollectionName("");
+        }
+        await window.bunny.collectionMembers({ projectId, collectionId, ids });
+      },
+      `'${creating ? newName : existing!.name}'에 ${ids.length}편을 저장했습니다.`,
+    );
+  };
   const confirmTrashDeletion = (all = false) => {
     setTrashDeletion({
       request: {
@@ -770,6 +795,13 @@ export function App() {
       </div>
     );
   const explorationRuns = snapshot.runs.filter(run => !run.download && !run.import?.matchExistingOnly);
+  // A collection picked in another project is not offered here, so fall back to the placeholder.
+  const bulkTarget =
+    bulkCollection === NEW_COLLECTION ||
+    snapshot.collections.some((c) => c.id === bulkCollection)
+      ? bulkCollection
+      : "";
+  const bulkCreating = bulkTarget === NEW_COLLECTION;
   return (
     <div
       className="app-shell"
@@ -2204,36 +2236,54 @@ export function App() {
           title={`${selected.length}편 일괄 편집`}
           onClose={() => setDialog(null)}
         >
-          <label className="field">
-            컬렉션
-            <select
-              value={bulkCollection}
-              onChange={(e) => setBulkCollection(e.target.value)}
-            >
-              <option value="">컬렉션 선택</option>
-              {snapshot.collections.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            disabled={!bulkCollection}
-            onClick={() =>
-              void task(
-                () =>
-                  window.bunny.collectionMembers({
-                    projectId,
-                    collectionId: bulkCollection,
-                    ids: selected,
-                  }),
-                `${selected.length}편을 컬렉션에 저장했습니다.`,
-              )
-            }
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              saveToCollection(bulkTarget);
+            }}
           >
-            컬렉션에 저장
-          </button>
+            <label className="field">
+              컬렉션
+              <select
+                value={bulkTarget}
+                onChange={(e) => setBulkCollection(e.target.value)}
+              >
+                <option value="" disabled>
+                  컬렉션 선택
+                </option>
+                {snapshot.collections.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+                <option value={NEW_COLLECTION}>+ 새 컬렉션 만들기…</option>
+              </select>
+            </label>
+            {bulkCreating && (
+              <label className="field">
+                새 컬렉션 이름
+                <input
+                  autoFocus
+                  maxLength={160}
+                  value={bulkCollectionName}
+                  onChange={(e) => setBulkCollectionName(e.target.value)}
+                  placeholder="예: 서론 핵심 문헌"
+                />
+              </label>
+            )}
+            <button
+              type="submit"
+              disabled={
+                busy ||
+                !selected.length ||
+                !bulkTarget ||
+                (bulkCreating && !bulkCollectionName.trim())
+              }
+            >
+              {bulkCreating ? <Plus size={14} /> : <Folder size={14} />}
+              {bulkCreating ? "만들고 저장" : "컬렉션에 저장"}
+            </button>
+          </form>
           <label className="field">
             읽기 상태
             <select

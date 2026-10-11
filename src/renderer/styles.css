@@ -22,6 +22,7 @@
   --graph-citation: #567d9b;
   --graph-related: #af792a;
   --shadow: 0 16px 80px #172a2026;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2368756f' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   color-scheme: light;
 }
 * {
@@ -1655,6 +1656,14 @@ small {
   color: var(--text);
   width: 100%;
 }
+/* WKWebView draws native selects at a fixed, thinner height; match the text inputs instead. */
+.field select,
+.inspector .field select {
+  appearance: none;
+  padding-right: 30px;
+  background: var(--panel) var(--select-chevron) no-repeat right 10px center /
+    14px;
+}
 .check {
   display: flex;
   align-items: center;
@@ -2029,6 +2038,7 @@ html[data-theme="dark"] {
   --graph-seed: #e6b863;
   --graph-citation: #8eb1cb;
   --graph-related: #e6b863;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a5b2aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   color-scheme: dark;
 }
 html[data-theme="dark"] .seed-strip {
@@ -2087,6 +2097,7 @@ html[data-theme="dark"] .graph-wrap {
   --graph-seed: #e6b863;
   --graph-citation: #8eb1cb;
   --graph-related: #e6b863;
+    --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a5b2aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
     color-scheme: dark;
   }
   html[data-theme="system"] .seed-strip {
