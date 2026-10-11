@@ -329,6 +329,22 @@ test("related papers, hybrid search and lexical fallback when Ollama is off", as
     expect(related.cites.map((r: { workId: string }) => r.workId)).toEqual([kim.work_id]);
     const elsewhere = await service.call("shelfRelated", { projectId, workId: smith.work_id, limit: 10, otherFoldersOnly: true });
     expect(elsewhere.similar.map((r: { workId: string }) => r.workId)).not.toContain(kim.work_id);
+    // A paper without an abstract gets one notice; rows are flagged only for their own basis.
+    const setBasis = service.db.db.prepare("UPDATE work_embeddings SET basis=? WHERE work_id=?");
+    const basisOf = (id: string) => (service.db.db.prepare("SELECT basis FROM work_embeddings WHERE work_id=?").get(id) as { basis: string }).basis;
+    const original = basisOf(smith.work_id);
+    setBasis.run("page1", smith.work_id);
+    const weak = await service.call("shelfRelated", { projectId, workId: smith.work_id, limit: 10 });
+    expect(weak.notice).toContain("PDF 첫 쪽");
+    expect(weak.similar.find((r: { workId: string }) => r.workId === kim.work_id)).toMatchObject({ lowConfidence: false });
+    for (const r of weak.similar as { workId: string; lowConfidence: boolean }[])
+      expect(r.lowConfidence).toBe(["page1", "title"].includes(basisOf(r.workId)));
+    setBasis.run(original, smith.work_id);
+    setBasis.run("title", kim.work_id);
+    const flagged = await service.call("shelfRelated", { projectId, workId: smith.work_id, limit: 10 });
+    expect(flagged.notice).toBe("");
+    expect(flagged.similar.find((r: { workId: string }) => r.workId === kim.work_id)).toMatchObject({ lowConfidence: true });
+    setBasis.run("abstract", kim.work_id);
     // A paper outside the shelf is embedded on the fly and cached.
     const outside = service.db.upsert(structuredClone(OA.external)).work;
     const near = await service.call("shelfRelated", { projectId, workId: outside.id, limit: 3 });
