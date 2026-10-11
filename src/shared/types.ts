@@ -70,7 +70,19 @@ export interface Evidence {
   deferred: boolean;
   ai?: { role: string; reason: string; quote: string; limitation: string };
   linked?: { score: number; seedIds: string[]; isReview?: boolean };
+  shelf?: { score: number | null; folder: string; fileId: string };
   scope: string;
+}
+export interface ShelfMembership {
+  fileId: string;
+  folderId: string;
+  folder: string;
+  path: string;
+  status: string;
+  stage: string;
+  copies: number;
+  /** "title": only a filename title/year rule matched an unresolved shelf file. */
+  match: "identity" | "title";
 }
 export interface WorkView extends Work {
   state: LibraryState;
@@ -78,6 +90,7 @@ export interface WorkView extends Work {
   attachmentCount: number;
   collectionIds: string[];
   archiveTopicId?: string;
+  shelf?: ShelfMembership;
 }
 export interface Project {
   id: string;
@@ -152,6 +165,7 @@ export interface Filters {
   hideSaved: boolean;
   hideExcluded: boolean;
   hideRetracted: boolean;
+  shelf?: "all" | "hide" | "only";
 }
 export const DEFAULT_FILTERS: Filters = {
   strictness: "balanced",
@@ -170,9 +184,10 @@ export const DEFAULT_FILTERS: Filters = {
   hideSaved: false,
   hideExcluded: true,
   hideRetracted: true,
+  shelf: "all",
 };
 export interface Task {
-  kind: "lookup" | "batch" | "search" | "cites" | "linked" | "pmidBatch";
+  kind: "lookup" | "batch" | "search" | "cites" | "linked" | "pmidBatch" | "shelf";
   size?: LinkedSize;
   ids?: string[];
   query?: string;
@@ -259,6 +274,8 @@ export interface PdfDownloadPreview {
   existing: number;
   books: number;
   eligible: number;
+  /** Works that can be linked from the shelf without a download. */
+  shelf?: number;
   downloadDirectory?: string;
 }
 export interface MissingPdfItem {
@@ -266,6 +283,7 @@ export interface MissingPdfItem {
   title: string;
   status: "untried" | "pending" | "running" | "failed" | "skipped" | "missing";
   message: string;
+  shelf?: { fileId: string; name: string; folder: string }[];
 }
 export interface MissingPdfs extends PdfDownloadPreview {
   items: MissingPdfItem[];
@@ -284,6 +302,7 @@ export interface Attachment {
   retrievalMethod?: "chrome" | "http";
   fetchedAt?: string;
   version?: string;
+  shelfFileId?: string;
 }
 export interface PdfExportTarget {
   projectId: string;
@@ -343,11 +362,14 @@ export interface Snapshot {
   runs: Run[];
   counts: Record<string, number>;
   settings: Settings;
+  shelf: import("./shelf").ShelfSummary;
   ui: Record<string, unknown>;
 }
 export interface ListResult {
   works: WorkView[];
   context?: WorkView[];
+  /** Run results found in the shelf, pinned above external results. */
+  shelf?: WorkView[];
   total: number;
   hidden: number;
   deferred: number;
@@ -371,7 +393,7 @@ export interface ImportResult {
   ids: string[];
 }
 export type AppEvent = {
-  type: "changed" | "progress" | "service-error";
+  type: "changed" | "progress" | "service-error" | "shelf";
   runId?: string;
   message?: string;
 } | { type: "chat"; session: import("./chat").ChatSession };

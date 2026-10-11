@@ -222,6 +222,10 @@ export function filterReasons(
     reasons.push("사용자 제외");
   if (filters.hideRetracted && w.retracted && w.state.screening !== "included")
     reasons.push("철회 표시");
+  if (filters.shelf === "hide" && w.shelf?.match === "identity")
+    reasons.push("서고 보유");
+  if (filters.shelf === "only" && w.shelf?.match !== "identity")
+    reasons.push("서고에 없음");
   if (
     filters.relevance &&
     evidence?.score !== null &&

@@ -141,6 +141,15 @@ export function Filters({
             <option key={t}>{t}</option>
           ))}
         </select>
+        <select
+          aria-label="서고 보유"
+          value={value.shelf || "all"}
+          onChange={(e) => set("shelf", e.target.value)}
+        >
+          <option value="all">서고 보유: 전체</option>
+          <option value="hide">서고에 있는 논문 숨기기</option>
+          <option value="only">서고에 있는 논문만</option>
+        </select>
       </div>
       <div className="filter-row">
         {(

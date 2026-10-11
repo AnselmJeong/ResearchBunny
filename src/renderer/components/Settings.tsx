@@ -1,4 +1,5 @@
 import { CodexConnection } from "./CodexConnection";
+import { ShelfSettings } from "./ShelfSettings";
 import { useState } from "react";
 import { ExternalLink, ShieldCheck, Database, RefreshCw, LoaderCircle, CircleCheck, CircleAlert } from "lucide-react";
 import type { Settings as SettingsValue } from "../../shared/types";
@@ -76,6 +77,7 @@ export function Settings({
         </header>
         <nav className="settings-navigation" aria-label="설정 섹션">
           <a href="#settings-connections">연결</a>
+          <a href="#settings-shelf">서고</a>
           <a href="#settings-library">라이브러리</a>
           <a href="#settings-appearance">화면</a>
         </nav>
@@ -373,6 +375,7 @@ export function Settings({
             </div>)}
             <p className="subtle">OpenAlex 키는 문헌 검색 설정과 공유합니다. TinyFish 연결 확인에는 검색 1회가 사용됩니다.</p>
           </section>
+          <ShelfSettings onError={onError} onChanged={onSaved} />
           <section id="settings-library" className="settings-group">
             <h3>
               <Database size={16} /> 로컬 라이브러리

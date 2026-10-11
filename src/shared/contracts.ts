@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { CodexStatus, CodexModel } from "./codex";
 import type { ChatSession, ChatThreadSummary } from "./chat";
+import type { ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo } from "./shelf";
 import type {
   Snapshot,
   ListResult,
@@ -62,6 +63,7 @@ export const filtersSchema = z.object({
   hideSaved: z.boolean(),
   hideExcluded: z.boolean(),
   hideRetracted: z.boolean(),
+  shelf: z.enum(["all", "hide", "only"]).optional(),
 });
 const metadata = z
   .object({
@@ -125,6 +127,7 @@ export const schemas = {
       "collection",
       "topic",
       "unclassified",
+      "shelf",
     ]),
     scopeId: id.optional(),
     query: z.string().max(1000).default(""),
@@ -172,6 +175,7 @@ export const schemas = {
     sort: z.enum(["relevance", "citations", "year"]).default("relevance"),
     parentId: id.optional(),
     semantic: z.boolean().default(false),
+    shelfOnly: z.boolean().default(false),
   }),
   controlRun: z.object({
     runId: id,
@@ -279,6 +283,22 @@ export const schemas = {
       .refine((v) => JSON.stringify(v).length < 1_000_000),
   }),
   undo: z.object({ projectId: id }),
+  shelfStatus: z.object({}),
+  shelfConfigure: z.object({
+    path: z.string().trim().min(1).max(4096),
+    exclude: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
+    model: z.string().trim().min(1).max(200).optional(),
+    ollamaUrl: z.string().trim().min(1).max(500).optional(),
+  }),
+  chooseShelfRoot: z.object({}),
+  shelfControl: z.object({ action: z.enum(["pause", "resume", "cancel", "retryFailed", "reresolve", "reembed", "confirmMissing", "scan"]) }),
+  shelfPull: z.object({}),
+  shelfRelated: z.object({ projectId: id, workId: id, limit: z.number().int().min(1).max(50).default(10), otherFoldersOnly: z.boolean().default(false) }),
+  shelfSearch: z.object({ projectId: id, query: z.string().trim().min(1).max(2000), limit: z.number().int().min(1).max(200).default(30) }),
+  shelfFile: z.object({ fileId: id }),
+  shelfResolve: z.object({ fileId: id, action: z.enum(["candidate", "doi", "keep"]), value: z.string().trim().max(1000).optional() }),
+  shelfReveal: z.object({ fileId: id }),
+  shelfLink: z.object({ projectId: id, workId: id, fileId: id }),
   duplicates: z.object({ workId: id }),
   merge: z.object({ keepId: id, removeId: id }),
   undoMerge: z.object({}),
@@ -350,6 +370,17 @@ export interface Outputs {
   openExternal: void;
   saveUi: void;
   undo: boolean;
+  shelfStatus: ShelfStatusResult;
+  shelfConfigure: ShelfStatusResult;
+  chooseShelfRoot: string | null;
+  shelfControl: void;
+  shelfPull: void;
+  shelfRelated: ShelfRelated;
+  shelfSearch: ShelfSearchResult;
+  shelfFile: ShelfFileDetails;
+  shelfResolve: ShelfFileDetails;
+  shelfReveal: void;
+  shelfLink: void;
   duplicates: WorkView[];
   merge: void;
   undoMerge: boolean;
@@ -360,6 +391,24 @@ export type API = {
   onEvent: (callback: (event: AppEvent) => void) => () => void;
 };
 export type PayloadPatch = Partial<LibraryState>;
+export interface ShelfFileDetails {
+  fileId: string;
+  workId: string | null;
+  relPath: string;
+  folder: string;
+  size: number;
+  stage: string;
+  status: string;
+  missingSince: string | null;
+  parsed: ParsedFilename | null;
+  dois: string[];
+  extraction: string;
+  resolution: ShelfFileInfo["resolution"] | null;
+  candidates: ShelfCandidate[];
+  duplicateOf: string | null;
+  error: string | null;
+  abstractFromPdf: boolean;
+}
 export type WireResult<C extends Command> = Result<Outputs[C]>;
 declare global {
   interface Window {

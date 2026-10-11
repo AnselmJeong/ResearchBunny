@@ -1,5 +1,7 @@
 import { pmidOf } from "../../shared/domain";
 import { useEffect, useState } from "react";
+import { RelatedShelf } from "./RelatedShelf";
+import type { ShelfFileDetails } from "../../shared/contracts";
 import {
   ArrowUpRight,
   BookOpen,
@@ -13,6 +15,7 @@ import {
   Plus,
   Star,
   X,
+  LibraryBig,
 } from "lucide-react";
 import type {
   WorkView,
@@ -35,6 +38,7 @@ export function Inspector({
   onInspect,
   seed,
   onReadPdf,
+  shelfConfigured = false,
 }: {
   work: WorkView | null;
   projectId: string;
@@ -49,8 +53,31 @@ export function Inspector({
   onInspect: (id: string) => void;
   seed: boolean;
   onReadPdf: (attachmentId?: string) => void;
+  shelfConfigured?: boolean;
 }) {
-  const [tab, setTab] = useState<"abstract" | "evidence" | "notes">("abstract");
+  const [tab, setTab] = useState<"abstract" | "related" | "evidence" | "notes">("abstract");
+  const [shelfFile, setShelfFile] = useState<ShelfFileDetails | null>(null);
+  const [doiInput, setDoiInput] = useState("");
+  const [resolving, setResolving] = useState(false);
+  const shelfFileId = work?.shelf?.match === "identity" ? work.shelf.fileId : null;
+  useEffect(() => {
+    setShelfFile(null);
+    setDoiInput("");
+    if (!shelfFileId || tab !== "evidence") return;
+    let valid = true;
+    void window.bunny.shelfFile({ fileId: shelfFileId })
+      .then((details) => { if (valid) setShelfFile(details); })
+      .catch((error) => { if (valid) onError(error); });
+    return () => { valid = false; };
+  }, [shelfFileId, tab, work?.fetchedAt]);
+  const resolveShelf = (action: "candidate" | "doi" | "keep", value?: string) => {
+    if (!shelfFileId) return;
+    setResolving(true);
+    void window.bunny.shelfResolve({ fileId: shelfFileId, action, value })
+      .then(setShelfFile)
+      .catch(onError)
+      .finally(() => setResolving(false));
+  };
   const [attachments, setAttachments] = useState<Attachment[]>([]),
     [duplicates, setDuplicates] = useState<WorkView[] | null>(null),
     [tags, setTags] = useState(""),
@@ -132,7 +159,7 @@ export function Inspector({
             )}{" "}
             {state.screening === "included"
               ? "아카이브 저장됨"
-              : "아카이브에 저장"}
+              : work.shelf?.match === "identity" ? "프로젝트에 저장" : "아카이브에 저장"}
           </button>
           <button
             title="핵심 표시"
@@ -149,6 +176,20 @@ export function Inspector({
             <Edit3 size={16} />
           </button>
         </div>
+        {work.shelf && (
+          <div className={`shelf-strip ${work.shelf.match === "title" ? "hint" : ""}`}>
+            <LibraryBig size={15} />
+            <span className="folder-chip" title={work.shelf.path}>
+              {work.shelf.match === "title" ? "서고에 같은 제목 · " : "서고 · "}{work.shelf.folder}
+            </span>
+            {work.shelf.match === "identity" && work.shelf.status === "missing" && <span className="warning-text">파일 없음</span>}
+            {work.shelf.match === "identity" && ["review", "provisional"].includes(work.shelf.status) && <span className="badge warning">확인 필요</span>}
+            {work.shelf.copies > 1 && <span className="subtle">사본 {work.shelf.copies}개</span>}
+            <button className="text-button" onClick={() => void window.bunny.shelfReveal({ fileId: work.shelf!.fileId }).catch(onError)}>
+              <FolderOpen size={12} />Finder
+            </button>
+          </div>
+        )}
         {work.retracted && (
           <p className="warning-text">공급자가 철회 논문으로 표시했습니다.</p>
         )}
@@ -217,6 +258,7 @@ export function Inspector({
           {(
             [
               ["abstract", "초록"],
+              ["related", "관련 문헌"],
               ["evidence", "발견 근거"],
               ["notes", "노트"],
             ] as const
@@ -228,7 +270,7 @@ export function Inspector({
               aria-selected={tab === key}
               tabIndex={tab === key ? 0 : -1}
               onKeyDown={(event) => {
-                const keys = ["abstract", "evidence", "notes"] as const;
+                const keys = ["abstract", "related", "evidence", "notes"] as const;
                 const direction =
                   event.key === "ArrowRight"
                     ? 1
@@ -242,7 +284,7 @@ export function Inspector({
                   event.key === "Home"
                     ? keys[0]
                     : event.key === "End"
-                      ? keys[2]
+                      ? keys[keys.length - 1]
                       : keys[
                           (keys.indexOf(tab) + direction + keys.length) %
                             keys.length
@@ -266,7 +308,10 @@ export function Inspector({
           <section>
             <h3>초록</h3>
             {work.abstract ? (
-              <p className="abstract">{work.abstract}</p>
+              <>
+                <p className="abstract">{work.abstract}</p>
+                {work.raw?.abstractSource === "pdf" && <p className="subtle">PDF 첫 페이지에서 추출한 초록입니다. 서지정보 수정에서 고칠 수 있습니다.</p>}
+              </>
             ) : (
               <p className="missing">
                 제공된 초록이 없습니다. 제목과 주제·인용 관계만 확인할 수
@@ -277,11 +322,58 @@ export function Inspector({
         </div>
         <div
           role="tabpanel"
+          id="inspector-panel-related"
+          aria-labelledby="inspector-tab-related"
+          hidden={tab !== "related"}
+        >
+          <RelatedShelf projectId={projectId} work={work} active={tab === "related"} configured={shelfConfigured} onInspect={onInspect} onError={onError} />
+        </div>
+        <div
+          role="tabpanel"
           id="inspector-panel-evidence"
           aria-labelledby="inspector-tab-evidence"
           hidden={tab !== "evidence"}
         >
-          {(!work.evidence || work.evidence.relation === "local") && (
+          {shelfFile && (
+            <section className="shelf-review">
+              <h3>서고 서지 확인</h3>
+              <p className="subtle">
+                {shelfFile.relPath}
+                <br />
+                {shelfFile.resolution
+                  ? {
+                      doi: `DOI 일치${shelfFile.resolution.doi ? ` (${shelfFile.resolution.doi})` : ""} · 파일명 제목 유사도 ${shelfFile.resolution.similarity ?? "–"}`,
+                      title: `제목 검색 일치 · 유사도 ${shelfFile.resolution.similarity ?? "–"}`,
+                      hash: "앱이 관리하던 PDF와 내용이 같음",
+                      manual: shelfFile.resolution.note || "직접 확인함",
+                      provisional: `파일명 서지 사용 · ${shelfFile.resolution.note || "자동 확인 실패"}`,
+                    }[shelfFile.resolution.method]
+                  : shelfFile.stage === "resolved" ? "파일명 서지 사용" : "서지 확인 대기 중"}
+                {shelfFile.error && <><br /><span className="warning-text">{shelfFile.error}</span></>}
+                {shelfFile.duplicateOf && <><br />같은 내용의 다른 파일이 있어 한 문헌으로 묶었습니다.</>}
+              </p>
+              {!!shelfFile.candidates.length && <div className="shelf-candidates">
+                {shelfFile.candidates.map((c) => (
+                  <div className="duplicate" key={c.openalex}>
+                    <p>{c.title} ({c.year || "미상"})</p>
+                    <small>{c.authors.slice(0, 3).join(" · ")} · {c.venue || c.doi || c.openalex} · 유사도 {c.similarity}</small>
+                    <button disabled={resolving} onClick={() => resolveShelf("candidate", c.openalex)}>이 서지 사용</button>
+                  </div>
+                ))}
+              </div>}
+              {["review", "provisional"].includes(shelfFile.status) && <>
+                <label className="field">
+                  DOI로 직접 확인
+                  <input value={doiInput} placeholder="10.xxxx/…" onChange={(e) => setDoiInput(e.target.value)} />
+                </label>
+                <div className="inline-actions">
+                  <button disabled={resolving || !doiInput.trim()} onClick={() => resolveShelf("doi", doiInput.trim())}>DOI 조회</button>
+                  <button disabled={resolving} onClick={() => resolveShelf("keep")}>파일명 서지 유지</button>
+                </div>
+              </>}
+            </section>
+          )}
+          {!shelfFile && (!work.evidence || work.evidence.relation === "local") && (
             <p className="subtle">이 문헌에 저장된 발견 근거가 없습니다.</p>
           )}
           {work.evidence && work.evidence.relation !== "local" && (

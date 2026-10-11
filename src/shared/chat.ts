@@ -1,8 +1,10 @@
 export interface ChatSource {
   title: string;
-  url: string;
+  /** Absent for shelf papers, which open inside the app instead. */
+  url?: string;
   content: string;
-  source?: "pubmed" | "openalex-semantic" | "web";
+  source?: "pubmed" | "openalex-semantic" | "web" | "shelf";
+  workId?: string;
   pmid?: string;
   doi?: string;
 }

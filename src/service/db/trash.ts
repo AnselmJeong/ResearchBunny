@@ -156,9 +156,10 @@ export function deleteTrashedWorks(
         otherReferences.has(id) ||
         db.db
           .prepare(
-            "SELECT 1 FROM project_works WHERE work_id=? UNION ALL SELECT 1 FROM candidates WHERE work_id=? UNION ALL SELECT 1 FROM collection_works WHERE work_id=? LIMIT 1",
+            // Shelf papers belong to the app-wide shelf: removing them from a project keeps the record.
+            "SELECT 1 FROM project_works WHERE work_id=? UNION ALL SELECT 1 FROM candidates WHERE work_id=? UNION ALL SELECT 1 FROM collection_works WHERE work_id=? UNION ALL SELECT 1 FROM shelf_files WHERE work_id=? LIMIT 1",
           )
-          .get(id, id, id)
+          .get(id, id, id, id)
       )
         continue;
       for (const table of ["identifiers", "metadata_snapshots", "attachments"])

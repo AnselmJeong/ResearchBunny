@@ -94,8 +94,15 @@ export interface Page {
   cached: boolean;
   fetchedAt: string;
 }
+/** OpenAlex meters usage in credits (search 10, filter 1); headers report the daily balance. */
+export interface RateLimit {
+  limit: number;
+  remaining: number;
+  resetAt: number;
+}
 export class OpenAlex {
   lastRequest = 0;
+  rateLimit: RateLimit | null = null;
   constructor(
     private library: Library,
     private key: () => string | undefined,
@@ -153,15 +160,24 @@ export class OpenAlex {
           true,
         );
       }
+      this.readRateLimit(response.headers);
       if (response.status === 429) {
-        const budget = response.headers.get("x-ratelimit-remaining");
-        throw new AppError(
+        const remaining = Number(response.headers.get("x-ratelimit-remaining"));
+        const required = Number(response.headers.get("x-ratelimit-credits-required"));
+        // A request costing more than the remaining credits is a spent daily budget, not a short rate window.
+        const budget = response.headers.get("x-ratelimit-remaining") === "0" || (required > 0 && remaining < required) ? "0" : response.headers.get("x-ratelimit-remaining");
+        const reset = Number(response.headers.get("x-ratelimit-reset"));
+        const retry = Number(response.headers.get("retry-after"));
+        throw Object.assign(new AppError(
           budget === "0" ? "DAILY_BUDGET" : "RATE_LIMIT",
           budget === "0"
             ? "OpenAlex 일일 예산을 소진했습니다. 사용량 초기화 후 재개하세요."
             : `OpenAlex 요청 한도입니다. ${response.headers.get("retry-after") || "60"}초 후 재개하세요.`,
           true,
-        );
+        ), {
+          // Seconds until the budget or window resets; the daily reset is midnight UTC, not local midnight.
+          resetMs: budget === "0" && reset > 0 ? reset * 1000 : retry > 0 ? retry * 1000 : undefined,
+        });
       }
       if (response.status === 401 || response.status === 403)
         throw new AppError(
@@ -190,6 +206,13 @@ export class OpenAlex {
       return { data, cached: false, fetchedAt };
     }
     throw new AppError("NETWORK", "OpenAlex 요청을 완료하지 못했습니다.", true);
+  }
+  private readRateLimit(headers: Headers) {
+    const limit = Number(headers.get("x-ratelimit-limit"));
+    const remaining = Number(headers.get("x-ratelimit-remaining"));
+    const reset = Number(headers.get("x-ratelimit-reset"));
+    if (headers.has("x-ratelimit-remaining") && limit > 0 && remaining >= 0)
+      this.rateLimit = { limit, remaining, resetAt: Date.now() + (reset > 0 ? reset * 1000 : 3600_000) };
   }
   async lookup(
     identifier: string,

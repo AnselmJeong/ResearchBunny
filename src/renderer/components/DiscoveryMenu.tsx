@@ -1,5 +1,5 @@
 import { useId, useRef } from "react";
-import { ChevronDown, FileText, Link, Network } from "lucide-react";
+import { ChevronDown, FileText, LibraryBig, Link, Network } from "lucide-react";
 import type { DiscoveryMode } from "../../shared/types";
 
 export function DiscoveryMenu({
@@ -8,12 +8,14 @@ export function DiscoveryMenu({
   onDiscover,
   basis,
   onBasis,
+  shelf = false,
 }: {
   disabled: boolean;
   canDiscover: boolean;
-  onDiscover: (mode: DiscoveryMode) => void;
+  onDiscover: (mode: DiscoveryMode, shelfOnly?: boolean) => void;
   basis: "selected" | "archive";
   onBasis: (basis: "selected" | "archive") => void;
+  shelf?: boolean;
 }) {
   const id = useId();
   const menu = useRef<HTMLDivElement>(null);
@@ -61,6 +63,17 @@ export function DiscoveryMenu({
             {label}
           </button>
         ))}
+        {shelf && <button
+          disabled={!canDiscover}
+          data-help="선택한 논문과 초록이 비슷한 서고 논문을 찾습니다. 이 Mac의 임베딩만 쓰며 네트워크를 쓰지 않습니다."
+          onClick={() => {
+            menu.current?.hidePopover();
+            onDiscover("related", true);
+          }}
+        >
+          <LibraryBig size={16} />
+          서고에서 비슷한 논문
+        </button>}
         <details className="common-discovery">
           <summary>공통 관계</summary>
           <label className="field">

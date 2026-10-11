@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, BookOpen, ExternalLink, Globe, LoaderCircle, RotateCcw, Settings2, Sparkles, Square, Plus } from "lucide-react";
+import { ArrowUp, BookOpen, ChevronRight, ExternalLink, Globe, LoaderCircle, RotateCcw, Settings2, Sparkles, Square, Plus } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { chatScope, type ChatContextRef, type ChatThreadSummary, type ChatSession, type ChatMessage } from "../../shared/chat";
@@ -15,7 +15,7 @@ function Reply({ message }: { message: ChatMessage }) {
   }}>{message.content}</Markdown>;
 }
 
-type SidebarProps = { work: WorkView | null; projectId: string; context: ChatContextRef; settings: Settings; onSettings: () => void };
+type SidebarProps = { work: WorkView | null; projectId: string; context: ChatContextRef; settings: Settings; onSettings: () => void; onInspect?: (workId: string) => void };
 export function AISidebar(props: SidebarProps) {
   const [threadId, setThreadId] = useState<string>();
   const [threads, setThreads] = useState<ChatThreadSummary[]>([]);
@@ -42,7 +42,7 @@ export function AISidebar(props: SidebarProps) {
   return <Conversation key={threadId || "current"} {...props} threadId={threadId} threads={threads} onSelectThread={setThreadId} />;
 }
 
-function Conversation({ work, projectId, context, settings, onSettings, threadId, threads, onSelectThread }: SidebarProps & { threadId?: string; threads: ChatThreadSummary[]; onSelectThread: (id: string) => void }) {
+function Conversation({ work, projectId, context, settings, onSettings, onInspect, threadId, threads, onSelectThread }: SidebarProps & { threadId?: string; threads: ChatThreadSummary[]; onSelectThread: (id: string) => void }) {
   const [session, setSession] = useState<ChatSession | null>(null);
   const draftKey = `researchbunny.chat-draft:${JSON.stringify([projectId, work?.id, chatScope(context), threadId || "current"])}`;
   const [draft, setDraft] = useState(() => { try { return localStorage.getItem(draftKey) ?? ""; } catch { return ""; } });
@@ -127,9 +127,11 @@ function Conversation({ work, projectId, context, settings, onSettings, threadId
         {message.role === "user" ? <p>{message.content}</p> : <div className="ai-markdown"><Reply message={message} /></div>}
         {message.status === "streaming" && <p className="ai-phase" role="status"><LoaderCircle size={13} className="spin" />{session.phase}</p>}
         {message.notice && <p className="ai-notice" role="status">{message.notice}</p>}
-        {!!message.sources?.length && <details className="ai-sources"><summary>검색 근거 {message.sources.length}편</summary>{message.sources.map((source, index) => <button key={`${source.url}:${index}`} onClick={() => {
-          if (work) void window.bunny.chatOpenSource({ projectId, workId: work.id, context, threadId: session?.threadId, messageId: message.id, index }).catch(e => setError(e.message));
-        }}><span>[{index + 1}] {source.title}<small>{source.source === "pubmed" ? "PubMed" : source.source === "openalex-semantic" ? "OpenAlex" : "TinyFish"}</small></span><ExternalLink size={12} /></button>)}</details>}
+        {!!message.sources?.length && <details className="ai-sources"><summary>검색 근거 {message.sources.length}편</summary>{message.sources.map((source, index) => <button key={`${source.url ?? source.workId}:${index}`} onClick={() => {
+          // Shelf papers open in the app; web sources open in the browser.
+          if (source.source === "shelf" && source.workId) onInspect?.(source.workId);
+          else if (work) void window.bunny.chatOpenSource({ projectId, workId: work.id, context, threadId: session?.threadId, messageId: message.id, index }).catch(e => setError(e.message));
+        }}><span>[{index + 1}] {source.title}<small>{source.source === "shelf" ? "내 서고" : source.source === "pubmed" ? "PubMed" : source.source === "openalex-semantic" ? "OpenAlex" : "TinyFish"}</small></span>{source.source === "shelf" ? <ChevronRight size={12} /> : <ExternalLink size={12} />}</button>)}</details>}
       </article>)}
       {retry && !active && <button className="text-button" onClick={() => void send(retry)} disabled={!enabled}><RotateCcw size={13} />같은 질문 다시 보내기</button>}
       {error && <p className="ai-notice" role="alert">{error}</p>}

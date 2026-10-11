@@ -12,6 +12,13 @@ export function MissingPdfList({ projectId, items, ready, busy, onError, onConne
 }) {
   const [limit, setLimit] = useState(50);
   const [connecting, setConnecting] = useState(false);
+  const linkShelf = async (workId: string, fileId: string) => {
+    setConnecting(true);
+    try {
+      await window.bunny.shelfLink({ projectId, workId, fileId });
+      onConnected();
+    } catch (error) { onError(error); } finally { setConnecting(false); }
+  };
   const connect = async (workId: string) => {
     setConnecting(true);
     try {
@@ -26,6 +33,10 @@ export function MissingPdfList({ projectId, items, ready, busy, onError, onConne
       {items.slice(0, limit).map(item => <li key={item.workId}>
         <strong>{item.title}</strong>
         <p className="subtle">{statuses[item.status]} · {item.message}</p>
+        {item.shelf?.map(file => <p key={file.fileId} className="shelf-candidate">
+          <span className="folder-chip">서고 · {file.folder.split("/").pop()}</span> <span className="subtle">{file.name}</span>
+          <button disabled={busy || connecting} onClick={() => void linkShelf(item.workId, file.fileId)}>서고에서 연결</button>
+        </p>)}
         <div className="inline-actions">
           <button onClick={() => void window.bunny.openExternal({ workId: item.workId, kind: "source" }).catch(onError)}>원문 페이지</button>
           <button onClick={() => void window.bunny.openExternal({ workId: item.workId, kind: "doi" }).catch(onError)}>DOI 페이지</button>

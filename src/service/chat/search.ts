@@ -1,13 +1,13 @@
 import type { ChatSource } from "../../shared/chat";
 import { safeWebUrl } from "../../shared/domain";
 import { searchScholarlyEvidence, mergeScholarlyResults } from "../search/scholarly-search";
-import { searchAndFetchWebWithTinyFish, type FetchLike } from "../search/web-search";
+import { searchAndFetchWebWithTinyFish, type FetchLike, type WebSearchResult } from "../search/web-search";
 
 export interface SearchKeys { openalex?: string; pubmed?: string; tinyfish?: string }
 export async function searchEvidence(query: string, keys: SearchKeys, signal: AbortSignal, fetchFn: FetchLike = fetch): Promise<{ sources: ChatSource[]; notice: string }> {
   const warnings: string[] = [];
-  let scholarly: ChatSource[] = [];
-  let web: ChatSource[] = [];
+  let scholarly: WebSearchResult[] = [];
+  let web: WebSearchResult[] = [];
   try {
     scholarly = await searchScholarlyEvidence(query, 5, { openAlexApiKey: keys.openalex, ncbiApiKey: keys.pubmed, signal: AbortSignal.any([signal, AbortSignal.timeout(25000)]), fetchFn, onWarning: m => warnings.push(m) });
   } catch {

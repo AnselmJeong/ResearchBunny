@@ -32,9 +32,16 @@ export function mergeWorks(db: Library, keepId: string, removeId: string) {
   const keep = db.get(keepId),
     remove = db.get(removeId);
   db.transaction(() => {
-    const snapshot = Object.fromEntries(
+    const snapshot: Record<string, unknown> = Object.fromEntries(
       TABLES.map((t) => [t, db.db.prepare(`SELECT * FROM ${t}`).all()]),
     );
+    // Shelf rows are large (vectors); keep only the two works' rows for undo.
+    snapshot.__shelf = {
+      ids: [keepId, removeId],
+      files: db.db.prepare("SELECT id,work_id FROM shelf_files WHERE work_id IN (?,?)").all(keepId, removeId),
+      embeddings: (db.db.prepare("SELECT * FROM work_embeddings WHERE work_id IN (?,?)").all(keepId, removeId) as Record<string, unknown>[])
+        .map((r) => ({ ...r, vector: Buffer.from(r.vector as Uint8Array).toString("base64") })),
+    };
     const states = db.db
       .prepare("SELECT project_id,state FROM project_works WHERE work_id=?")
       .all(removeId) as { project_id: string; state: string }[];
@@ -136,6 +143,10 @@ export function mergeWorks(db: Library, keepId: string, removeId: string) {
     db.db
       .prepare("UPDATE works SET data=? WHERE id=?")
       .run(JSON.stringify(updated), keepId);
+    db.db.prepare("UPDATE shelf_files SET work_id=? WHERE work_id=?").run(keepId, removeId);
+    db.db.prepare("UPDATE OR IGNORE work_embeddings SET work_id=? WHERE work_id=?").run(keepId, removeId);
+    db.db.prepare("DELETE FROM work_embeddings WHERE work_id=?").run(removeId);
+    db.db.prepare("DELETE FROM shelf_fts WHERE rowid=(SELECT rowid FROM works WHERE id=?)").run(removeId);
     db.db.prepare("DELETE FROM works WHERE id=?").run(removeId);
     db.db
       .prepare("UPDATE import_items SET work_id=? WHERE work_id=?")
@@ -159,7 +170,7 @@ export function undoMerge(db: Library): boolean {
   const snapshot = JSON.parse(row.data) as Record<
     string,
     Record<string, string | number | null>[]
-  >;
+  > & { __shelf?: { ids: string[]; files: { id: string; work_id: string }[]; embeddings: Record<string, string | number>[] } };
   db.db.pragma("foreign_keys=OFF");
   try {
     db.transaction(() => {
@@ -176,6 +187,15 @@ export function undoMerge(db: Library): boolean {
                 .join(",")})`,
             )
             .run(...Object.values(r));
+      if (snapshot.__shelf) {
+        for (const f of snapshot.__shelf.files)
+          db.db.prepare("UPDATE shelf_files SET work_id=? WHERE id=?").run(f.work_id, f.id);
+        for (const id of snapshot.__shelf.ids)
+          db.db.prepare("DELETE FROM work_embeddings WHERE work_id=?").run(id);
+        for (const e of snapshot.__shelf.embeddings)
+          db.db.prepare("INSERT OR REPLACE INTO work_embeddings VALUES(?,?,?,?,?,?,?,?)")
+            .run(e.work_id, e.model, e.prompt, e.basis, e.text_hash, e.dim, Buffer.from(String(e.vector), "base64"), e.created_at);
+      }
       db.db.prepare("DELETE FROM merge_history").run();
       db.touch();
     });

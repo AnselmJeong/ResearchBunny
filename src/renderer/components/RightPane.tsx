@@ -26,7 +26,7 @@ export function RightPane({ settings, onSettings, onClose, context, ...props }: 
       <Inspector {...props} />
     </div>
     <div className="right-pane-content" role="tabpanel" id="right-panel-ai" aria-labelledby="right-tab-ai" hidden={tab !== "ai"}>
-      <AISidebar key={`${props.projectId}:${props.work?.id ?? "empty"}:${chatScope(context)}`} context={context} work={props.work} projectId={props.projectId} settings={settings} onSettings={onSettings} />
+      <AISidebar key={`${props.projectId}:${props.work?.id ?? "empty"}:${chatScope(context)}`} context={context} work={props.work} projectId={props.projectId} settings={settings} onSettings={onSettings} onInspect={props.onInspect} />
     </div>
   </aside>;
 }

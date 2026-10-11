@@ -21,6 +21,14 @@ import {
 } from "../../shared/domain";
 import type { Input } from "../../shared/contracts";
 import type { AIProvider } from "../providers/openai";
+import type { ShelfHit } from "../../shared/shelf";
+/** Local shelf lookups. They never call an API, so they sit outside the 40-call budget. */
+export interface ShelfSource {
+  enabled(): boolean;
+  search(query: string, limit: number, signal: AbortSignal): Promise<ShelfHit[]>;
+  similar(ids: string[], limit: number, signal: AbortSignal): Promise<ShelfHit[]>;
+}
+const SHELF_ORIGIN = "내 서고";
 const chunks = <T>(items: T[], size: number): T[][] =>
   Array.from({ length: Math.ceil(items.length / size) }, (_, i) =>
     items.slice(i * size, (i + 1) * size),
@@ -37,6 +45,7 @@ export class Discovery {
     private emit: (event: AppEvent) => void,
     private ai?: AIProvider,
     private ld = new LinkedDiscoveries(library),
+    private shelf?: ShelfSource,
   ) {}
   start(input: Input<"startRun">): Run {
     this.library.project(input.projectId);
@@ -54,6 +63,11 @@ export class Discovery {
       throw new AppError("NO_SEEDS", "공통 관계는 2편 이상을 선택하세요.");
     if (["search", "ai"].includes(input.mode) && !input.query.trim())
       throw new AppError("EMPTY_QUERY", "검색어나 연구 질문을 입력하세요.");
+    const shelfReady = !!this.shelf?.enabled();
+    if (input.shelfOnly && !shelfReady)
+      throw new AppError("SHELF_CONFIG", "설정에서 서고 위치를 먼저 지정하세요.");
+    if (input.shelfOnly && !["search", "related"].includes(input.mode))
+      throw new AppError("INVALID", "서고만 검색은 검색과 관련 논문에서 사용할 수 있습니다.");
     const parentId = ["search", "ai"].includes(input.mode)
       ? undefined
       : input.parentId;
@@ -86,7 +100,14 @@ export class Discovery {
       phase: "hydrate",
       parentId,
     };
-    if (input.mode === "search") {
+    if (input.shelfOnly) {
+      run.tasks = [input.mode === "search"
+        ? { kind: "shelf", query: input.query, origin: SHELF_ORIGIN }
+        : { kind: "shelf", ids: run.inputIds, origin: "서고의 비슷한 논문" }];
+      run.maxCalls = 0;
+      run.phase = "collect";
+      run.rankingVersion = "shelf-v1";
+    } else if (input.mode === "search") {
       const identifier =
         normalizeOpenAlex(input.query) || normalizeDoi(input.query) ||
         (normalizePmid(input.query) ? `pmid:${normalizePmid(input.query)}` : null);
@@ -106,6 +127,8 @@ export class Discovery {
                     : undefined,
             },
       ];
+      // Look in the user's own shelf before spending the OpenAlex budget.
+      if (shelfReady) run.tasks.unshift({ kind: "shelf", query: input.query, origin: SHELF_ORIGIN });
       run.phase = "collect";
     } else if (input.mode === "ai") run.phase = "ai-plan";
     else
@@ -342,6 +365,10 @@ export class Discovery {
         run.message = `${task.origin} 조회 중 · 후보 ${run.count}편 · API ${run.calls}/${run.maxCalls}회`;
         this.library.saveRun(run);
         this.emit({ type: "progress", runId: id });
+        if (task.kind === "shelf") {
+          await this.collectShelf(run, task, signal);
+          continue;
+        }
         if (task.kind === "linked") {
           try {
             if (this.library.pref<boolean>("linkedDiscoveries") !== true)
@@ -469,6 +496,43 @@ export class Discovery {
       this.emit({ type: "changed", runId: id });
     }
   }
+  private async collectShelf(run: Run, task: Task, signal: AbortSignal) {
+    let hits: ShelfHit[] = [];
+    try {
+      if (this.shelf?.enabled())
+        hits = task.ids ? await this.shelf.similar(task.ids, 30, signal) : await this.shelf.search(task.query!, 30, signal);
+    } catch (error) {
+      signal.throwIfAborted();
+      // The shelf is a shortcut, never a reason for a search to fail.
+      run.message = error instanceof AppError ? error.message : "서고 검색을 완료하지 못했습니다.";
+    }
+    signal.throwIfAborted();
+    const files = this.library.shelfMemberships(hits.map((h) => h.workId));
+    this.library.transaction(() => {
+      for (const hit of hits) {
+        const work = this.library.get(hit.workId);
+        this.library.candidate(run, work, {
+          origins: [task.origin],
+          seedIds: [],
+          sharedIds: [],
+          denominator: run.inputIds.length,
+          relation: "shelf",
+          score: null,
+          reasons: [],
+          hidden: [],
+          deferred: false,
+          shelf: { score: hit.score, folder: hit.folder, fileId: files.get(hit.workId)?.fileId || "" },
+          scope: "내 서고 · 이 Mac에서 검색 · API 호출 없음",
+        });
+      }
+      run.count = (this.library.db.prepare("SELECT count(*) AS n FROM candidates WHERE run_id=?").get(run.id) as { n: number }).n;
+      task.done = true;
+      task.total = hits.length;
+      this.library.saveRun(run);
+    });
+    this.rank(run);
+    this.emit({ type: "changed", runId: run.id });
+  }
   rank(run: Run) {
     const entries = this.library.candidates(run.id);
     const profile = this.library.seedById(run.seedProfileId);
@@ -524,6 +588,7 @@ export class Discovery {
           ? (content.score || 0) + linkedBoost(evidence.linked.score, evidence.linked.seedIds.length)
           : content.score;
         evidence.reasons = [];
+        if (evidence.shelf) evidence.reasons.push(`내 서고 · ${evidence.shelf.folder || "수신함"}`);
         if (evidence.linked) evidence.reasons.push(evidence.linked.seedIds.length > 1
           ? `PubMed 의미 이웃 · 출발 문헌 ${evidence.linked.seedIds.length}편 공통`
           : `PubMed 의미 이웃 · 유사도 ${evidence.linked.score.toFixed(2)}`);

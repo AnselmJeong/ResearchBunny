@@ -30,6 +30,10 @@ import { ArchiveClassifier, classificationSnapshot } from "./archive-classificat
 import { PdfDownloads } from "./fulltext/jobs";
 import { planPdfExport, pdfExportTargets, previewPdfExport, exportPdfFolders } from "./interchange/pdf-export";
 import { schemas } from "../shared/contracts";
+import { Shelf } from "./shelf/indexer";
+import { ShelfQueries } from "./shelf/search";
+import { searchEvidence, type SearchKeys } from "./chat/search";
+import type { ChatSource } from "../shared/chat";
 export class Service {
   db: Library;
   oa: OpenAlex;
@@ -42,6 +46,8 @@ export class Service {
   pdf: PdfImports;
   downloads: PdfDownloads;
   classifier: ArchiveClassifier;
+  shelf: Shelf;
+  shelfQueries: ShelfQueries;
   secrets: {
     openalex?: string;
     openai?: string;
@@ -52,6 +58,7 @@ export class Service {
     credentialMigrationRequired?: boolean;
   } = {};
   previews = new Map<string, BibEntry[]>();
+  externalEvidence = searchEvidence;
   constructor(
     root: string,
     workerPath: string,
@@ -63,7 +70,10 @@ export class Service {
     this.oa = new OpenAlex(this.db, () => this.secrets.openalex);
     this.ollama = new OllamaCloud(() => this.secrets.ollama);
     this.reader = new PdfReader(this.db, workerPath);
-    this.chat = new ArticleChat(this.db, () => this.settings(), () => this.secrets, new ChatProvider(this.ollama, this.codex, () => this.secrets.openai), emit, undefined, (projectId, workId, attachmentId, signal) => this.reader.context({ projectId, workId, attachmentId }, signal));
+    this.shelf = new Shelf(this.db, this.oa, workerPath, emit, () => this.secrets);
+    this.shelfQueries = new ShelfQueries(this.db, this.shelf);
+    this.db.shelfHints = (works) => this.shelfQueries.hints(works);
+    this.chat = new ArticleChat(this.db, () => this.settings(), () => this.secrets, new ChatProvider(this.ollama, this.codex, () => this.secrets.openai), emit, (query, keys, signal) => this.evidence(query, keys, signal), (projectId, workId, attachmentId, signal) => this.reader.context({ projectId, workId, attachmentId }, signal));
     this.ai = new AIProvider(
       this.db,
       () => this.secrets.openai,
@@ -72,10 +82,50 @@ export class Service {
       this.codex,
       this.ollama,
     );
-    this.discovery = new Discovery(this.db, this.oa, emit, this.ai, new LinkedDiscoveries(this.db));
+    this.discovery = new Discovery(this.db, this.oa, emit, this.ai, new LinkedDiscoveries(this.db), {
+      enabled: () => !!this.shelf.root(),
+      search: async (query, limit, signal) => (await this.shelfQueries.search(query, { limit, signal })).hits,
+      similar: (ids, limit, signal) => this.similarInShelf(ids, limit, signal),
+    });
     this.pdf = new PdfImports(this.db, this.oa, workerPath, emit);
     this.downloads = new PdfDownloads(this.db, workerPath, emit);
+    this.downloads.shelf = {
+      match: (work) => this.shelf.root() ? this.shelfQueries.matchShelf(work).map((m) => ({ fileId: m.fileId, name: m.path.split("/").pop() || m.title, folder: m.folder })) : [],
+      attach: (fileId, workId) => this.shelf.attachTo(fileId, workId),
+    };
     this.classifier = new ArchiveClassifier(this.db, this.ai, emit);
+  }
+  /** Shelf papers first (top 3 abstracts), then the usual OpenAlex · PubMed evidence. */
+  async evidence(query: string, keys: SearchKeys, signal: AbortSignal) {
+    const [external, shelf] = await Promise.all([
+      this.externalEvidence(query, keys, signal),
+      this.shelf.root()
+        ? this.shelfQueries.search(query, { limit: 3, signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]) }).catch(() => null)
+        : Promise.resolve(null),
+    ]);
+    const sources: ChatSource[] = (shelf?.hits || []).flatMap((hit) => {
+      const work = this.db.get(hit.workId);
+      return work.abstract
+        ? [{ title: work.title.slice(0, 600), content: `Source: 내 서고 (${hit.folder})\n${[work.authors.slice(0, 4).join("; "), work.year, work.venue].filter(Boolean).join(". ")}\nAbstract: ${work.abstract}`.slice(0, 2400), source: "shelf" as const, workId: work.id, ...(work.doi ? { doi: work.doi } : {}) }]
+        : [];
+    });
+    const known = new Set(sources.map((s) => s.doi).filter(Boolean));
+    return { sources: [...sources, ...external.sources.filter((s) => !s.doi || !known.has(s.doi))], notice: external.notice };
+  }
+  /** Shelf papers closest to the given works, for offline "related" exploration. */
+  async similarInShelf(ids: string[], limit: number, signal: AbortSignal) {
+    const scores = new Map<string, { score: number; folder: string }>();
+    for (const id of ids) {
+      const related = await this.shelfQueries.related(id, { limit, otherFoldersOnly: false, signal });
+      for (const item of related.similar)
+        if (!ids.includes(item.workId) && (scores.get(item.workId)?.score ?? -1) < item.score)
+          scores.set(item.workId, { score: item.score, folder: item.folder });
+    }
+    const memberships = this.db.shelfMemberships([...scores.keys()]);
+    return [...scores.entries()]
+      .sort((a, b) => b[1].score - a[1].score)
+      .slice(0, limit)
+      .map(([workId, v]) => ({ workId, score: v.score, folder: v.folder, folderId: memberships.get(workId)?.folderId || "", lexicalRank: null, semanticRank: null }));
   }
   busy() {
     return this.chat.active.size > 0 || this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0;
@@ -105,6 +155,7 @@ export class Service {
       case "init":
         this.secrets = args;
         this.downloads.startRecoveryMonitor(() => this.busy());
+        this.shelf.start();
         return true;
       case "rememberDownloadDirectory":
         return this.downloads.rememberDirectory(args.directory);
@@ -122,6 +173,7 @@ export class Service {
           runs: this.db.runs(projectId),
           counts: this.db.counts(projectId),
           settings: this.settings(),
+          shelf: this.shelf.summary(),
           ui: this.db.pref("ui:" + projectId) || {},
         };
       }
@@ -201,8 +253,15 @@ export class Service {
           args.projectId,
           args.target.kind === "selected" ? args.target.ids : undefined,
         );
-      case "editWork":
-        return this.db.edit(args.workId, args.patch);
+      case "editWork": {
+        const work = this.db.edit(args.workId, args.patch);
+        if (this.db.db.prepare("SELECT 1 FROM shelf_files WHERE work_id=? LIMIT 1").get(work.id)) {
+          this.shelf.ftsRefresh(work.id);
+          this.shelf.revision++;
+          void this.shelf.embed(AbortSignal.timeout(60000), [work.id]).catch(() => {});
+        }
+        return work;
+      }
       case "manualWork": {
         const { work } = this.db.upsert(blankWork(args.metadata));
         this.db.mutate(args.projectId, [work.id], { screening: "included" });
@@ -445,26 +504,80 @@ export class Service {
         return this.db.undo(args.projectId);
       case "duplicates": {
         const w = this.db.get(args.workId);
-        return (
-          this.db.db.prepare("SELECT id FROM works WHERE id!=?").all(w.id) as {
-            id: string;
-          }[]
+        // Compare titles only; parsing every full record does not scale with the shelf.
+        const ids = (
+          this.db.db.prepare("SELECT id,json_extract(data,'$.title') AS title FROM works WHERE id!=?").all(w.id) as { id: string; title: string | null }[]
         )
-          .filter(
-            (r) => titleSimilarity(this.db.get(r.id).title, w.title) > 0.6,
-          )
+          .filter((r) => titleSimilarity(r.title || "", w.title) > 0.6)
           .slice(0, 20)
-          .map((r) => this.db.view(this.db.projects()[0].id, r.id));
+          .map((r) => r.id);
+        return this.db.views(this.db.projects()[0].id, ids);
       }
       case "merge":
         if (this.busy()) throw new AppError("BUSY", "작업 종료 후 병합하세요.");
         mergeWorks(this.db, args.keepId, args.removeId);
+        this.shelf.ftsRefresh(args.keepId);
+        this.shelf.vectors.loaded = false;
+        this.shelf.revision++;
         return;
-      case "undoMerge":
+      case "undoMerge": {
         if (this.busy()) throw new AppError("BUSY", "작업 종료 후 되돌리세요.");
-        return undoMerge(this.db);
+        const undone = undoMerge(this.db);
+        if (undone) {
+          this.shelf.ftsRebuild();
+          this.shelf.vectors.loaded = false;
+        }
+        return undone;
+      }
+      case "shelfStatus":
+        return this.shelf.status();
+      case "shelfConfigure": {
+        const p = schemas.shelfConfigure.parse(args);
+        this.shelf.configure(p);
+        void this.shelf.scan("configure");
+        return this.shelf.status();
+      }
+      case "shelfControl":
+        this.shelf.command(schemas.shelfControl.parse(args).action);
+        return;
+      case "shelfPull": {
+        const config = this.shelf.config();
+        if (!config) throw new AppError("SHELF_CONFIG", "서고 위치를 먼저 설정하세요.");
+        void this.shelf.pullModel().catch(() => {});
+        return;
+      }
+      case "shelfRelated": {
+        const p = schemas.shelfRelated.parse(args);
+        this.db.project(p.projectId);
+        return this.shelfQueries.related(p.workId, { limit: p.limit, otherFoldersOnly: p.otherFoldersOnly });
+      }
+      case "shelfSearch": {
+        const p = schemas.shelfSearch.parse(args);
+        this.db.project(p.projectId);
+        return this.shelfQueries.search(p.query, { limit: p.limit });
+      }
+      case "shelfFile":
+        return this.shelf.fileDetails(schemas.shelfFile.parse(args).fileId);
+      case "shelfResolve": {
+        const p = schemas.shelfResolve.parse(args);
+        if (p.action === "keep") this.shelf.keepProvisional(p.fileId);
+        else {
+          if (!p.value) throw new AppError("INVALID", "후보나 DOI를 입력하세요.");
+          await this.shelf.resolveManually(p.fileId, p.value);
+        }
+        return this.shelf.fileDetails(p.fileId);
+      }
+      case "shelfLink": {
+        const p = schemas.shelfLink.parse(args);
+        this.db.project(p.projectId);
+        this.shelf.attachTo(p.fileId, p.workId);
+        return;
+      }
+      case "shelfFilePath":
+        return this.shelf.filePath(String(args.fileId));
       case "shutdown":
         this.downloads.stopRecoveryMonitor();
+        this.shelf.stop();
         this.chat.close();
         this.codex.close();
         for (const control of [

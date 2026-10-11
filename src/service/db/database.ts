@@ -14,6 +14,7 @@ import type {
   Filters,
   ListResult,
   Attachment,
+  ShelfMembership,
 } from "../../shared/types";
 import { AppError, defaultState, now } from "../../shared/types";
 import {
@@ -24,9 +25,12 @@ import {
   filterReasons,
 } from "../../shared/domain";
 
-const SCHEMA = 2;
+const SCHEMA = 3;
+const ROOT_FOLDER_LABEL: Record<string, string> = { "": "수신함" };
 export class Library {
   db: Database;
+  /** Title/year hints for search results that match an unresolved shelf file. */
+  shelfHints?: (works: Work[]) => Map<string, ShelfMembership>;
   constructor(public root: string) {
     mkdirSync(root, { recursive: true });
     mkdirSync(join(root, "attachments"), { recursive: true });
@@ -73,7 +77,17 @@ export class Library {
       CREATE INDEX IF NOT EXISTS idx_chat_scope ON chat_threads(project_id,work_id,context_key,updated_at);
       CREATE TABLE IF NOT EXISTS chat_contexts(thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,message_id TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(thread_id,message_id));
       CREATE TABLE IF NOT EXISTS chat_heads(scope TEXT PRIMARY KEY,thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE);
-      PRAGMA user_version=2;
+      CREATE TABLE IF NOT EXISTS shelf_roots(id TEXT PRIMARY KEY,path TEXT NOT NULL UNIQUE,name TEXT NOT NULL,exclude TEXT NOT NULL,created_at TEXT NOT NULL,last_scan_at TEXT);
+      CREATE TABLE IF NOT EXISTS shelf_folders(id TEXT PRIMARY KEY,root_id TEXT NOT NULL REFERENCES shelf_roots(id) ON DELETE CASCADE,rel_path TEXT NOT NULL,parent_id TEXT,name TEXT NOT NULL,present INTEGER NOT NULL DEFAULT 1,UNIQUE(root_id,rel_path));
+      CREATE TABLE IF NOT EXISTS shelf_files(id TEXT PRIMARY KEY,root_id TEXT NOT NULL REFERENCES shelf_roots(id) ON DELETE CASCADE,folder_id TEXT NOT NULL REFERENCES shelf_folders(id),rel_path TEXT NOT NULL,size INTEGER NOT NULL,mtime INTEGER NOT NULL,hash TEXT,hashed_size INTEGER,hashed_mtime INTEGER,work_id TEXT REFERENCES works(id),attachment_id TEXT,stage TEXT NOT NULL,status TEXT NOT NULL,info TEXT NOT NULL,seen_at TEXT NOT NULL,missing_since TEXT,UNIQUE(root_id,rel_path));
+      CREATE INDEX IF NOT EXISTS idx_shelf_files_folder ON shelf_files(folder_id);
+      CREATE INDEX IF NOT EXISTS idx_shelf_files_hash ON shelf_files(hash);
+      CREATE INDEX IF NOT EXISTS idx_shelf_files_work ON shelf_files(work_id);
+      CREATE INDEX IF NOT EXISTS idx_shelf_files_stage ON shelf_files(stage,status);
+      CREATE TABLE IF NOT EXISTS work_embeddings(work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,model TEXT NOT NULL,prompt TEXT NOT NULL,basis TEXT NOT NULL,text_hash TEXT NOT NULL,dim INTEGER NOT NULL,vector BLOB NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(work_id,model));
+      CREATE TABLE IF NOT EXISTS embedding_cache(key TEXT PRIMARY KEY,model TEXT NOT NULL,vector BLOB NOT NULL,used_at TEXT NOT NULL);
+      CREATE VIRTUAL TABLE IF NOT EXISTS shelf_fts USING fts5(work_id UNINDEXED,title,authors,abstract,venue,tokenize='unicode61 remove_diacritics 2');
+      PRAGMA user_version=3;
     `);
     if (!this.projects().length) this.createProject("내 연구", "");
     for (const run of this.runs())
@@ -304,31 +318,83 @@ export class Library {
     return row ? { pendingDismissed: false, ...JSON.parse(row.state) } : defaultState();
   }
   view(projectId: string, id: string, runId?: string): WorkView {
-    const w = this.get(id);
-    const row = runId
-      ? (this.db
-          .prepare(
-            "SELECT evidence FROM candidates WHERE run_id=? AND work_id=?",
-          )
-          .get(runId, id) as { evidence: string } | undefined)
-      : undefined;
-    return {
-      ...w,
-      state: this.state(projectId, id),
-      archiveTopicId: (this.db.prepare("SELECT topic_id FROM archive_topic_works WHERE project_id=? AND work_id=?")
-        .get(projectId, id) as { topic_id: string } | undefined)?.topic_id,
-      evidence: row ? JSON.parse(row.evidence) : undefined,
-      attachmentCount: (
-        this.db
-          .prepare("SELECT count(*) AS n FROM attachments WHERE work_id=?")
-          .get(id) as { n: number }
-      ).n,
-      collectionIds: (
-        this.db
-          .prepare("SELECT collection_id FROM collection_works WHERE work_id=?")
-          .all(id) as { collection_id: string }[]
-      ).map((x) => x.collection_id),
-    };
+    this.get(id);
+    return this.views(projectId, [id], runId)[0];
+  }
+  /** Build list rows with one query per related table instead of four per work. */
+  views(projectId: string, ids: string[], runId?: string): WorkView[] {
+    if (!ids.length) return [];
+    const list = JSON.stringify(ids);
+    const inIds = "SELECT value FROM json_each(?)";
+    const works = new Map(
+      (this.db.prepare(`SELECT id,data FROM works WHERE id IN (${inIds})`).all(list) as { id: string; data: string }[])
+        .map((r) => {
+          const work: Work = JSON.parse(r.data);
+          return [r.id, { ...work, pmid: pmidOf(work) }] as const;
+        }),
+    );
+    const states = new Map(
+      (this.db.prepare(`SELECT work_id AS id,state FROM project_works WHERE project_id=? AND work_id IN (${inIds})`).all(projectId, list) as { id: string; state: string }[])
+        .map((r) => [r.id, r.state]),
+    );
+    const topics = new Map(
+      (this.db.prepare(`SELECT work_id AS id,topic_id FROM archive_topic_works WHERE project_id=? AND work_id IN (${inIds})`).all(projectId, list) as { id: string; topic_id: string }[])
+        .map((r) => [r.id, r.topic_id]),
+    );
+    const evidence = new Map(
+      runId
+        ? (this.db.prepare(`SELECT work_id AS id,evidence FROM candidates WHERE run_id=? AND work_id IN (${inIds})`).all(runId, list) as { id: string; evidence: string }[])
+            .map((r) => [r.id, r.evidence])
+        : [],
+    );
+    const attachments = new Map(
+      (this.db.prepare(`SELECT work_id AS id,count(*) AS n FROM attachments WHERE work_id IN (${inIds}) GROUP BY work_id`).all(list) as { id: string; n: number }[])
+        .map((r) => [r.id, r.n]),
+    );
+    const collections = new Map<string, string[]>();
+    for (const r of this.db.prepare(`SELECT work_id AS id,collection_id FROM collection_works WHERE work_id IN (${inIds})`).all(list) as { id: string; collection_id: string }[])
+      collections.set(r.id, [...(collections.get(r.id) || []), r.collection_id]);
+    const shelf = this.shelfMemberships(ids);
+    const result: WorkView[] = [];
+    for (const id of ids) {
+      const w = works.get(id);
+      if (!w) continue;
+      const state = states.get(id);
+      result.push({
+        ...w,
+        state: state ? { pendingDismissed: false, ...JSON.parse(state) } : defaultState(),
+        archiveTopicId: topics.get(id),
+        evidence: evidence.has(id) ? JSON.parse(evidence.get(id)!) : undefined,
+        attachmentCount: attachments.get(id) || 0,
+        collectionIds: collections.get(id) || [],
+        ...(shelf.has(id) ? { shelf: shelf.get(id) } : {}),
+      });
+    }
+    return result;
+  }
+  shelfMemberships(ids: string[]): Map<string, ShelfMembership> {
+    const map = new Map<string, ShelfMembership>();
+    if (!ids.length) return map;
+    const rows = this.db.prepare(
+      `SELECT f.work_id,f.id,f.folder_id,fo.rel_path AS folder,f.rel_path,r.path AS root,f.status,f.stage,
+        (SELECT count(*) FROM shelf_files c WHERE c.work_id=f.work_id AND c.status!='missing') AS copies
+       FROM shelf_files f JOIN shelf_folders fo ON fo.id=f.folder_id JOIN shelf_roots r ON r.id=f.root_id
+       WHERE f.work_id IN (SELECT value FROM json_each(?))
+       ORDER BY f.status='missing',json_extract(f.info,'$.duplicateOf') IS NOT NULL,f.rel_path`,
+    ).all(JSON.stringify(ids)) as { work_id: string; id: string; folder_id: string; folder: string; rel_path: string; root: string; status: string; stage: string; copies: number }[];
+    for (const r of rows)
+      if (!map.has(r.work_id))
+        map.set(r.work_id, {
+          fileId: r.id,
+          folderId: r.folder_id,
+          folder: ROOT_FOLDER_LABEL[r.folder] ?? r.folder,
+          path: join(r.root, r.rel_path),
+          status: r.status,
+          stage: r.stage,
+          copies: r.copies,
+          match: "identity",
+        });
+    return map;
   }
   mutate(
     projectId: string,
@@ -530,17 +596,34 @@ export class Library {
   }
   edges(ids: string[]): { source: string; target: string }[] {
     if (!ids.length) return [];
-    const allowed = new Set(ids);
-    return (
-      this.db
-        .prepare(
-          "SELECT c.citing_id AS source,i.work_id AS target FROM citations c JOIN identifiers i ON i.provider='openalex' AND i.value=c.cited_external",
-        )
-        .all() as { source: string; target: string }[]
-    ).filter(
-      (e) =>
-        e.source !== e.target && allowed.has(e.source) && allowed.has(e.target),
-    );
+    // Restrict citing rows in SQL: the citation table grows with every shelf paper.
+    const list = JSON.stringify([...new Set(ids)]);
+    return this.db
+      .prepare(
+        "SELECT DISTINCT c.citing_id AS source,i.work_id AS target FROM citations c JOIN identifiers i ON i.provider='openalex' AND i.value=c.cited_external WHERE c.citing_id IN (SELECT value FROM json_each(?)) AND i.work_id IN (SELECT value FROM json_each(?)) AND i.work_id!=c.citing_id",
+      )
+      .all(list, list) as { source: string; target: string }[];
+  }
+  /** Shelf work ids for a folder (with descendants) or a virtual shelf folder. */
+  shelfScope(scopeId: string): string[] {
+    const visible = "f.work_id IS NOT NULL AND f.status!='missing'";
+    let rows: { id: string }[];
+    if (scopeId === "all")
+      rows = this.db.prepare(`SELECT DISTINCT f.work_id AS id FROM shelf_files f WHERE ${visible}`).all() as { id: string }[];
+    else if (scopeId === "review")
+      rows = this.db.prepare(`SELECT DISTINCT f.work_id AS id FROM shelf_files f WHERE ${visible} AND f.stage='resolved' AND f.status IN ('review','provisional')`).all() as { id: string }[];
+    else if (scopeId === "inbox")
+      rows = this.db.prepare(
+        `SELECT DISTINCT f.work_id AS id FROM shelf_files f JOIN shelf_folders fo ON fo.id=f.folder_id WHERE ${visible} AND (fo.rel_path='' OR fo.rel_path='_uncategorized' OR substr(fo.rel_path,1,15)='_uncategorized/')`,
+      ).all() as { id: string }[];
+    else {
+      const folder = this.db.prepare("SELECT root_id,rel_path FROM shelf_folders WHERE id=?").get(scopeId) as { root_id: string; rel_path: string } | undefined;
+      if (!folder) throw new AppError("INVALID", "서고 폴더를 찾을 수 없습니다. 서고를 다시 스캔하세요.");
+      rows = this.db.prepare(
+        `SELECT DISTINCT f.work_id AS id FROM shelf_files f JOIN shelf_folders fo ON fo.id=f.folder_id WHERE ${visible} AND fo.root_id=? AND (fo.rel_path=? OR substr(fo.rel_path,1,length(?)+1)=?||'/')`,
+      ).all(folder.root_id, folder.rel_path, folder.rel_path, folder.rel_path) as { id: string }[];
+    }
+    return rows.map((r) => r.id);
   }
   list(args: {
     projectId: string;
@@ -590,10 +673,15 @@ export class Library {
       if (scope === "pending")
         sql += " AND coalesce(json_extract(state,'$.pendingDismissed'),0)=0";
     }
-    const rows = this.db.prepare(sql).all(...params) as { id: string }[];
-    let works = rows.map((r) =>
-      this.view(projectId, r.id, scope === "run" ? scopeId : undefined),
-    );
+    const rows =
+      scope === "shelf"
+        ? this.shelfScope(scopeId || "all").map((id) => ({ id }))
+        : (this.db.prepare(sql).all(...params) as { id: string }[]);
+    let works = this.views(projectId, rows.map((r) => r.id), scope === "run" ? scopeId : undefined);
+    if (scope === "run" && this.shelfHints) {
+      const hints = this.shelfHints(works.filter((w) => !w.shelf));
+      for (const w of works) if (!w.shelf && hints.has(w.id)) w.shelf = hints.get(w.id);
+    }
     if (args.query) {
       const q = args.query.toLowerCase();
       works = works.filter((w) =>
@@ -623,12 +711,19 @@ export class Library {
           reasons: [],
           hidden: reasons,
           deferred: false,
-          scope: "로컬 아카이브",
+          scope: scope === "shelf" ? "서고" : "로컬 아카이브",
         };
       if (w.evidence.deferred) deferred++;
       if (reasons.length) hidden++;
       if (args.showHidden || !reasons.length) kept.push(w);
     }
+    if (scope === "shelf" && args.sort === "rank")
+      kept.sort((a, b) => (b.year || 0) - (a.year || 0) || a.title.localeCompare(b.title));
+    // Shelf matches stay in their own pinned group instead of competing on score.
+    const pinned = scope === "run"
+      ? kept.filter((w) => w.evidence?.relation === "shelf").sort((a, b) => (b.evidence?.shelf?.score ?? 0) - (a.evidence?.shelf?.score ?? 0))
+      : [];
+    if (pinned.length) kept.splice(0, kept.length, ...kept.filter((w) => w.evidence?.relation !== "shelf"));
     if (args.sort === "year")
       kept.sort((a, b) => (b.year || 0) - (a.year || 0));
     if (args.sort === "citations")
@@ -647,12 +742,14 @@ export class Library {
           ]),
         ]
       : [];
-    const context = contextIds
-      .filter((id) => !page.some((w) => w.id === id))
-      .map((id) => this.view(projectId, id));
+    const context = this.views(
+      projectId,
+      contextIds.filter((id) => !page.some((w) => w.id === id)),
+    );
     return {
       works: page,
       context,
+      ...(scope === "run" ? { shelf: pinned } : {}),
       total: kept.length,
       hidden,
       deferred,

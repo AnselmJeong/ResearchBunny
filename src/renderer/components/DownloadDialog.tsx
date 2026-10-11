@@ -82,6 +82,7 @@ export function DownloadDialog({ projectId, selected, scope, scopeId, runs, busy
       </select>
     </label>
     <p role="status" aria-live="polite" className="pdf-current-summary">{remaining ? `대상 ${remaining.total}편 · PDF 연결 ${remaining.existing}편 · 남은 문헌 ${remaining.eligible}편${remaining.books ? ` · 책·챕터 제외 ${remaining.books}편` : ""}` : "현재 PDF 연결 상태 확인 중…"}</p>
+    {!!remaining?.shelf && <p className="shelf-found" role="status">서고에서 찾음 {remaining.shelf}편 · 원문 찾기를 시작하면 다운로드 없이 서고 PDF를 연결합니다.</p>}
     <div className="inline-actions">
       <button className="primary" disabled={busy || pending || downloading || !remaining?.eligible} onClick={() => void start()}>{starting ? "시작 중…" : attempted ? `남은 ${Math.min(remaining?.eligible || 0, 1000)}편 자동 재시도` : "원문 찾기 시작"}</button>
       <button disabled={busy || pending || downloading} onClick={() => void matchFolder()}>{matching ? "폴더 확인 중…" : "다운로드한 PDF 폴더 연결"}</button>

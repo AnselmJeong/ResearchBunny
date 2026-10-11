@@ -23,7 +23,8 @@ export class PdfReader {
   attachment(target: PdfTarget) {
     this.db.project(target.projectId);
     this.db.get(target.workId);
-    const member = this.db.db.prepare("SELECT 1 FROM project_works WHERE project_id=? AND work_id=?").get(target.projectId, target.workId);
+    // Shelf papers are readable from every project without being saved to it.
+    const member = this.db.db.prepare("SELECT 1 FROM project_works WHERE project_id=? AND work_id=? UNION ALL SELECT 1 FROM shelf_files WHERE work_id=? LIMIT 1").get(target.projectId, target.workId, target.workId);
     if (!member) throw new AppError("PDF_SCOPE", "현재 프로젝트에 속한 문헌이 아닙니다.");
     const attachment = this.db.attachment(target.attachmentId);
     if (attachment.workId !== target.workId) throw new AppError("PDF_SCOPE", "선택한 논문의 첨부 파일이 아닙니다.");

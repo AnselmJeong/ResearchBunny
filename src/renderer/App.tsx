@@ -40,6 +40,8 @@ import {
   Tags,
   Archive,
   AlertCircle,
+  LibraryBig,
+  WifiOff,
 } from "lucide-react";
 import type {
   Snapshot,
@@ -65,6 +67,8 @@ import {
 } from "../shared/navigation";
 import { HelpTooltip } from "./components/HelpTooltip";
 import { ArchiveTree } from "./components/ArchiveTree";
+import { ShelfTree, shelfJobLabel } from "./components/ShelfTree";
+import { SHELF_ALL, SHELF_INBOX, SHELF_REVIEW } from "../shared/shelf";
 import { ResizableSidebar } from "./components/ResizableSidebar";
 import { ProjectSwitcher } from "./components/ProjectSwitcher";
 import type { Input } from "../shared/contracts";
@@ -281,8 +285,8 @@ export function App() {
         if (event.type === "chat") return;
         if (event.type === "service-error")
           flash(event.message || "자료 서비스 오류", true);
-        // Source probes change progress, not the library list or graph.
-        if (event.type === "progress") snapshotRefresh.current?.request();
+        // Source probes and shelf indexing progress change status, not the list or graph.
+        if (event.type === "progress" || event.type === "shelf") snapshotRefresh.current?.request();
         else refresh();
       }),
     [refresh, flash],
@@ -293,7 +297,7 @@ export function App() {
     const queue = refreshQueue(async () => {
       const data = await window.bunny.snapshot(projectId ? { projectId } : {});
       if (!valid) return;
-      activeJob = data.runs.some(r => ["running", "queued"].includes(r.status)) || data.classification.job?.status === "running";
+      activeJob = data.runs.some(r => ["running", "queued"].includes(r.status)) || data.classification.job?.status === "running" || ["scanning", "indexing"].includes(data.shelf.job.state);
       setSnapshot(data);
       const current = projectId || data.projects[0].id;
       if (!projectId) {
@@ -617,7 +621,7 @@ export function App() {
       selected: fallbackSelection,
     });
   };
-  const discover = async (mode: DiscoveryMode, ids?: string[]) => {
+  const discover = async (mode: DiscoveryMode, ids?: string[], shelfOnly = false) => {
     if (discoveryStarting.current || busy || active || (mode === "search" && searchPending)) return;
     if (mode === "search" && !query.trim()) return;
     discoveryStarting.current = true;
@@ -654,6 +658,7 @@ export function App() {
           filters: nextFilters,
           sort: searchSort,
           semantic,
+          shelfOnly,
           parentId:
             scope === "run" && !["search", "ai"].includes(mode)
               ? scopeId || undefined
@@ -731,6 +736,9 @@ export function App() {
         ? snapshot?.collections.find((c) => c.id === scopeId)?.name || "컬렉션"
         : scope === "topic"
           ? classification?.topics.find(t => t.id === scopeId)?.name || "소주제"
+        : scope === "shelf"
+          ? scopeId === SHELF_INBOX ? "서고 수신함" : scopeId === SHELF_REVIEW ? "서고 · 확인 필요"
+            : snapshot?.shelf.folders.find(f => f.id === scopeId)?.name || "서고"
         : {
             archive: "내 아카이브",
             unclassified: "미분류",
@@ -739,7 +747,7 @@ export function App() {
             reading: "읽기 목록",
             trash: "휴지통",
             excluded: "제외 문헌",
-          }[scope] || "문헌";
+          }[scope as string] || "문헌";
   const fullPage = dialog === "settings" || dialog === "history";
   const hiddenSelected = selected.filter(
     (id) => !list.ids.includes(id) && !list.context?.some((w) => w.id === id),
@@ -789,6 +797,16 @@ export function App() {
             <Compass size={17} />
             문헌 탐색
           </button>
+          <ShelfTree
+            shelf={snapshot.shelf}
+            scope={fullPage ? "" : scope}
+            scopeId={scopeId}
+            navigate={navigate}
+            onSetup={() => {
+              setDialog("settings");
+              requestAnimationFrame(() => document.getElementById("settings-shelf")?.scrollIntoView());
+            }}
+          />
           <div className="nav-label">라이브러리</div>
           <ArchiveTree
             key={projectId}
@@ -1003,8 +1021,18 @@ export function App() {
                     />
                     의미 검색
                   </label>
+                  {snapshot.shelf.configured && (
+                    <button
+                      disabled={busy || !!active || !query.trim()}
+                      data-help="네트워크 없이 서고에서만 찾습니다. 한국어 질의도 됩니다."
+                      onClick={() => void discover("search", undefined, true).catch(onError)}
+                    >
+                      <LibraryBig size={15} />
+                      서고만 검색
+                    </button>
+                  )}
                   <span className="search-provider">
-                    OpenAlex
+                    {snapshot.shelf.configured ? "내 서고 → " : ""}OpenAlex
                     {!snapshot.settings.openalexConfigured && (
                       <button
                         className="text-button"
@@ -1167,10 +1195,12 @@ export function App() {
                   <div>
                     {scope === "topic" || scope === "unclassified" ? (
                       <button className="text-button archive-breadcrumb" onClick={() => navigate("archive")}>내 아카이브 <ChevronRight size={13} /></button>
-                    ) : <div className="eyebrow">{scope === "run" ? "DISCOVER" : "LIBRARY"}</div>}
+                    ) : scope === "shelf" && scopeId !== SHELF_ALL ? (
+                      <button className="text-button archive-breadcrumb" onClick={() => navigate("shelf", SHELF_ALL)}>서고 <ChevronRight size={13} /></button>
+                    ) : <div className="eyebrow">{scope === "run" ? "DISCOVER" : scope === "shelf" ? "SHELF" : "LIBRARY"}</div>}
                     <h1>
                       {title}
-                      <span>{list.total.toLocaleString()}</span>
+                      <span>{(list.total + (list.shelf?.length || 0)).toLocaleString()}</span>
                     </h1>
                   </div>
                   <div className="workspace-actions">
@@ -1210,6 +1240,12 @@ export function App() {
                   </div>
                   </div>
                 </div>
+                {scope === "shelf" && (!snapshot.shelf.online || snapshot.shelf.job.state !== "idle" || snapshot.shelf.job.message) && <div className={`classification-status shelf-job ${!snapshot.shelf.online ? "failed" : ""}`} role="status">
+                  <span>{!snapshot.shelf.online && <WifiOff size={13} />} {snapshot.shelf.job.message || shelfJobLabel(snapshot.shelf)}{!snapshot.shelf.online ? " · PDF 열기만 NAS 연결이 필요합니다." : ""}</span>
+                  {snapshot.shelf.job.state === "confirm" && <button className="text-button" onClick={() => void task(() => window.bunny.shelfControl({ action: "confirmMissing" }))}>사라진 파일 반영</button>}
+                  {["indexing", "scanning"].includes(snapshot.shelf.job.state) && <button className="icon-button" title="서고 색인 일시정지" aria-label="서고 색인 일시정지" onClick={() => void task(() => window.bunny.shelfControl({ action: "pause" }))}><Square size={14} /></button>}
+                  {snapshot.shelf.job.state === "paused" && <button className="text-button" onClick={() => void task(() => window.bunny.shelfControl({ action: "resume" }))}><Play size={12} />재개</button>}
+                </div>}
                 {archiveScope && classification?.job && <div className={`classification-status ${classification.job.status}`} role="status">
                   <span>{classification.job.message}</span>
                   {classifying && <button className="icon-button" title="자동 분류 취소" aria-label="자동 분류 취소" onClick={() => void task(() => window.bunny.cancelClassification({ projectId }))}><Square size={14} /></button>}
@@ -1294,9 +1330,10 @@ export function App() {
                   <DiscoveryMenu
                     disabled={busy || !!active}
                     canDiscover={!!(selected.length || seeds.length)}
-                    onDiscover={(mode) => void discover(mode).catch(onError)}
+                    onDiscover={(mode, shelfOnly) => void discover(mode, undefined, shelfOnly).catch(onError)}
                     basis={basis}
                     onBasis={setBasis}
+                    shelf={snapshot.shelf.configured}
                   />
                   <button
                     disabled={!selected.length}
@@ -1362,7 +1399,9 @@ export function App() {
                           ? "결과 내 검색"
                           : scope === "collection"
                             ? "컬렉션에서 찾기"
-                            : "아카이브에서 찾기"
+                            : scope === "shelf"
+                              ? "서고 폴더에서 찾기"
+                              : "아카이브에서 찾기"
                       }
                       value={localQuery}
                       onChange={(e) => setLocalQuery(e.target.value)}
@@ -1459,12 +1498,35 @@ export function App() {
                     </div>
                   </details>
                 )}
+                {scope === "run" && !!list.shelf?.length && (
+                  <details className="shelf-pinned" open>
+                    <summary><LibraryBig size={15} />내 서고에서 찾음 {list.shelf.length}편 <span className="subtle">· 이미 가진 PDF · 다운로드 불필요</span></summary>
+                    <div>
+                      {list.shelf.map((w) => (
+                        <div key={w.id} className={`shelf-pinned-row ${inspectorId === w.id ? "inspected" : ""}`}>
+                          <input type="checkbox" aria-label={`${w.title} 선택`} checked={selected.includes(w.id)}
+                            onChange={(e) => setSelected((ids) => e.target.checked ? [...new Set([...ids, w.id])] : ids.filter((id) => id !== w.id))} />
+                          <button onClick={() => void openArticle(w.id).catch(onError)}>
+                            <strong>{w.title}</strong>
+                            <span>{w.authors.slice(0, 2).join(" · ") || "저자 미상"}{w.authors.length > 2 ? " 외" : ""} · {w.year || "연도 미상"}</span>
+                          </button>
+                          <span className="folder-chip" title={w.shelf?.path}>{w.evidence?.shelf?.folder?.split("/").pop() || w.shelf?.folder.split("/").pop() || "수신함"}</span>
+                          <span className="pinned-origins">{w.evidence?.origins.filter((o) => !o.startsWith("내 서고")).length ? "외부 검색에도 있음" : ""}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
                 <div className="results-area">
                   {loading && !list.works.length ? (
                     <div className="results-loading">
                       <LoaderCircle size={24} className="spin" />
                       <span>문헌을 불러오는 중…</span>
                     </div>
+                  ) : !list.works.length && list.shelf?.length ? (
+                    <p className="subtle shelf-only-note">
+                      {currentRun?.rankingVersion === "shelf-v1" ? "서고에서만 찾았습니다. 외부 검색은 검색 버튼으로 실행하세요." : "서고 밖 검색 결과가 없거나 필터로 숨겨졌습니다."}
+                    </p>
                   ) : !list.works.length ? (
                     <div className="empty-state">
                       <div className="empty-graphic">
@@ -1483,7 +1545,9 @@ export function App() {
                           ? "조건에 맞는 문헌이 없습니다."
                           : scope === "archive"
                             ? "첫 문헌부터 시작하세요."
-                            : scope === "pending"
+                            : scope === "shelf"
+                            ? snapshot.shelf.configured ? "이 폴더에 색인된 논문이 없습니다." : "서고를 연결하세요."
+                          : scope === "pending"
                               ? "검토를 기다리는 문헌이 없습니다."
                               : scope === "run"
                                 ? "연구의 출발점을 찾아보세요."
@@ -1577,8 +1641,9 @@ export function App() {
                             />
                             <button
                               className="paper-main"
-                              title={w.attachmentCount ? "문헌 선택 · 첨부 원문 보기" : "문헌 선택"}
-                              onClick={() => void openArticle(w.id).catch(onError)}
+                              title={w.attachmentCount && scope !== "shelf" ? "문헌 선택 · 첨부 원문 보기" : "문헌 선택"}
+                              // Shelf PDFs may sit on a NAS: browsing shows the record; 원문 보기 opens the file.
+                              onClick={() => scope === "shelf" ? inspect(w.id) : void openArticle(w.id).catch(onError)}
                             >
                               <h3>{w.title}</h3>
                               <p>
@@ -1600,6 +1665,21 @@ export function App() {
                                   <span className="warning-text">
                                     관련성 판단 보류
                                   </span>
+                                )}
+                                {w.shelf && scope !== "shelf" && (
+                                  <span className={`shelf-badge ${w.shelf.match === "title" ? "hint" : ""}`} title={w.shelf.path}>
+                                    <LibraryBig size={11} />
+                                    {w.shelf.match === "title" ? "서고에 같은 제목" : `서고 · ${w.shelf.folder.split("/").pop()}`}
+                                  </span>
+                                )}
+                                {scope === "shelf" && w.shelf && ["review", "provisional"].includes(w.shelf.status) && (
+                                  <span className="warning-text">확인 필요</span>
+                                )}
+                                {scope === "shelf" && !w.abstract && <span className="subtle">초록 없음</span>}
+                                {scope === "shelf" && w.abstract && w.raw?.abstractSource === "pdf" && <span className="subtle">PDF에서 추출한 초록</span>}
+                                {scope === "shelf" && w.state.screening === "included" && <span className="green">이 프로젝트에 저장됨</span>}
+                                {scope === "shelf" && scopeId !== w.shelf?.folderId && w.shelf && !(scopeId === SHELF_INBOX && w.shelf.folder === "수신함") && (
+                                  <span className="folder-chip">{w.shelf.folder.split("/").pop()}</span>
                                 )}
                                 {w.state.reading !== "unread" && (
                                   <span>{READ[w.state.reading]}</span>
@@ -1788,6 +1868,7 @@ export function App() {
                   onDiscover={(m, ids) => void discover(m, ids).catch(onError)}
                   onError={onError}
                   onInspect={inspect}
+                  shelfConfigured={snapshot.shelf.configured}
                   seed={!!inspected && seeds.includes(inspected.id)}
                 />
                 </ResizableInspector>
@@ -1844,6 +1925,12 @@ export function App() {
                     재개
                   </button>
                 )}
+              </>
+            ) : ["scanning", "indexing"].includes(snapshot.shelf.job.state) ? (
+              <>
+                <LoaderCircle size={13} className="spin" />
+                {snapshot.shelf.job.message}
+                {snapshot.shelf.job.total ? ` · ${(snapshot.shelf.job.done || 0).toLocaleString()}/${snapshot.shelf.job.total.toLocaleString()}` : ""}
               </>
             ) : (
               <>

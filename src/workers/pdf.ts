@@ -47,7 +47,14 @@ async function extract() {
     const items = content.items.filter(
       (i: any) => typeof i.str === "string",
     ) as any[];
-    const text = items.map((i) => i.str).join(" ");
+    let text = items.map((i) => i.str).join(" ");
+    if (process.argv[3] === "shelf" && pdf.numPages > 1) {
+      // Shelf indexing reads two pages: many journals put the abstract or DOI on page 2.
+      const second = await pdf.getPage(2);
+      const more = await second.getTextContent();
+      text += "\n" + (more.items as any[]).filter((i) => typeof i.str === "string").map((i) => i.str).join(" ");
+      second.cleanup();
+    }
     const info = metadata.info as Record<string, unknown>;
     const metadataTitle =
       typeof info.Title === "string" ? info.Title.trim() : "";
@@ -79,7 +86,7 @@ async function extract() {
       authors: typeof info.Author === "string" ? info.Author : "",
       dois,
       pages: pdf.numPages,
-      text: text.slice(0, 18000),
+      text: text.slice(0, process.argv[3] === "shelf" ? 30000 : 18000),
       status: text.trim() ? "extracted" : "스캔 또는 텍스트 없음",
     });
   } finally {

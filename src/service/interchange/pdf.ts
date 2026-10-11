@@ -19,6 +19,7 @@ import {
   now,
   type Run,
   type AppEvent,
+  type Attachment,
 } from "../../shared/types";
 import { blankWork, normalizeDoi, titleSimilarity } from "../../shared/domain";
 import type { Library } from "../db/database";
@@ -44,9 +45,23 @@ export async function verifyPdf(path: string) {
     await file.close();
   }
 }
+/**
+ * Shelf files were hashed by the indexer. While size and mtime still match that
+ * hash, trust it instead of rereading the whole PDF over SMB; opening the PDF
+ * verifies the full hash again.
+ */
+export async function shelfFileUnchanged(db: Library, attachment: Attachment) {
+  if (!attachment.shelfFileId) return false;
+  const row = db.db.prepare("SELECT hash,hashed_size,hashed_mtime,status FROM shelf_files WHERE id=?")
+    .get(attachment.shelfFileId) as { hash: string | null; hashed_size: number | null; hashed_mtime: number | null; status: string } | undefined;
+  if (!row?.hash || row.hash !== attachment.hash || row.status === "missing") return false;
+  const info = await stat(attachment.path).catch(() => null);
+  return !!info && info.size === row.hashed_size && Math.trunc(info.mtimeMs) === row.hashed_mtime;
+}
 export async function hasValidPdf(db: Library, workId: string, signal?: AbortSignal) {
   for (const attachment of db.attachments(workId)) {
     try {
+      if (await shelfFileUnchanged(db, attachment)) return true;
       await verifyPdf(attachment.path);
       if (await hashFile(attachment.path, signal) === attachment.hash) return true;
     } catch { signal?.throwIfAborted(); }
@@ -79,7 +94,7 @@ export function extractPdf(
   path: string,
   workerPath: string,
   signal: AbortSignal,
-  mode: "metadata" | "fulltext" = "metadata",
+  mode: "metadata" | "fulltext" | "shelf" = "metadata",
 ): Promise<Extracted> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {

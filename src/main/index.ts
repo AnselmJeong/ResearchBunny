@@ -57,6 +57,17 @@ async function command(name: Command, input: any): Promise<any> {
       });
       return result.canceled ? null : rpc("pdfMatch", { projectId: args.projectId, paths: result.filePaths });
     }
+    case "chooseShelfRoot": {
+      const result = await dialog.showOpenDialog(window!, {
+        title: "서고 폴더 선택 (예: /Volumes/LIBRARY/Articles)",
+        properties: ["openDirectory"],
+      });
+      return result.canceled ? null : result.filePaths[0];
+    }
+    case "shelfReveal": {
+      Utils.showItemInFolder(await rpc<string>("shelfFilePath", args));
+      return;
+    }
     case "chooseDownloadDirectory": {
       const result = await dialog.showOpenDialog(window!, {
         title: "Chrome이 PDF를 저장하는 다운로드 폴더 선택",
@@ -245,6 +256,12 @@ const hostRpc = BrowserView.defineRPC<BunnyRPC>({
               "pdfExportPreview",
               "pdfDownloadPreview",
               "missingPdfs",
+              "shelfStatus",
+              "shelfRelated",
+              "shelfSearch",
+              "shelfFile",
+              "shelfReveal",
+              "chooseShelfRoot",
             ].includes(name)
           )
             emit({ type: "changed" });

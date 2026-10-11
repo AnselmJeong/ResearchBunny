@@ -15,6 +15,7 @@ const viewSchema = z.object({
       "collection",
       "topic",
       "unclassified",
+      "shelf",
     ])
     .default("archive"),
   scopeId: z.string().default(""),

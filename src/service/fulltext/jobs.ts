@@ -19,8 +19,14 @@ export interface DownloadTarget {
   useBrowser?: boolean;
   downloadDirectory?: string;
 }
+export interface ShelfLinker {
+  match(work: Work): { fileId: string; name: string; folder: string }[];
+  attach(fileId: string, workId: string): void;
+}
 export class PdfDownloads {
   active = new Map<string, AbortController>();
+  /** Set by the service when a shelf exists: shelf PDFs are linked before any download. */
+  shelf?: ShelfLinker;
   private currentItems = new Map<string, AbortController>();
   private local: LocalDownloads;
   private recoveryTimer?: ReturnType<typeof setInterval>;
@@ -206,11 +212,13 @@ export class PdfDownloads {
   async missing(target: DownloadTarget): Promise<MissingPdfs> {
     const works = this.targets(target, false);
     const items: MissingPdfs["items"] = [];
-    let existing = 0, books = 0;
+    let existing = 0, books = 0, shelf = 0;
     for (const work of works) {
-      if (await this.existing(work.id)) existing++;
-      else if (!target.includeBooks && isBook(work)) books++;
-      else items.push({ workId: work.id, title: work.title, status: "untried", message: "아직 원문 확보를 시도하지 않았습니다." });
+      if (await this.existing(work.id)) { existing++; continue; }
+      const inShelf = this.shelf?.match(work) || [];
+      if (inShelf.length === 1) shelf++;
+      if (!inShelf.length && !target.includeBooks && isBook(work)) books++;
+      else items.push({ workId: work.id, title: work.title, status: "untried", message: inShelf.length ? `서고에서 찾음 · ${inShelf.length === 1 ? "다운로드 없이 연결할 수 있습니다." : `후보 ${inShelf.length}개 · 직접 확인 후 연결하세요.`}` : "아직 원문 확보를 시도하지 않았습니다.", ...(inShelf.length ? { shelf: inShelf } : {}) });
     }
     // Attachment verification is authoritative. History only supplies an explanation,
     // including runs older than the snapshot's 100-run window.
@@ -222,7 +230,7 @@ export class PdfDownloads {
     }
     for (const item of items) {
       const attempt = latest.get(item.workId);
-      if (!attempt) continue;
+      if (!attempt || item.shelf) continue;
       if (attempt.status === "completed" || attempt.status === "existing") {
         item.status = "missing";
         item.message = "이전에 연결한 PDF를 찾거나 검증할 수 없습니다. 다시 연결하세요.";
@@ -233,17 +241,18 @@ export class PdfDownloads {
     }
     items.sort((a, b) => a.title.localeCompare(b.title, "ko") || a.workId.localeCompare(b.workId));
     const directory = this.db.pref<string>("pdfDownloadDirectory");
-    return { total: works.length, existing, books, eligible: items.length, items, ...(directory ? { downloadDirectory: directory } : {}) };
+    return { total: works.length, existing, books, eligible: items.length, ...(shelf ? { shelf } : {}), items, ...(directory ? { downloadDirectory: directory } : {}) };
   }
   async preview(target: DownloadTarget): Promise<PdfDownloadPreview> {
     const works = this.targets(target);
-    let existing = 0, books = 0;
+    let existing = 0, books = 0, shelf = 0;
     for (const work of works) {
       if (await this.existing(work.id)) existing++;
+      else if (this.shelf?.match(work).length === 1) shelf++;
       else if (!target.includeBooks && isBook(work)) books++;
     }
     const directory = this.db.pref<string>('pdfDownloadDirectory');
-    return { total: works.length, existing, books, eligible: works.length - existing - books, ...(directory ? {downloadDirectory:directory} : {}) };
+    return { total: works.length, existing, books, eligible: works.length - existing - books - shelf, ...(shelf ? { shelf } : {}), ...(directory ? {downloadDirectory:directory} : {}) };
   }
   start(target: DownloadTarget) {
     if (this.active.size) throw new AppError("BUSY", "원문 확보 작업이 진행 중입니다.");
@@ -319,6 +328,14 @@ export class PdfDownloads {
           }
           const work = this.db.get(item.workId);
           if (await this.existing(work.id, itemSignal)) { item.status = "existing"; item.message = "검증한 보관 PDF 있음"; continue; }
+          // Check the shelf again right before any network request.
+          const inShelf = this.shelf?.match(work) || [];
+          if (inShelf.length === 1) {
+            this.shelf!.attach(inShelf[0].fileId, work.id);
+            item.status = "completed"; item.message = `서고 PDF 연결 · 다운로드 없음 (${inShelf[0].folder})`;
+            continue;
+          }
+          if (inShelf.length > 1) { item.status = "skipped"; item.message = `서고에 후보 ${inShelf.length}개 · 직접 확인 후 연결하세요.`; continue; }
           if (!run.download!.includeBooks && isBook(work)) { item.status = "skipped"; item.message = "책·챕터 기본 제외"; continue; }
           item.status = "running";
           run.message = `원문 ${index + 1}/${run.total} · ${item.title}`;
