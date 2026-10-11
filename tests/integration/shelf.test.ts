@@ -441,7 +441,7 @@ test("full-text jobs link shelf PDFs instead of downloading; deletion and merges
   });
 });
 
-test("full-text jobs look in the shelf before Chrome, the download folder and the network, also while the shelf is offline", async () => {
+test("full-text jobs look in the shelf before Chrome, the download folder and the network; an offline shelf refuses the job", async () => {
   await fixture(async ({ service, dir, projectId, ollama, root }) => {
     await configure(service, dir, ollama.url);
     const smith = fileOf(service, SMITH)!, kim = fileOf(service, KIM)!;
@@ -475,29 +475,37 @@ test("full-text jobs look in the shelf before Chrome, the download folder and th
     expect(byId.get(variant.id)!.shelf).toEqual([{ fileId: kim.id, name: basename(KIM), folder: "01 Domain A/Leaf Y" }]);
     expect(byId.get(stranger.id)!.shelf).toBeUndefined();
 
-    const run: Run = await service.call("downloadPdfs", { projectId, scope: "archive", useBrowser: true, downloadDirectory: downloads });
+    // Downloads are stored in the shelf inbox, so no job starts while the shelf is offline.
+    const request = { projectId, scope: "archive", useBrowser: true, downloadDirectory: downloads };
+    await expect(service.call("downloadPdfs", request)).rejects.toMatchObject({ code: "SHELF_OFFLINE" });
+    expect(tried).toEqual([]);
+    expect(service.db.attachments(variant.id)).toEqual([]);
+
+    await rename(`${dir}-unmounted`, dir);
+    expect(await hasValidPdf(service.db, smith.work_id)).toBe(true);
+    const run: Run = await service.call("downloadPdfs", request);
     while (service.downloads.active.size) await Bun.sleep(10);
     const items = new Map(service.db.run(run.id).download!.items.map((item) => [item.workId, item]));
     expect(tried.sort()).toEqual([absent.id, absent.id, stranger.id, stranger.id].sort());
     expect(linkedBeforeNetwork).toBe(true);
-    expect(items.get(smith.work_id)).toMatchObject({ status: "skipped", message: expect.stringContaining("다운로드하지 않았습니다") });
+    expect(items.get(smith.work_id)).toMatchObject({ status: "existing" });
     expect(items.get(variant.id)).toMatchObject({ status: "completed", message: "서고 PDF 연결 · 다운로드 없음 (01 Domain A/Leaf Y)" });
     expect(service.db.attachments(smith.work_id).map((a) => a.mode)).toEqual(["linked"]);
     expect(service.db.attachments(variant.id)).toEqual([expect.objectContaining({ mode: "linked", shelfFileId: kim.id })]);
     expect(await readdir(join(service.db.root, "attachments")).catch(() => [])).toEqual([]);
 
-    // Recovering Chrome downloads in the background leaves shelf papers alone as well.
+    // Background recovery of Chrome downloads leaves shelf papers alone, also while the NAS is away.
     const failed = service.db.run(run.id);
     failed.download!.items.find((item) => item.workId === smith.work_id)!.status = "failed";
     service.db.saveRun(failed);
+    await rename(dir, `${dir}-unmounted`);
     await service.downloads.recoverCompleted();
     expect(service.db.attachments(smith.work_id)).toHaveLength(1);
-
+    expect(await stat(join(downloads, "smith.pdf")).then(() => true)).toBe(true);
     await rename(`${dir}-unmounted`, dir);
-    expect(await hasValidPdf(service.db, smith.work_id)).toBe(true);
-    expect(await hasValidPdf(service.db, variant.id)).toBe(true);
     await service.downloads.syncHistory();
     expect(service.db.run(run.id).download!.items.find((item) => item.workId === smith.work_id)).toMatchObject({ status: "completed" });
+    expect(await hasValidPdf(service.db, variant.id)).toBe(true);
   });
 });
 
