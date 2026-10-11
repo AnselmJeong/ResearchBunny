@@ -10,7 +10,7 @@ import { hasValidPdf } from "../../src/service/interchange/pdf";
 import { mergeWorks, undoMerge } from "../../src/service/db/merge";
 import { deleteTrashedWorks } from "../../src/service/db/trash";
 import { parseShelfFilename, extractAbstractCandidate, SHELF_ALL, SHELF_INBOX, SHELF_REVIEW } from "../../src/shared/shelf";
-import { planScan } from "../../src/service/shelf/scanner";
+import { movedRel, planScan, rootRelation } from "../../src/service/shelf/scanner";
 import { slimRaw } from "../../src/service/shelf/resolver";
 import { VectorIndex } from "../../src/service/shelf/vectors";
 import { normalize } from "../../src/service/providers/ollama-local";
@@ -135,6 +135,21 @@ test("filename parsing, abstract extraction, move planning and raw slimming", ()
   expect(raw.counts_by_year).toBeUndefined();
   expect(raw.concepts).toBeUndefined();
   expect(raw.ids).toEqual({});
+});
+
+test("folder changes map stored paths by how the two folders relate", () => {
+  expect(rootRelation("/Volumes/LIBRARY/Articles", "/Volumes/LIBRARY/Articles/01 Domain A")).toEqual({ mode: "subfolder", prefix: "01 Domain A" });
+  expect(rootRelation("/Volumes/LIBRARY/Articles", "/Volumes/LIBRARY")).toEqual({ mode: "parent", prefix: "Articles" });
+  expect(rootRelation("/Volumes/LIBRARY/Articles", "/Volumes/LIBRARY-1/Articles")).toBeNull();
+  expect(rootRelation("/Volumes/LIBRARY/Articles", "/Volumes/LIBRARY/Articles2")).toBeNull();
+  // Korean folder names can be stored decomposed (NFD) on disk and typed composed (NFC).
+  const nfd = "정신의학".normalize("NFD");
+  expect(movedRel("subfolder", "정신의학", `${nfd}/역사/a.pdf`)).toBe("역사/a.pdf");
+  expect(movedRel("subfolder", "정신의학", "신경과학/a.pdf")).toBeNull();
+  expect(movedRel("subfolder", "정신의학", `${nfd}.pdf`)).toBeNull();
+  expect(movedRel("parent", "Articles", "x/a.pdf")).toBe("Articles/x/a.pdf");
+  expect(movedRel("remount", "", "x/a.pdf")).toBe("x/a.pdf");
+  expect(movedRel("new", "", "x/a.pdf")).toBeNull();
 });
 
 test("vector index keeps rows consistent across upserts, removals and top-k", () => {
@@ -267,6 +282,80 @@ test("rescans follow moves and renames, keep offline shelves intact and confirm 
     await service.shelf.wait();
     expect(service.shelf.job.state).toBe("confirm");
     expect(service.db.db.prepare("SELECT count(*) AS n FROM shelf_files WHERE status='missing'").get()).toEqual({ n: 1 });
+  });
+});
+
+test("changing the shelf folder keeps a remounted or wider shelf, narrows to a subfolder and starts over elsewhere", async () => {
+  await fixture(async ({ service, dir, projectId, ollama, calls, root }) => {
+    await configure(service, dir, ollama.url);
+    const smith = fileOf(service, SMITH)!, kim = fileOf(service, KIM)!, park = fileOf(service, PARK)!, lost = fileOf(service, LOST)!;
+    // Kim and Park are project papers on their own shelf files; a second project paper links to Kim's file.
+    service.db.mutate(projectId, [kim.work_id, park.work_id], { screening: "included" });
+    const variant = service.db.upsert(blankWork({ id: "z-variant", title: "Dopamine dynamics and memory guided behaviour", year: 2023, citekey: "" })).work;
+    service.db.mutate(projectId, [variant.id], { screening: "included" });
+    service.shelf.attachTo(kim.id, variant.id);
+    const preview = (path: string) => service.call("shelfMovePreview", { path });
+    const move = async (path: string) => {
+      await service.call("shelfConfigure", { path, ollamaUrl: ollama.url });
+      await service.shelf.wait();
+    };
+    expect(await preview(dir)).toMatchObject({ mode: "same", keep: 6, drop: 0 });
+    await expect(preview(join(root, "nowhere"))).rejects.toMatchObject({ code: "SHELF_PATH" });
+
+    // The share comes back under another name: same files, same index, no lookups. A running scan is stopped, not refused.
+    const mounted = join(root, "Articles-1");
+    await rename(dir, mounted);
+    const before = await listing(mounted);
+    const callsBefore = { ...calls };
+    expect(await preview(mounted)).toMatchObject({ from: dir, to: mounted, mode: "remount", keep: 6, drop: 0, links: 0 });
+    void service.shelf.scan("timer");
+    await move(mounted);
+    expect(fileOf(service, SMITH)).toMatchObject({ id: smith.id, work_id: smith.work_id, status: "ok" });
+    expect(service.db.attachments(kim.work_id)[0].path).toBe(join(mounted, KIM));
+    expect(service.db.attachments(variant.id)).toEqual([expect.objectContaining({ path: join(mounted, KIM), shelfFileId: kim.id })]);
+    expect(calls).toEqual(callsBefore);
+    expect(service.shelf.job.state).toBe("idle");
+    expect(await listing(mounted)).toEqual(before);
+
+    // A folder inside the shelf keeps its files under shorter paths; the rest leave the index, not the disk.
+    const domain = join(mounted, "01 Domain A");
+    expect(await preview(domain)).toMatchObject({ mode: "subfolder", keep: 3, drop: 3, links: 1 });
+    await move(domain);
+    expect(fileOf(service, "Leaf X/2024 - Smith et al. - Interoceptive prediction errors in anxiety.pdf")).toMatchObject({ id: smith.id, work_id: smith.work_id });
+    expect(fileOf(service, "Leaf Y/2023 - Kim, Lee - Dopamine dynamics and memory-guided behavior.pdf")).toMatchObject({ id: kim.id });
+    expect(service.db.db.prepare("SELECT count(*) AS n FROM shelf_files").get()).toEqual({ n: 3 });
+    expect(service.shelf.summary().folders.map((f) => f.name).sort()).toEqual(["Leaf X", "Leaf Y"]);
+    expect(service.db.attachments(kim.work_id)[0].path).toBe(join(domain, "Leaf Y/2023 - Kim, Lee - Dopamine dynamics and memory-guided behavior.pdf"));
+    // Park stays in the project with a plain link to the PDF where it still is; shelf-only works go.
+    expect(service.db.attachments(park.work_id)).toEqual([expect.objectContaining({ mode: "linked", path: join(mounted, PARK), exists: true })]);
+    expect(service.db.attachments(park.work_id)[0].shelfFileId).toBeUndefined();
+    expect(service.db.db.prepare("SELECT 1 FROM works WHERE id=?").get(lost.work_id)).toBeNull();
+    expect(service.db.db.prepare("SELECT count(*) AS n FROM shelf_fts").get()).toEqual({ n: 2 });
+    expect(service.shelf.job.state).toBe("idle");
+    expect(await listing(mounted)).toEqual(before);
+
+    // Widening back to the share root keeps the three rows and indexes the rest again; Park's PDF finds its project paper by hash.
+    expect(await preview(mounted)).toMatchObject({ mode: "parent", keep: 3, drop: 0 });
+    await move(mounted);
+    expect(fileOf(service, SMITH)).toMatchObject({ id: smith.id, work_id: smith.work_id });
+    expect(fileOf(service, PARK)).toMatchObject({ work_id: park.work_id });
+    expect(fileOf(service, PARK)!.id).not.toBe(park.id);
+    expect(service.db.db.prepare("SELECT count(*) AS n FROM shelf_files WHERE status!='missing'").get()).toEqual({ n: 6 });
+
+    // Another folder is another shelf: the old index goes, project papers keep their PDFs at the old place.
+    const other = join(root, "Other");
+    await pdf(join(other, "Neuro/2019 - Ito - Sleep spindles and overnight memory consolidation.pdf"), ["Sleep spindles and overnight memory consolidation", "K Ito"]);
+    expect(await preview(other)).toMatchObject({ mode: "new", keep: 0, drop: 6, links: 3 });
+    await move(other);
+    expect((service.db.db.prepare("SELECT rel_path FROM shelf_files").all() as { rel_path: string }[]).map((r) => r.rel_path)).toEqual(["Neuro/2019 - Ito - Sleep spindles and overnight memory consolidation.pdf"]);
+    expect(service.db.attachments(variant.id)).toEqual([expect.objectContaining({ path: join(mounted, KIM), exists: true })]);
+    expect(service.db.attachments(variant.id)[0].shelfFileId).toBeUndefined();
+    expect(service.db.attachments(kim.work_id).map((a) => a.path)).toEqual([join(mounted, KIM)]);
+    expect(service.db.db.prepare("SELECT 1 FROM works WHERE id=?").get(smith.work_id)).toBeNull();
+    expect(service.db.db.prepare("SELECT count(*) AS n FROM work_embeddings WHERE work_id=?").get(smith.work_id)).toEqual({ n: 0 });
+    expect(service.db.db.prepare("SELECT count(*) AS n FROM shelf_fts").get()).toEqual({ n: 1 });
+    expect(service.shelf.summary()).toMatchObject({ root: { path: other, name: "Other" }, online: true });
+    expect(await listing(mounted)).toEqual(before);
   });
 });
 

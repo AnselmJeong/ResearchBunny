@@ -162,6 +162,22 @@ export interface ShelfConfig {
   model: string;
   ollamaUrl: string;
 }
+/**
+ * Changing the shelf folder: `remount` is the same tree at another path, `parent`
+ * a folder above the shelf, `subfolder` a folder inside it, `new` another folder.
+ */
+export type ShelfMoveMode = "first" | "same" | "remount" | "parent" | "subfolder" | "new";
+export interface ShelfMovePreview {
+  from: string | null;
+  to: string;
+  mode: ShelfMoveMode;
+  /** Indexed files that stay with their metadata and embeddings. */
+  keep: number;
+  /** Indexed files that leave the index; the files themselves are untouched. */
+  drop: number;
+  /** Project papers whose PDF link to a dropped file becomes a plain link to its old location. */
+  links: number;
+}
 export interface OllamaStatus {
   running: boolean;
   url: string;

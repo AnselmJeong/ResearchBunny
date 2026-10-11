@@ -1,6 +1,7 @@
 import { lstat, readdir, stat } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { basename, extname, join, relative } from "node:path";
 import { createHash } from "node:crypto";
+import type { ShelfMoveMode } from "../../shared/shelf";
 
 export interface WalkedFile {
   rel: string;
@@ -114,4 +115,39 @@ export function planScan(known: KnownFile[], walked: Walked): ScanPlan {
   const active = known.filter((row) => row.status !== "missing").length;
   const newlyMissing = remaining.filter((row) => row.status !== "missing").length;
   return { moves, fresh, vanished: remaining, seen, needsConfirm: active >= 5 && newlyMissing > active * 0.2 };
+}
+
+const inside = (rel: string) => !!rel && rel !== ".." && !rel.startsWith("../") && !rel.startsWith("/");
+const segments = (rel: string) => rel.split("/").filter(Boolean);
+/**
+ * How a new shelf folder relates to the current one by path alone: a folder
+ * above it keeps every file under a longer relative path, a folder inside it
+ * keeps only the files below that folder. Anything else is decided by looking
+ * for the stored files at the new location (remount) or treated as another shelf.
+ */
+export function rootRelation(from: string, to: string): { mode: "parent" | "subfolder"; prefix: string } | null {
+  const down = relative(from.normalize("NFC"), to.normalize("NFC"));
+  if (inside(down)) return { mode: "subfolder", prefix: down };
+  const up = relative(to.normalize("NFC"), from.normalize("NFC"));
+  if (inside(up)) return { mode: "parent", prefix: up };
+  return null;
+}
+/** A stored relative path under the new root, or null when the file falls outside it. */
+export function movedRel(mode: ShelfMoveMode, prefix: string, rel: string): string | null {
+  if (mode === "remount" || mode === "same") return rel;
+  if (mode === "parent") return `${prefix}/${rel}`;
+  if (mode !== "subfolder") return null;
+  // On-disk names keep their own Unicode form; compare segment by segment in NFC.
+  const want = segments(prefix.normalize("NFC")), have = segments(rel);
+  if (have.length <= want.length || want.some((part, i) => have[i].normalize("NFC") !== part)) return null;
+  return have.slice(want.length).join("/");
+}
+/** Spell a path below `root` the way the disk does (NFC/NFD), so moved rows match the next walk. */
+export async function diskSpelling(root: string, rel: string): Promise<string> {
+  const parts: string[] = [];
+  for (const part of segments(rel)) {
+    const names = await readdir(join(root, ...parts)).catch(() => [] as string[]);
+    parts.push(names.find((name) => name.normalize("NFC") === part.normalize("NFC")) ?? part);
+  }
+  return parts.join("/");
 }

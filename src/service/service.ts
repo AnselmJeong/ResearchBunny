@@ -8,6 +8,7 @@ import { CodexClient } from "./codex/client";
 import { version } from "../../package.json";
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile, rename, stat } from "node:fs/promises";
+import { resolve } from "node:path";
 import type {
   AppEvent,
   ImportPreview,
@@ -560,10 +561,16 @@ export class Service {
         return this.shelf.status();
       case "shelfConfigure": {
         const p = schemas.shelfConfigure.parse(args);
-        this.shelf.configure(p);
+        const root = this.shelf.root();
+        // Downloads, imports and inbox sorting write into the shelf folder while they run.
+        if (root && resolve(p.path) !== root.path && (this.pdf.active.size || this.downloads.active.size || this.sorter.active))
+          throw new AppError("BUSY", "PDF 확보·가져오기·수신함 정리가 끝난 뒤 서고 위치를 바꾸세요.");
+        await this.shelf.configure(p);
         void this.shelf.scan("configure");
         return this.shelf.status();
       }
+      case "shelfMovePreview":
+        return this.shelf.previewMove(schemas.shelfMovePreview.parse(args).path);
       case "shelfControl":
         this.shelf.command(schemas.shelfControl.parse(args).action);
         return;

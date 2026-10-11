@@ -8,7 +8,7 @@ import type { FetchLike } from "../search/web-search";
 import { extractPdf, hashFile } from "../interchange/pdf";
 import { isAuxiliaryPdf } from "../interchange/pdf-identity";
 import { ShelfResolver, slimRaw, type Resolution } from "./resolver";
-import { folderId, parentRel, planScan, rootOnline, walk, type Walked } from "./scanner";
+import { diskSpelling, folderId, movedRel, parentRel, planScan, rootOnline, rootRelation, walk, type Walked } from "./scanner";
 import { VectorIndex } from "./vectors";
 import { AppError, now, type AppEvent, type Attachment, type Work } from "../../shared/types";
 import { blankWork, normalizeDoi } from "../../shared/domain";
@@ -28,6 +28,8 @@ import {
   type ShelfFileInfo,
   type ShelfIndexCounts,
   type ShelfJob,
+  type ShelfMoveMode,
+  type ShelfMovePreview,
   type ShelfStage,
   type ShelfStatus,
   type ShelfStatusResult,
@@ -66,6 +68,24 @@ const OFFLINE_RETRY_MS = 2 * 60 * 1000;
 /** Hidden while being written: neither the scanner nor intake.py picks up dot files. */
 const TEMP_PREFIX = ".researchbunny-";
 const TEMP_MAX_AGE_MS = 60 * 60 * 1000;
+interface RootMove {
+  mode: ShelfMoveMode;
+  /** Every stored file id with its relative path under the new root, or null when it leaves the index. */
+  rels: Map<string, string | null>;
+}
+const MOVE_MESSAGES: Record<ShelfMoveMode, string> = {
+  first: "",
+  same: "",
+  remount: "서고 위치를 바꿨습니다 · 같은 파일을 새 위치에서 찾아 색인을 그대로 옮겼습니다.",
+  parent: "서고 위치를 상위 폴더로 넓혔습니다 · 기존 색인은 그대로 두고 새 폴더를 색인합니다.",
+  subfolder: "서고 위치를 하위 폴더로 좁혔습니다 · 폴더 밖의 파일은 색인에서 뺐습니다.",
+  new: "서고 위치를 새 폴더로 바꿨습니다 · 처음부터 색인합니다.",
+};
+function shelfPath(input: string) {
+  const path = resolve(input.trim());
+  if (!isAbsolute(path) || path === "/") throw new AppError("SHELF_PATH", "서고 폴더의 절대 경로를 선택하세요.");
+  return path;
+}
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 const parseInfo = (row: Pick<FileRow, "info">): ShelfFileInfo => JSON.parse(row.info || "{}");
 async function pool<T>(items: T[], size: number, fn: (item: T) => Promise<void>) {
@@ -166,9 +186,12 @@ export class Shelf {
   }
 
   // ---- configuration and lifecycle ----
-  configure(input: Partial<ShelfConfig> & { path: string }): ShelfConfig {
-    const path = resolve(input.path.trim());
-    if (!isAbsolute(path) || path === "/") throw new AppError("SHELF_PATH", "서고 폴더의 절대 경로를 선택하세요.");
+  /**
+   * Save the shelf settings. A new folder or exclusion list first stops
+   * indexing, so a walk never sees half-moved rows; the caller rescans.
+   */
+  async configure(input: Partial<ShelfConfig> & { path: string }): Promise<ShelfConfig> {
+    const path = shelfPath(input.path);
     const previous = this.config();
     const config: ShelfConfig = {
       path,
@@ -181,20 +204,25 @@ export class Shelf {
     } catch {
       throw new AppError("SHELF_OLLAMA", "Ollama 주소 형식을 확인하세요.");
     }
-    if (this.control && (previous?.path !== config.path || previous?.exclude.join("\n") !== config.exclude.join("\n")))
-      throw new AppError("BUSY", "서고 색인을 일시정지한 뒤 위치나 제외 폴더를 바꾸세요.");
-    this.db.transaction(() => {
-      const root = this.root();
+    const root = this.root();
+    const save = (move?: RootMove) => this.db.transaction(() => {
       if (!root)
         this.db.db.prepare("INSERT INTO shelf_roots VALUES(?,?,?,?,?,NULL)")
           .run(randomUUID(), path, basename(path) || path, JSON.stringify(config.exclude), now());
       else {
-        // One shelf. A new path re-roots it (e.g. a remounted share); relative paths and ids stay.
+        // One shelf: a new folder keeps the root id and moves (or drops) its rows.
+        if (move) this.moveRoot(root, path, move);
         this.db.db.prepare("UPDATE shelf_roots SET path=?,name=?,exclude=? WHERE id=?").run(path, basename(path) || path, JSON.stringify(config.exclude), root.id);
-        if (root.path !== path) this.relinkAttachments(root.id, path);
       }
       this.db.pref("shelf", config);
     });
+    if (root && (root.path !== path || previous?.exclude.join("\n") !== config.exclude.join("\n")))
+      await this.hold(async () => {
+        const move = root.path === path ? undefined : await this.planMove(root, path);
+        save(move);
+        if (move) this.setJob({ state: "idle", message: MOVE_MESSAGES[move.mode] });
+      });
+    else save();
     if (previous?.model !== config.model || previous?.ollamaUrl !== config.ollamaUrl) {
       this.modelKey = null;
       this.embeddingPaused = "";
@@ -202,11 +230,83 @@ export class Shelf {
     this.revision++;
     return config;
   }
-  private relinkAttachments(rootId: string, path: string) {
-    for (const row of this.db.db.prepare("SELECT attachment_id,rel_path FROM shelf_files WHERE root_id=? AND attachment_id IS NOT NULL").all(rootId) as { attachment_id: string; rel_path: string }[]) {
-      const a = this.attachmentOrNull(row.attachment_id);
-      if (a) this.db.saveAttachment({ ...a, path: join(path, row.rel_path) });
+  /** What moving the shelf to `input` keeps and drops, without changing anything. */
+  async previewMove(input: string): Promise<ShelfMovePreview> {
+    const to = shelfPath(input);
+    const root = this.root();
+    if (!root) return { from: null, to, mode: "first", keep: 0, drop: 0, links: 0 };
+    const active = new Set((this.db.db.prepare("SELECT id FROM shelf_files WHERE root_id=? AND status!='missing'").all(root.id) as { id: string }[]).map((r) => r.id));
+    if (root.path === to) return { from: root.path, to, mode: "same", keep: active.size, drop: 0, links: 0 };
+    const move = await this.planMove(root, to);
+    const dropped = [...move.rels].filter(([id, rel]) => rel === null && active.has(id)).map(([id]) => id);
+    return { from: root.path, to, mode: move.mode, keep: active.size - dropped.length, drop: dropped.length, links: this.projectLinks(dropped) };
+  }
+  /**
+   * Decide how stored rows map into `to`: by path when one folder contains the
+   * other, otherwise by finding a sample of the stored files at the new path.
+   */
+  private async planMove(root: RootRow, to: string): Promise<RootMove> {
+    if (!(await rootOnline(to))) throw new AppError("SHELF_PATH", "선택한 폴더를 읽을 수 없습니다. 폴더가 있는지, NAS가 연결돼 있는지 확인하세요.");
+    const rows = this.db.db.prepare("SELECT id,rel_path,size,status FROM shelf_files WHERE root_id=? ORDER BY id").all(root.id) as { id: string; rel_path: string; size: number; status: string }[];
+    const relation = rootRelation(root.path, to);
+    let mode: ShelfMoveMode, prefix = "";
+    if (relation) {
+      mode = relation.mode;
+      prefix = mode === "parent" ? await diskSpelling(to, relation.prefix) : relation.prefix;
+    } else {
+      // A share mounted under another name, or a copied folder: the same files at the same relative paths.
+      const sample = rows.filter((r) => r.status !== "missing").slice(0, 60);
+      const found = await Promise.all(sample.map((r) => lstat(join(to, r.rel_path)).then((info) => info.isFile() && info.size === r.size, () => false)));
+      mode = sample.length && found.filter(Boolean).length * 2 >= sample.length ? "remount" : "new";
     }
+    return { mode, rels: new Map(rows.map((r) => [r.id, movedRel(mode, prefix, r.rel_path)])) };
+  }
+  private projectLinks(fileIds: string[]) {
+    if (!fileIds.length) return 0;
+    return (this.db.db.prepare(
+      "SELECT count(DISTINCT a.work_id) AS n FROM attachments a JOIN project_works pw ON pw.work_id=a.work_id WHERE json_extract(a.data,'$.shelfFileId') IN (SELECT value FROM json_each(?))",
+    ).get(JSON.stringify(fileIds)) as { n: number }).n;
+  }
+  /**
+   * Re-root the index inside the caller's transaction. Kept rows take their new
+   * relative paths with their ids, metadata and embeddings; the rest leave the
+   * index, and links to them keep pointing at the PDF where it still is.
+   */
+  private moveRoot(root: RootRow, path: string, move: RootMove) {
+    const moved: RootRow = { ...root, path, name: basename(path) || path };
+    const kept = [...move.rels].filter((entry): entry is [string, string] => entry[1] !== null);
+    const works = new Set<string>();
+    for (const [id, rel] of move.rels) {
+      if (rel !== null) continue;
+      const work = this.forget(id, root.path);
+      if (work) works.add(work);
+    }
+    this.dropOrphans(works);
+    const folders = new Set([""]);
+    for (const [, rel] of kept) for (let folder = parentRel(rel); folder !== null; folder = parentRel(folder)) folders.add(folder);
+    const folder = this.db.db.prepare("INSERT INTO shelf_folders VALUES(?,?,?,?,?,1) ON CONFLICT(root_id,rel_path) DO UPDATE SET parent_id=excluded.parent_id,name=excluded.name,present=1");
+    for (const rel of folders)
+      folder.run(folderId(root.id, rel), root.id, rel, parentRel(rel) === null ? null : folderId(root.id, parentRel(rel)!), rel ? basename(rel) : moved.name);
+    // Two passes: renaming in place could meet another row's old path (UNIQUE(root_id,rel_path)).
+    const park = this.db.db.prepare("UPDATE shelf_files SET rel_path=? WHERE id=?");
+    for (const [id] of kept) park.run(`\u0000${id}`, id);
+    const place = this.db.db.prepare("UPDATE shelf_files SET rel_path=?,folder_id=? WHERE id=?");
+    for (const [id, rel] of kept) place.run(rel, folderId(root.id, parentRel(rel) ?? ""), id);
+    this.db.db.prepare("DELETE FROM shelf_folders WHERE root_id=? AND id NOT IN (SELECT value FROM json_each(?))")
+      .run(root.id, JSON.stringify([...folders].map((rel) => folderId(root.id, rel))));
+    for (const [id] of kept) this.syncAttachmentPath(id, moved);
+  }
+  /** Take a file out of the index. Its attachments become plain links to the PDF at `rootPath`. */
+  private forget(id: string, rootPath: string): string | null {
+    const row = this.file(id);
+    if (!row) return null;
+    const path = join(rootPath, row.rel_path);
+    for (const r of this.db.db.prepare("SELECT data FROM attachments WHERE id=? OR json_extract(data,'$.shelfFileId')=?").all(row.attachment_id || "", id) as { data: string }[]) {
+      const a = JSON.parse(r.data) as Attachment;
+      this.db.saveAttachment({ ...a, path, name: basename(path), status: "이전 서고 PDF · 원본 위치 유지", shelfFileId: undefined });
+    }
+    this.db.db.prepare("DELETE FROM shelf_files WHERE id=?").run(id);
+    return row.work_id;
   }
   start() {
     if (this.timer) return;
@@ -882,17 +982,45 @@ export class Shelf {
     const used = this.db.db.prepare(
       "SELECT 1 FROM project_works WHERE work_id=? UNION ALL SELECT 1 FROM candidates WHERE work_id=? UNION ALL SELECT 1 FROM collection_works WHERE work_id=? UNION ALL SELECT 1 FROM shelf_files WHERE work_id=? UNION ALL SELECT 1 FROM chat_threads WHERE work_id=? UNION ALL SELECT 1 FROM runs WHERE instr(data,?)>0 UNION ALL SELECT 1 FROM seed_profiles WHERE instr(data,?)>0 LIMIT 1",
     ).get(id, id, id, id, id, id, id);
-    if (used) {
-      this.ftsRefresh(id);
-      return;
-    }
+    if (used) this.ftsRefresh(id);
+    else this.purgeWorks([id]);
+  }
+  /**
+   * dropWorkIfOrphan for thousands of works (a shelf moved elsewhere): runs and
+   * seed profiles are read once for every id they mention, instead of once per work.
+   */
+  private dropOrphans(ids: Set<string>) {
+    if (!ids.size) return;
+    const list = JSON.stringify([...ids]);
+    const used = new Set<string>();
+    for (const table of ["project_works", "candidates", "collection_works", "shelf_files", "chat_threads"])
+      for (const r of this.db.db.prepare(`SELECT DISTINCT work_id FROM ${table} WHERE work_id IN (SELECT value FROM json_each(?))`).all(list) as { work_id: string }[])
+        used.add(r.work_id);
+    const collect = (value: unknown) => {
+      if (typeof value === "string") used.add(value);
+      else if (Array.isArray(value)) value.forEach(collect);
+      else if (value && typeof value === "object")
+        for (const [key, inner] of Object.entries(value)) {
+          used.add(key);
+          collect(inner);
+        }
+    };
+    for (const table of ["runs", "seed_profiles"])
+      for (const { data } of this.db.db.prepare(`SELECT data FROM ${table}`).all() as { data: string }[]) collect(JSON.parse(data));
+    for (const id of ids) if (used.has(id)) this.ftsRefresh(id);
+    this.purgeWorks([...ids].filter((id) => !used.has(id)));
+  }
+  /** Delete works with their identifiers, snapshots, attachments, embeddings, citations and FTS rows, one statement per table. */
+  private purgeWorks(ids: string[]) {
+    if (!ids.length) return;
+    const list = JSON.stringify(ids), each = "(SELECT value FROM json_each(?))";
     for (const table of ["identifiers", "metadata_snapshots", "attachments", "work_embeddings"])
-      this.db.db.prepare(`DELETE FROM ${table} WHERE work_id=?`).run(id);
-    this.db.db.prepare("DELETE FROM citations WHERE citing_id=?").run(id);
-    this.db.db.prepare("DELETE FROM shelf_fts WHERE rowid=(SELECT rowid FROM works WHERE id=?)").run(id);
-    this.db.db.prepare("UPDATE import_items SET work_id=NULL WHERE work_id=?").run(id);
-    this.db.db.prepare("DELETE FROM works WHERE id=?").run(id);
-    this.vectors.remove(id);
+      this.db.db.prepare(`DELETE FROM ${table} WHERE work_id IN ${each}`).run(list);
+    this.db.db.prepare(`DELETE FROM citations WHERE citing_id IN ${each}`).run(list);
+    this.db.db.prepare(`DELETE FROM shelf_fts WHERE rowid IN (SELECT rowid FROM works WHERE id IN ${each})`).run(list);
+    this.db.db.prepare(`UPDATE import_items SET work_id=NULL WHERE work_id IN ${each}`).run(list);
+    this.db.db.prepare(`DELETE FROM works WHERE id IN ${each}`).run(list);
+    for (const id of ids) this.vectors.remove(id);
   }
   /** Save index-made metadata without recording it as a user edit. */
   private writeWork(work: Work) {

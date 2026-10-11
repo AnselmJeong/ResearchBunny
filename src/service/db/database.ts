@@ -87,6 +87,14 @@ export class Library {
       CREATE INDEX IF NOT EXISTS idx_shelf_files_hash ON shelf_files(hash);
       CREATE INDEX IF NOT EXISTS idx_shelf_files_work ON shelf_files(work_id);
       CREATE INDEX IF NOT EXISTS idx_shelf_files_stage ON shelf_files(stage,status);
+      -- Attachments made from a shelf file (its own and project links) follow moves and folder changes.
+      CREATE INDEX IF NOT EXISTS idx_attachments_shelf ON attachments(json_extract(data,'$.shelfFileId'));
+      -- Removing shelf works checks every table that references works(id); without these, each delete scans them.
+      CREATE INDEX IF NOT EXISTS idx_identifiers_work ON identifiers(work_id);
+      CREATE INDEX IF NOT EXISTS idx_snapshots_work ON metadata_snapshots(work_id);
+      CREATE INDEX IF NOT EXISTS idx_candidates_work ON candidates(work_id);
+      CREATE INDEX IF NOT EXISTS idx_project_works_work ON project_works(work_id);
+      CREATE INDEX IF NOT EXISTS idx_collection_works_work ON collection_works(work_id);
       CREATE TABLE IF NOT EXISTS work_embeddings(work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,model TEXT NOT NULL,prompt TEXT NOT NULL,basis TEXT NOT NULL,text_hash TEXT NOT NULL,dim INTEGER NOT NULL,vector BLOB NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(work_id,model));
       CREATE TABLE IF NOT EXISTS embedding_cache(key TEXT PRIMARY KEY,model TEXT NOT NULL,vector BLOB NOT NULL,used_at TEXT NOT NULL);
       CREATE VIRTUAL TABLE IF NOT EXISTS shelf_fts USING fts5(work_id UNINDEXED,title,authors,abstract,venue,tokenize='unicode61 remove_diacritics 2');
@@ -621,7 +629,7 @@ export class Library {
       ).all() as { id: string }[];
     else {
       const folder = this.db.prepare("SELECT root_id,rel_path FROM shelf_folders WHERE id=?").get(scopeId) as { root_id: string; rel_path: string } | undefined;
-      if (!folder) throw new AppError("INVALID", "서고 폴더를 찾을 수 없습니다. 서고를 다시 스캔하세요.");
+      if (!folder) throw new AppError("INVALID", "서고 폴더를 찾을 수 없습니다. 폴더가 사라졌거나 서고 위치가 바뀌었습니다.");
       rows = this.db.prepare(
         `SELECT DISTINCT f.work_id AS id FROM shelf_files f JOIN shelf_folders fo ON fo.id=f.folder_id WHERE ${visible} AND fo.root_id=? AND (fo.rel_path=? OR substr(fo.rel_path,1,length(?)+1)=?||'/')`,
       ).all(folder.root_id, folder.rel_path, folder.rel_path, folder.rel_path) as { id: string }[];

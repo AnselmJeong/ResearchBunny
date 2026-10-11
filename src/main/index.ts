@@ -257,6 +257,7 @@ const hostRpc = BrowserView.defineRPC<BunnyRPC>({
               "pdfDownloadPreview",
               "missingPdfs",
               "shelfStatus",
+              "shelfMovePreview",
               "shelfRelated",
               "shelfSearch",
               "shelfFile",

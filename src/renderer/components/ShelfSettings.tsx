@@ -1,11 +1,29 @@
 import { useEffect, useState } from "react";
-import { FolderOpen, LibraryBig, LoaderCircle, Pause, Play, RefreshCw } from "lucide-react";
-import { DEFAULT_EMBED_MODEL, DEFAULT_OLLAMA_URL, DEFAULT_SHELF_EXCLUDE, isLoopbackUrl, type ShelfAdoptResult, type ShelfStatusResult } from "../../shared/shelf";
+import { ArrowRight, FolderOpen, FolderSync, LibraryBig, LoaderCircle, Pause, Play, RefreshCw } from "lucide-react";
+import { DEFAULT_EMBED_MODEL, DEFAULT_OLLAMA_URL, DEFAULT_SHELF_EXCLUDE, isLoopbackUrl, type ShelfAdoptResult, type ShelfMovePreview, type ShelfStatusResult } from "../../shared/shelf";
 import type { Input } from "../../shared/contracts";
 
 const STATUS_LABELS: [keyof ShelfStatusResult["summary"]["counts"]["statuses"], string][] = [
   ["ok", "확인됨"], ["review", "확인 필요"], ["provisional", "파일명 서지"], ["auxiliary", "보충자료"], ["failed", "실패"], ["missing", "사라짐"],
 ];
+
+/** What a confirmed folder change does, in the user's terms. */
+function moveSummary(move: ShelfMovePreview) {
+  const n = (value: number) => value.toLocaleString();
+  const lines = {
+    first: "",
+    same: "",
+    remount: `새 위치에서 지금 서고의 파일을 찾았습니다. 색인 ${n(move.keep)}개를 서지·임베딩과 함께 그대로 옮깁니다.`,
+    parent: `지금 서고를 포함하는 상위 폴더입니다. 기존 색인 ${n(move.keep)}개는 그대로 두고, 새로 들어오는 폴더만 색인합니다.`,
+    subfolder: `지금 서고 안의 폴더입니다. 이 폴더 안의 색인 ${n(move.keep)}개는 그대로 두고, 밖에 있는 ${n(move.drop)}개는 색인에서 뺍니다.`,
+    new: `지금 서고와 다른 폴더입니다. 기존 색인 ${n(move.drop)}개를 지우고 이 폴더를 처음부터 색인합니다. 서지 확인은 OpenAlex 하루 예산 안에서 하므로, 큰 서고는 며칠에 걸쳐 끝납니다.`,
+  }[move.mode];
+  return [
+    lines,
+    move.links ? `프로젝트 논문 ${n(move.links)}편은 이전 위치의 PDF에 계속 연결됩니다.` : "",
+    "파일은 옮기거나 지우지 않습니다. 앞으로 앱이 받는 PDF는 새 위치의 맨 위 폴더(수신함)에 저장합니다.",
+  ].filter(Boolean);
+}
 
 export function ShelfSettings({ onError, onChanged }: { onError: (error: unknown) => void; onChanged: () => void }) {
   const [status, setStatus] = useState<ShelfStatusResult | null>(null);
@@ -15,6 +33,7 @@ export function ShelfSettings({ onError, onChanged }: { onError: (error: unknown
   const [ollamaUrl, setOllamaUrl] = useState(DEFAULT_OLLAMA_URL);
   const [busy, setBusy] = useState(false);
   const [adopted, setAdopted] = useState<ShelfAdoptResult | null>(null);
+  const [move, setMove] = useState<ShelfMovePreview | null>(null);
   const load = (initial = false) => window.bunny.shelfStatus({}).then((next) => {
     setStatus(next);
     if (initial && next.config) {
@@ -45,15 +64,57 @@ export function ShelfSettings({ onError, onChanged }: { onError: (error: unknown
   const running = job && ["scanning", "indexing"].includes(job.state);
   const ollama = status?.ollama;
   const remote = !isLoopbackUrl(ollamaUrl);
+  const configured = !!summary?.configured;
+  const current = status?.config?.path || "";
+  // A configured shelf changes folders only through a preview the user confirms.
+  const pathChanged = configured && !!path.trim() && path.trim() !== current;
+  const settings = () => ({
+    exclude: exclude.split(",").map((s) => s.trim()).filter(Boolean),
+    model: model.trim() || DEFAULT_EMBED_MODEL,
+    ollamaUrl: ollamaUrl.trim() || DEFAULT_OLLAMA_URL,
+  });
+  const preview = async (next: string) => {
+    setPath(next);
+    setMove(null);
+    setBusy(true);
+    try {
+      const result = await window.bunny.shelfMovePreview({ path: next });
+      if (result.mode === "same") setPath(current);
+      else setMove(result);
+    } catch (error) { onError(error); } finally { setBusy(false); }
+  };
+  const choose = () => void window.bunny.chooseShelfRoot({}).then((chosen) => {
+    if (!chosen) return;
+    if (configured) void preview(chosen);
+    else setPath(chosen);
+  }).catch(onError);
+  const cancelMove = () => { setMove(null); setPath(current); };
   return <section id="settings-shelf" className="settings-group shelf-settings">
     <h3><LibraryBig size={16} /> 서고</h3>
     <p className="subtle">이미 정리해 둔 PDF 폴더를 색인합니다. 앱이 내려받거나 가져온 PDF는 서고 맨 위 폴더(수신함)에 <code>연도 - 저자 - 제목.pdf</code>로 저장합니다. 색인은 서고 파일을 옮기거나 이름을 바꾸거나 지우지 않습니다. 파일을 옮기는 것은 수신함 정리에서 승인한 PDF뿐이며, 파일명은 그대로 둡니다. 서고 논문은 모든 프로젝트에서 열람·추천·검색에 쓰이고, 프로젝트에 저장할 때만 아카이브에 들어갑니다.</p>
     <label className="field">서고 위치
       <span className="inline-field">
-        <input value={path} placeholder="/Volumes/LIBRARY/Articles" onChange={(e) => setPath(e.target.value)} />
-        <button disabled={busy} onClick={() => void window.bunny.chooseShelfRoot({}).then((p) => { if (p) setPath(p); }).catch(onError)}><FolderOpen size={14} />선택</button>
+        <input value={path} placeholder="/Volumes/LIBRARY/Articles" disabled={!!move} onChange={(e) => { setPath(e.target.value); setMove(null); }}
+          onKeyDown={(e) => { if (e.key === "Enter" && pathChanged) void preview(path.trim()); }} />
+        <button disabled={busy || !!move} onClick={choose}><FolderOpen size={14} />{configured ? "다른 폴더 선택" : "선택"}</button>
       </span>
     </label>
+    {pathChanged && !move && <div className="inline-actions">
+      <button disabled={busy} onClick={() => void preview(path.trim())}>{busy ? <LoaderCircle size={13} className="spin" /> : <FolderSync size={14} />}이 위치로 바꾸기…</button>
+      <button className="text-button" disabled={busy} onClick={cancelMove}>되돌리기</button>
+    </div>}
+    {move && <div className={`shelf-move ${move.mode === "new" ? "warning" : ""}`} role="group" aria-label="서고 위치 변경 확인">
+      <p className="shelf-move-path"><span>{move.from}</span><ArrowRight size={13} /><strong>{move.to}</strong></p>
+      {moveSummary(move).map((line) => <p key={line}>{line}</p>)}
+      <div className="stack-actions">
+        <button className="primary" disabled={busy} onClick={() => void act(async () => {
+          await window.bunny.shelfConfigure({ path: move.to, ...settings() });
+          setMove(null);
+          setPath(move.to);
+        })}>{busy ? <LoaderCircle size={13} className="spin" /> : null}{move.mode === "new" ? "새 폴더로 바꾸고 다시 색인" : "서고 위치 바꾸기"}</button>
+        <button disabled={busy} onClick={cancelMove}>취소</button>
+      </div>
+    </div>}
     <label className="field">제외할 폴더 이름 (쉼표로 구분)
       <input value={exclude} onChange={(e) => setExclude(e.target.value)} />
     </label>
@@ -67,12 +128,10 @@ export function ShelfSettings({ onError, onChanged }: { onError: (error: unknown
       {remote && <p className="warning-text">이 Mac 밖의 주소입니다. 초록과 검색어가 이 Mac 밖으로 나갑니다.</p>}
     </details>
     <div className="stack-actions">
-      <button className="primary" disabled={busy || running || !path.trim()} onClick={() => void act(() => window.bunny.shelfConfigure({
-        path: path.trim(),
-        exclude: exclude.split(",").map((s) => s.trim()).filter(Boolean),
-        model: model.trim() || DEFAULT_EMBED_MODEL,
-        ollamaUrl: ollamaUrl.trim() || DEFAULT_OLLAMA_URL,
-      }))}>{summary?.configured ? "서고 설정 저장 · 다시 스캔" : "서고 연결"}</button>
+      <button className="primary" disabled={busy || pathChanged || !!move || !(configured ? current : path.trim())} onClick={() => void act(() => window.bunny.shelfConfigure({
+        path: configured ? current : path.trim(),
+        ...settings(),
+      }))}>{configured ? "서고 설정 저장 · 다시 스캔" : "서고 연결"}</button>
     </div>
     {ollama && <p className="subtle">
       Ollama {ollama.running ? `실행 중${ollama.version ? ` ${ollama.version}` : ""}` : "꺼짐 · 열람과 어휘 검색은 그대로 쓸 수 있습니다"}

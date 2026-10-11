@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { CodexStatus, CodexModel } from "./codex";
 import type { ChatSession, ChatThreadSummary } from "./chat";
-import type { ShelfAdoptResult, ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo, ShelfSortResult, ShelfSortState } from "./shelf";
+import type { ShelfAdoptResult, ShelfMovePreview, ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo, ShelfSortResult, ShelfSortState } from "./shelf";
 import type {
   Snapshot,
   ListResult,
@@ -291,6 +291,7 @@ export const schemas = {
     model: z.string().trim().min(1).max(200).optional(),
     ollamaUrl: z.string().trim().min(1).max(500).optional(),
   }),
+  shelfMovePreview: z.object({ path: z.string().trim().min(1).max(4096) }),
   chooseShelfRoot: z.object({}),
   shelfControl: z.object({ action: z.enum(["pause", "resume", "cancel", "retryFailed", "reresolve", "reembed", "confirmMissing", "scan"]) }),
   shelfPull: z.object({}),
@@ -378,6 +379,7 @@ export interface Outputs {
   undo: boolean;
   shelfStatus: ShelfStatusResult;
   shelfConfigure: ShelfStatusResult;
+  shelfMovePreview: ShelfMovePreview;
   chooseShelfRoot: string | null;
   shelfControl: void;
   shelfPull: void;
