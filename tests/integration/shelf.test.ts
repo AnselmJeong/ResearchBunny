@@ -1,8 +1,7 @@
 import { test, expect } from "bun:test";
-import { mkdtemp, mkdir, writeFile, readdir, stat, rename, rm, copyFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, stat, rename, rm, copyFile } from "node:fs/promises";
 import { join, resolve, relative } from "node:path";
 import { tmpdir } from "node:os";
-import { createHash } from "node:crypto";
 import { Service } from "../../src/service/service";
 import { Library } from "../../src/service/db/database";
 import { blankWork } from "../../src/shared/domain";
@@ -16,28 +15,10 @@ import { slimRaw } from "../../src/service/shelf/resolver";
 import { VectorIndex } from "../../src/service/shelf/vectors";
 import { normalize } from "../../src/service/providers/ollama-local";
 import type { Page } from "../../src/service/providers/openalex";
+import { chunksOf, fakeOllama, pdf } from "./shelf-helpers";
 
 const worker = resolve("dist/runtime/pdf-worker.cjs");
 const ABSTRACT_SMITH = "Abstract Interoception, the sensing of internal bodily signals such as the heartbeat, shapes emotional experience. We tested whether interoceptive prediction errors explain anxiety in a large cohort using heartbeat detection tasks, computational modelling of cardiac signals and questionnaires. Higher prediction errors predicted trait anxiety and panic symptoms across two independent samples, supporting a predictive processing account of anxiety disorders.";
-
-async function pdf(path: string, lines: string[]) {
-  const stream = `BT /F1 11 Tf 40 760 Td ${lines.map((line, i) => `${i ? "0 -16 Td " : ""}(${line.replace(/[()\\]/g, "")}) Tj`).join("\n")} ET`;
-  const objects = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Count 1 /Kids [4 0 R] >>",
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>",
-    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`,
-  ];
-  let out = "%PDF-1.4\n";
-  const offsets: number[] = [];
-  for (const [i, object] of objects.entries()) { offsets.push(Buffer.byteLength(out)); out += `${i + 1} 0 obj\n${object}\nendobj\n`; }
-  const xref = Buffer.byteLength(out);
-  out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map((n) => `${String(n).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
-  await mkdir(resolve(path, ".."), { recursive: true });
-  await writeFile(path, out);
-}
-const chunksOf = (text: string, size = 90) => text.match(new RegExp(`.{1,${size}}(\\s|$)`, "g"))!.map((s) => s.trim());
 
 const SMITH = "01 Domain A/Leaf X/2024 - Smith et al. - Interoceptive prediction errors in anxiety.pdf";
 const KIM = "01 Domain A/Leaf Y/2023 - Kim, Lee - Dopamine dynamics and memory-guided behavior.pdf";
@@ -86,34 +67,6 @@ const OA = {
   hearing: oaWork({ openalex: "W300", doi: "10.3000/hearing", title: "Hearing intervention for older adults with mild cognitive impairment", authors: ["Alice Brown"], year: 2022, abstract: "Hearing aids for older adults with mild cognitive impairment slowed decline." }),
   external: oaWork({ openalex: "W400", doi: "10.4000/other", title: "Heartbeat perception and anxiety in adolescents", authors: ["R Other"], year: 2025, abstract: "Interoception anxiety heartbeat adolescents." }),
 };
-
-/** Deterministic bag-of-words embeddings so "similar" means shared words. */
-function fakeOllama() {
-  let up = true;
-  const stop = new Set(["title", "text", "none", "task", "search", "result", "query", "the", "and", "for", "with", "in", "of"]);
-  const server = Bun.serve({
-    port: 0,
-    async fetch(request) {
-      if (!up) return new Response("down", { status: 503 });
-      const url = new URL(request.url);
-      if (url.pathname === "/api/tags") return Response.json({ models: [{ name: "embeddinggemma-2:latest", digest: "969600645b5240cbf78f46456c819f38" }] });
-      if (url.pathname === "/api/version") return Response.json({ version: "0.40.2" });
-      if (url.pathname === "/api/embed") {
-        const body = await request.json() as { input: string[] };
-        return Response.json({
-          embeddings: body.input.map((text) => {
-            const v = new Array(64).fill(0);
-            for (const t of text.toLowerCase().match(/[a-z]{3,}/g) || []) if (!stop.has(t)) v[parseInt(createHash("md5").update(t).digest("hex").slice(0, 6), 16) % 64] += 1;
-            v[63] += 0.01;
-            return v;
-          }),
-        });
-      }
-      return new Response("not found", { status: 404 });
-    },
-  });
-  return { url: `http://127.0.0.1:${server.port}`, setUp: (value: boolean) => { up = value; }, stop: () => server.stop(true) };
-}
 
 async function fixture(fn: (ctx: { service: Service; dir: string; projectId: string; calls: { doi: number; search: number; lookup: number }; ollama: ReturnType<typeof fakeOllama>; root: string }) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), "rb-shelf-"));

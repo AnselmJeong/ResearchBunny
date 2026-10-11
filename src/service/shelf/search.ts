@@ -103,7 +103,7 @@ export class ShelfQueries {
   }
 
   /** Vector for a work: stored shelf embedding, or an on-the-fly (cached) one for papers outside the shelf. */
-  private async workVector(work: Work, signal: AbortSignal) {
+  async workVector(work: Work, signal: AbortSignal) {
     const key = this.shelf.currentModelKey();
     if (key) {
       this.shelf.vectors.ensure(key);

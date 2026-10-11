@@ -28,7 +28,7 @@ export function ShelfTree({ shelf, scope, scopeId, navigate, onSetup }: {
   const [expanded, setExpanded] = useState<string[]>(loadOpen);
   useEffect(() => { try { localStorage.setItem(OPEN_KEY, JSON.stringify(expanded)); } catch { /* Optional view preference. */ } }, [expanded]);
   if (!shelf.configured)
-    return <button className="shelf-setup" data-help="이미 정리해 둔 PDF 폴더(예: NAS)를 서고로 연결합니다. 파일은 옮기거나 바꾸지 않습니다." onClick={onSetup}>
+    return <button className="shelf-setup" data-help="이미 정리해 둔 PDF 폴더(예: NAS)를 서고로 연결합니다. 색인은 파일을 바꾸지 않고, 수신함 정리에서 승인한 PDF만 옮깁니다." onClick={onSetup}>
       <LibraryBig size={17} />서고 연결<Plus size={14} />
     </button>;
   const children = new Map<string | null, ShelfFolderNode[]>();
@@ -69,7 +69,7 @@ export function ShelfTree({ shelf, scope, scopeId, navigate, onSetup }: {
     </div>
     {open && <div className="archive-branches shelf-branches" aria-label="서고 폴더">
       {shelf.inbox > 0 && <button className={active(SHELF_INBOX) ? "active" : ""} aria-current={active(SHELF_INBOX) ? "page" : undefined}
-        data-help="서고 루트와 _uncategorized에 있는, 아직 폴더를 정하지 않은 PDF입니다." onClick={() => navigate("shelf", SHELF_INBOX)}>
+        data-help="서고 루트와 _uncategorized에 있는, 아직 폴더를 정하지 않은 PDF입니다. 목록 위의 수신함 정리로 폴더를 제안받고 옮길 수 있습니다." onClick={() => navigate("shelf", SHELF_INBOX)}>
         <Inbox size={15} /><span className="topic-name">수신함</span><span className="nav-count">{shelf.inbox.toLocaleString()}</span>
       </button>}
       {(children.get(null) || []).map((folder) => branch(folder, 0))}

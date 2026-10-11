@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { CodexStatus, CodexModel } from "./codex";
 import type { ChatSession, ChatThreadSummary } from "./chat";
-import type { ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo } from "./shelf";
+import type { ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo, ShelfSortResult, ShelfSortState } from "./shelf";
 import type {
   Snapshot,
   ListResult,
@@ -299,6 +299,10 @@ export const schemas = {
   shelfResolve: z.object({ fileId: id, action: z.enum(["candidate", "doi", "keep"]), value: z.string().trim().max(1000).optional() }),
   shelfReveal: z.object({ fileId: id }),
   shelfLink: z.object({ projectId: id, workId: id, fileId: id }),
+  shelfSortState: z.object({}),
+  shelfSortStart: z.object({}),
+  shelfSortCancel: z.object({}),
+  shelfSortApply: z.object({ items: z.array(z.object({ fileId: id, target: z.string().trim().min(1).max(1000) })).min(1).max(10000) }),
   duplicates: z.object({ workId: id }),
   merge: z.object({ keepId: id, removeId: id }),
   undoMerge: z.object({}),
@@ -381,6 +385,10 @@ export interface Outputs {
   shelfResolve: ShelfFileDetails;
   shelfReveal: void;
   shelfLink: void;
+  shelfSortState: ShelfSortState;
+  shelfSortStart: ShelfSortState;
+  shelfSortCancel: void;
+  shelfSortApply: ShelfSortResult;
   duplicates: WorkView[];
   merge: void;
   undoMerge: boolean;

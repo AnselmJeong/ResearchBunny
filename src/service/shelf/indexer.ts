@@ -17,6 +17,7 @@ import {
   DEFAULT_SHELF_EXCLUDE,
   EMBED_PROMPTS,
   extractAbstractCandidate,
+  isInboxFolder,
   pageLead,
   parseShelfFilename,
   type EmbedBasis,
@@ -85,6 +86,7 @@ export class Shelf {
   private startTimer?: ReturnType<typeof setTimeout>;
   private followUp?: ReturnType<typeof setTimeout>;
   private confirmMissing = false;
+  private held = false;
   private resolverPausedUntil = 0;
   private resolverReason = "";
   private resolverCode = "";
@@ -242,7 +244,7 @@ export class Shelf {
   scan(_reason: string): Promise<void> {
     if (this.running) return this.running;
     const root = this.root(), config = this.config();
-    if (!root || !config) return Promise.resolve();
+    if (!root || !config || this.held) return Promise.resolve();
     if (this.paused()) {
       this.setJob({ state: "paused", message: "서고 색인 일시정지 · 열람과 검색은 그대로 쓸 수 있습니다." });
       return Promise.resolve();
@@ -252,7 +254,7 @@ export class Shelf {
     this.running = this.cycle(root, config, control.signal)
       .catch((error) => {
         if (control.signal.aborted) {
-          if (!this.paused()) this.setJob({ state: "idle", message: "서고 색인을 중단했습니다. 처리한 파일은 보존되며 다음 스캔에서 이어집니다." });
+          if (!this.paused() && !this.held) this.setJob({ state: "idle", message: "서고 색인을 중단했습니다. 처리한 파일은 보존되며 다음 스캔에서 이어집니다." });
           return;
         }
         const offline = error instanceof AppError && error.code === "SHELF_OFFLINE";
@@ -809,6 +811,59 @@ export class Shelf {
     void this.embed(AbortSignal.timeout(60000), [this.file(fileId)!.work_id!]).catch(() => {});
   }
 
+  // ---- moves the app makes itself (수신함 정리) ----
+  /** Run `fn` with indexing stopped so a walk never races the app's own moves, then rescan. */
+  async hold<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.held) throw new AppError("BUSY", "서고 파일을 옮기는 중입니다. 끝난 뒤 다시 시도하세요.");
+    this.held = true;
+    try {
+      this.control?.abort();
+      await this.running;
+      return await fn();
+    } finally {
+      this.held = false;
+      this.revision++;
+      this.emit({ type: "changed" });
+      void this.scan("moved");
+    }
+  }
+  /** Record a move made by the app: the row keeps its work, embedding and attachments at the new path. */
+  relocate(id: string, relPath: string, mtime: number) {
+    const root = this.root();
+    const row = this.file(id);
+    if (!root || !row) return;
+    const folder = parentRel(relPath) ?? "";
+    this.db.transaction(() => {
+      for (let rel: string | null = folder; rel !== null; rel = parentRel(rel))
+        this.db.db.prepare("INSERT INTO shelf_folders VALUES(?,?,?,?,?,1) ON CONFLICT(root_id,rel_path) DO UPDATE SET present=1")
+          .run(folderId(root.id, rel), root.id, rel, parentRel(rel) === null ? null : folderId(root.id, parentRel(rel)!), rel ? basename(rel) : root.name);
+      // A rename keeps the bytes: carry the hash stamp over so the next scan does not hash and extract again.
+      const hashedMtime = row.hashed_mtime !== null && row.hashed_mtime === row.mtime ? mtime : row.hashed_mtime;
+      this.db.db.prepare("UPDATE shelf_files SET rel_path=?,folder_id=?,mtime=?,hashed_mtime=?,seen_at=?,missing_since=NULL WHERE id=?")
+        .run(relPath, folderId(root.id, folder), mtime, hashedMtime, now(), id);
+      this.syncAttachmentPath(id, root);
+    });
+    this.revision++;
+  }
+  /**
+   * A file the app moved into an excluded folder (e.g. `_duplicated`) leaves the index.
+   * Its own shelf attachment goes; project links to it keep working at the new path.
+   */
+  release(id: string, path: string) {
+    this.db.transaction(() => {
+      const row = this.file(id);
+      if (!row) return;
+      for (const r of this.db.db.prepare("SELECT data FROM attachments WHERE id=? OR json_extract(data,'$.shelfFileId')=?").all(row.attachment_id || "", id) as { data: string }[]) {
+        const a = JSON.parse(r.data) as Attachment;
+        if (a.id === row.attachment_id) this.db.db.prepare("DELETE FROM attachments WHERE id=?").run(a.id);
+        else this.db.saveAttachment({ ...a, path, name: basename(path), shelfFileId: undefined });
+      }
+      this.db.db.prepare("DELETE FROM shelf_files WHERE id=?").run(id);
+      if (row.work_id) this.dropWorkIfOrphan(row.work_id);
+    });
+    this.revision++;
+  }
+
   // ---- embeddings ----
   private async ensureModel(): Promise<string | null> {
     const config = this.config();
@@ -953,13 +1008,13 @@ export class Shelf {
         current = byId.get(current)!.parentId;
       }
     }
-    const inbox = folders.filter((f) => f.relPath === "" || f.relPath === "_uncategorized" || f.relPath.startsWith("_uncategorized/")).reduce((sum, f) => sum + (direct.get(f.id) || 0), 0);
+    const inbox = folders.filter((f) => isInboxFolder(f.relPath)).reduce((sum, f) => sum + (direct.get(f.id) || 0), 0);
     const review = this.reviewCount(root.id);
     return {
       configured: true,
       root: { id: root.id, path: root.path, name: root.name, lastScanAt: root.last_scan_at },
       online: this.online,
-      folders: [...byId.values()].filter((f) => f.relPath !== "" && f.relPath !== "_uncategorized" && !f.relPath.startsWith("_uncategorized/")),
+      folders: [...byId.values()].filter((f) => !isInboxFolder(f.relPath)),
       inbox,
       review,
       total: counts.works,
