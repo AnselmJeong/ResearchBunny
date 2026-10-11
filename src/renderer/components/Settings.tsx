@@ -50,6 +50,7 @@ export function Settings({
       ...(extraKeys.pubmed !== undefined ? { pubmedKey: extraKeys.pubmed } : {}),
       ...(extraKeys.tinyfish !== undefined ? { tinyfishKey: extraKeys.tinyfish } : {}),
       aiEnabled: value.aiEnabled,
+      linkedDiscoveries: value.linkedDiscoveries ?? false,
       theme: value.theme,
       aiMaxInputTokens: value.aiMaxInputTokens,
       aiMaxOutputTokens: value.aiMaxOutputTokens,
@@ -81,6 +82,15 @@ export function Settings({
         <div className="settings-grid">
           <section id="settings-connections" className="settings-group">
             <h3>문헌 검색</h3>
+            <label className="check">
+              <input type="checkbox" checked={value.linkedDiscoveries ?? false} disabled={busy}
+                onChange={(e) => setValue({ ...value, linkedDiscoveries: e.target.checked })} />
+              PubMed Linked Discoveries 사용 (실험적)
+            </label>
+            <p className="subtle">
+              생의학 논문의 관련 논문 탐색에 NLM의 의미 이웃을 함께 사용합니다.
+              공식 API가 아니어서 동작이 바뀔 수 있으며, 실패하면 OpenAlex만 사용합니다.
+            </p>
             <p className="subtle">
               OpenAlex · 검색과 인용 관계 탐색에 사용합니다.
             </p>

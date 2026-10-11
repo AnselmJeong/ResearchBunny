@@ -15,8 +15,9 @@ import type {
   Settings,
 } from "../shared/types";
 import { AppError } from "../shared/types";
-import { blankWork, titleSimilarity, safeWebUrl } from "../shared/domain";
+import { blankWork, titleSimilarity, safeWebUrl, pmidOf } from "../shared/domain";
 import { Library } from "./db/database";
+import { LinkedDiscoveries } from "./providers/linked-discoveries";
 import { OpenAlex } from "./providers/openalex";
 import { AIProvider, DEFAULT_AI, type AIConfig } from "./providers/openai";
 import { Discovery } from "./discovery/engine";
@@ -71,7 +72,7 @@ export class Service {
       this.codex,
       this.ollama,
     );
-    this.discovery = new Discovery(this.db, this.oa, emit, this.ai);
+    this.discovery = new Discovery(this.db, this.oa, emit, this.ai, new LinkedDiscoveries(this.db));
     this.pdf = new PdfImports(this.db, this.oa, workerPath, emit);
     this.downloads = new PdfDownloads(this.db, workerPath, emit);
     this.classifier = new ArchiveClassifier(this.db, this.ai, emit);
@@ -92,6 +93,7 @@ export class Service {
       tinyfishConfigured: !!this.secrets.tinyfish,
       secureStorage: this.secrets.secureStorage ?? null,
       credentialMigrationRequired: this.secrets.credentialMigrationRequired,
+      linkedDiscoveries: this.db.pref<boolean>("linkedDiscoveries") === true,
       theme: this.db.pref<Settings["theme"]>("theme") || "system",
       dataPath: this.db.root,
       version,
@@ -371,6 +373,8 @@ export class Service {
           outputPricePerMillion,
         });
         this.db.pref("theme", args.theme);
+        if (typeof args.linkedDiscoveries === "boolean")
+          this.db.pref("linkedDiscoveries", args.linkedDiscoveries);
         return this.settings();
       }
       case "testConnection": {
@@ -423,7 +427,9 @@ export class Service {
       case "externalUrl": {
         const work = this.db.get(args.workId);
         return safeWebUrl(
-          args.kind === "doi"
+          args.kind === "linked-discoveries"
+            ? pmidOf(work) ? `https://linkeddiscoveries.ncbi.nlm.nih.gov/${pmidOf(work)}/` : null
+            : args.kind === "doi"
             ? work.doi
               ? `https://doi.org/${work.doi}`
               : null

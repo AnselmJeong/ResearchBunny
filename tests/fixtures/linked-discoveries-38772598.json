@@ -1,0 +1,170 @@
+{
+  "seedArticleId": "38772598",
+  "articles": [
+    {
+      "articleId": "38772598",
+      "score": 1.0,
+      "isSeed": true,
+      "isReview": true,
+      "isRetracted": false,
+      "diseases": [
+        "C0206685",
+        "C1332139"
+      ],
+      "genes": [
+        "NCBIGene:4916"
+      ],
+      "chemicals": []
+    },
+    {
+      "articleId": "25547910",
+      "score": 0.7302175164222717,
+      "isSeed": false,
+      "isReview": true,
+      "isRetracted": false,
+      "diseases": [],
+      "genes": [
+        "NCBIGene:1105",
+        "NCBIGene:6690",
+        "NCBIGene:6790"
+      ],
+      "chemicals": []
+    },
+    {
+      "articleId": "23625457",
+      "score": 0.7331610918045044,
+      "isSeed": false,
+      "isReview": true,
+      "isRetracted": false,
+      "diseases": [],
+      "genes": [
+        "NCBIGene:111099027",
+        "NCBIGene:111099028"
+      ],
+      "chemicals": []
+    },
+    {
+      "articleId": "33794242",
+      "score": 0.7157912254333496,
+      "isSeed": false,
+      "isReview": true,
+      "isRetracted": false,
+      "diseases": [
+        "C0206628",
+        "C1332965",
+        "CN324047"
+      ],
+      "genes": [
+        "NCBIGene:4914",
+        "NCBIGene:4915",
+        "NCBIGene:4916"
+      ],
+      "chemicals": []
+    },
+    {
+      "articleId": "21601955",
+      "score": 0.7229865789413452,
+      "isSeed": false,
+      "isReview": true,
+      "isRetracted": false,
+      "diseases": [],
+      "genes": [],
+      "chemicals": [
+        "PUBCHEM.COMPOUND:69676"
+      ]
+    },
+    {
+      "articleId": "31803506",
+      "score": 0.7252686023712158,
+      "isSeed": false,
+      "isReview": true,
+      "isRetracted": false,
+      "diseases": [
+        "C0334371",
+        "C4042906"
+      ],
+      "genes": [],
+      "chemicals": [
+        "PUBCHEM.COMPOUND:25141092",
+        "PUBCHEM.COMPOUND:46188928"
+      ]
+    },
+    {
+      "articleId": "32639612",
+      "score": 0.7605486512184143,
+      "isSeed": false,
+      "isReview": null,
+      "isRetracted": false,
+      "diseases": [
+        "C0205697",
+        "C0206623",
+        "C0686172"
+      ],
+      "genes": [
+        "NCBIGene:7113",
+        "NCBIGene:79977"
+      ],
+      "chemicals": []
+    },
+    {
+      "articleId": "17458530",
+      "score": 0.7198492288589478,
+      "isSeed": false,
+      "isReview": true,
+      "isRetracted": false,
+      "diseases": [
+        "C3536893"
+      ],
+      "genes": [
+        "NCBIGene:7113"
+      ],
+      "chemicals": [
+        "PUBCHEM.COMPOUND:5951"
+      ]
+    },
+    {
+      "articleId": "20798944",
+      "score": 0.7297135591506958,
+      "isSeed": false,
+      "isReview": true,
+      "isRetracted": false,
+      "diseases": [],
+      "genes": [
+        "NCBIGene:2078",
+        "NCBIGene:2120",
+        "NCBIGene:7113"
+      ],
+      "chemicals": [
+        "PUBCHEM.COMPOUND:5951"
+      ]
+    },
+    {
+      "articleId": "39348956",
+      "score": 0.7196187973022461,
+      "isSeed": false,
+      "isReview": null,
+      "isRetracted": false,
+      "diseases": [],
+      "genes": [
+        "NCBIGene:675",
+        "NCBIGene:7113"
+      ],
+      "chemicals": []
+    },
+    {
+      "articleId": "22260502",
+      "score": 0.7176914215087891,
+      "isSeed": false,
+      "isReview": null,
+      "isRetracted": false,
+      "diseases": [],
+      "genes": [
+        "NCBIGene:2078",
+        "NCBIGene:6690"
+      ],
+      "chemicals": [
+        "PUBCHEM.COMPOUND:5951"
+      ]
+    }
+  ]
+}

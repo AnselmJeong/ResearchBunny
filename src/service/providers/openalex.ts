@@ -4,6 +4,7 @@ import { AppError, now, type Work } from "../../shared/types";
 import {
   blankWork,
   normalizeDoi,
+  normalizePmid,
   normalizeOpenAlex,
   restoreAbstract,
   safeWebUrl,
@@ -12,6 +13,7 @@ import type { Library } from "../db/database";
 const rawSchema = z
   .object({
     id: z.string(),
+    ids: z.object({ pmid: z.string().nullable().optional() }).passthrough().nullable().optional(),
     title: z.string().nullable().optional(),
     display_name: z.string().nullable().optional(),
     doi: z.string().nullable().optional(),
@@ -53,6 +55,7 @@ export function fromOpenAlex(input: unknown): Work {
   return blankWork({
     openalex: oa,
     doi: normalizeDoi(r.doi),
+    pmid: normalizePmid(r.ids?.pmid),
     title: r.title || r.display_name || "제목 미확인",
     authors: (r.authorships || []).map(
       (a) => a.author.display_name || "이름 미상",
@@ -193,10 +196,11 @@ export class OpenAlex {
     signal: AbortSignal,
     onCall: () => void,
   ): Promise<Page> {
-    const id = normalizeOpenAlex(identifier) || normalizeDoi(identifier);
+    const pmid = normalizePmid(identifier);
+    const id = normalizeOpenAlex(identifier) || normalizeDoi(identifier) || pmid;
     if (!id)
-      throw new AppError("INVALID", "DOI 또는 OpenAlex ID가 필요합니다.");
-    const path = normalizeOpenAlex(identifier)
+      throw new AppError("INVALID", "DOI, PMID 또는 OpenAlex ID가 필요합니다.");
+    const path = pmid ? `works/pmid:${pmid}` : normalizeOpenAlex(identifier)
       ? `works/${id}`
       : `works/https://doi.org/${id.split("/").map(encodeURIComponent).join("/")}`;
     const r = await this.request(path, {}, signal, onCall);

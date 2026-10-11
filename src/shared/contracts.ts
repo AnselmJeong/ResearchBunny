@@ -238,6 +238,7 @@ export const schemas = {
   chatThreads: z.object(chatTarget),
   chatOpenSource: z.object({ ...chatTarget, messageId: id, index: z.number().int().min(0).max(20) }),
   saveSettings: z.object({
+    linkedDiscoveries: z.boolean().optional(),
     aiProvider: z.enum(["ollama", "codex", "openai"]).optional(),
     ollamaModel: z.string().trim().min(1).max(120).optional(),
     codexModel: z.string().trim().max(120).default(""),
@@ -259,6 +260,7 @@ export const schemas = {
   openExternal: z.object({
     workId: id.optional(),
     kind: z.enum([
+      "linked-discoveries",
       "doi",
       "source",
       "oa",

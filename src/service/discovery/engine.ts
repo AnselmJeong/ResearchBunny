@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Library } from "../db/database";
+import { LinkedDiscoveries } from "../providers/linked-discoveries";
 import { OpenAlex, type Page } from "../providers/openalex";
 import {
   AppError,
@@ -9,9 +10,12 @@ import {
   type Evidence,
   type AppEvent,
   type Work,
+  type LinkedSize,
 } from "../../shared/types";
 import {
   normalizeDoi,
+  normalizePmid,
+  pmidOf,
   normalizeOpenAlex,
   relatedness,
 } from "../../shared/domain";
@@ -21,6 +25,10 @@ const chunks = <T>(items: T[], size: number): T[][] =>
   Array.from({ length: Math.ceil(items.length / size) }, (_, i) =>
     items.slice(i * size, (i + 1) * size),
   );
+const LINKED_ORIGIN = "PubMed 의미 이웃";
+const LINKED_SIZES: LinkedSize[] = [20, 50, 100, 200];
+export const linkedBoost = (score: number, seeds: number) =>
+  Math.min(0.20, Math.max(0, score - 0.60) * 1.5) + Math.min(0.05, Math.max(0, seeds - 1) * 0.025);
 export class Discovery {
   active = new Map<string, AbortController>();
   constructor(
@@ -28,6 +36,7 @@ export class Discovery {
     private oa: OpenAlex,
     private emit: (event: AppEvent) => void,
     private ai?: AIProvider,
+    private ld = new LinkedDiscoveries(library),
   ) {}
   start(input: Input<"startRun">): Run {
     this.library.project(input.projectId);
@@ -72,13 +81,15 @@ export class Discovery {
       count: 0,
       message: "검색을 준비하고 있습니다.",
       tasks: [],
-      rankingVersion: "tfidf-topic-v1",
+      rankingVersion: input.mode === "related" && this.library.pref<boolean>("linkedDiscoveries") === true
+        ? "tfidf-topic-linked-v1" : "tfidf-topic-v1",
       phase: "hydrate",
       parentId,
     };
     if (input.mode === "search") {
       const identifier =
-        normalizeOpenAlex(input.query) || normalizeDoi(input.query);
+        normalizeOpenAlex(input.query) || normalizeDoi(input.query) ||
+        (normalizePmid(input.query) ? `pmid:${normalizePmid(input.query)}` : null);
       run.tasks = [
         identifier
           ? { kind: "lookup", query: identifier, origin: "검색" }
@@ -100,10 +111,10 @@ export class Discovery {
     else
       for (const id of run.inputIds) {
         const w = this.library.get(id);
-        if ((!w.openalex || w.references === null) && w.doi)
+        if ((!w.openalex || w.references === null) && (w.doi || pmidOf(w)))
           run.tasks.push({
             kind: "lookup",
-            query: w.doi,
+            query: w.doi || `pmid:${pmidOf(w)}`,
             seedId: id,
             origin: "서지 확인",
           });
@@ -130,6 +141,12 @@ export class Discovery {
       throw new AppError("BUSY", "현재 작업이 끝난 뒤 재개하세요.");
     const run = this.library.run(id);
     if (action === "more") {
+      if (this.library.pref<boolean>("linkedDiscoveries") === true)
+        for (const task of run.tasks) {
+          if (task.kind !== "linked" || !task.done) continue;
+          const next = LINKED_SIZES[LINKED_SIZES.indexOf(task.size || 20) + 1];
+          if (next) { task.size = next; task.done = false; }
+        }
       for (const task of run.tasks)
         if (task.cursor && ["cites", "search"].includes(task.kind))
           task.done = false;
@@ -142,13 +159,18 @@ export class Discovery {
   }
   makeTasks(run: Run): Task[] {
     const seeds = run.inputIds.map((id) => this.library.get(id));
+    const enabled = this.library.pref<boolean>("linkedDiscoveries") === true;
+    const size: LinkedSize = seeds.length === 1 ? 100 : seeds.length <= 3 ? 50 : 20;
     const perSeed = seeds.map((w) => {
       const result: Task[] = [];
-      if (!w.openalex) return result;
+      const pmid = pmidOf(w);
+      const linked: Task[] = run.mode === "related" && enabled && pmid
+        ? [{ kind: "linked", query: pmid, seedId: w.id, origin: LINKED_ORIGIN, size }] : [];
+      if (!w.openalex) return linked;
       if (["references", "commonReferences", "related"].includes(run.mode))
         for (const ids of chunks(w.references || [], 100))
           result.push({ kind: "batch", ids, seedId: w.id, origin: "참고문헌" });
-      if (run.mode === "related")
+      if (run.mode === "related" && !linked.length)
         for (const ids of chunks(w.related, 100))
           result.unshift({
             kind: "batch",
@@ -174,7 +196,7 @@ export class Discovery {
           sort: "publication_date:desc",
         });
       }
-      return result;
+      return [...linked, ...result];
     });
     const tasks: Task[] = [];
     while (perSeed.some((t) => t.length))
@@ -193,7 +215,8 @@ export class Discovery {
           cursor: "*",
         });
     }
-    return tasks;
+    // Resolve semantic neighbors first, before citation/search tasks spend the budget.
+    return [...tasks.filter((t) => t.kind === "linked"), ...tasks.filter((t) => t.kind !== "linked")];
   }
   async fetchTask(
     task: Task,
@@ -202,6 +225,8 @@ export class Discovery {
   ): Promise<Page> {
     if (task.kind === "lookup")
       return this.oa.lookup(task.query!, signal, onCall);
+    if (task.kind === "pmidBatch")
+      return this.oa.page({ filter: `pmid:${task.ids!.join("|")}`, per_page: "100" }, signal, onCall);
     if (task.kind === "batch")
       return this.oa.page(
         { filter: `openalex:${task.ids!.join("|")}`, per_page: "100" },
@@ -237,12 +262,12 @@ export class Discovery {
     run.status = "running";
     this.library.saveRun(run);
     this.emit({ type: "progress", runId: id });
-    const onCall = () => {
+    const onCall = (provider = "openalex") => {
       signal.throwIfAborted();
       if (run.calls >= run.maxCalls)
         throw new AppError("BUDGET", "이번 탐색의 호출 예산에 도달했습니다.");
       run.calls++;
-      this.library.usage("openalex", id);
+      this.library.usage(provider, id);
       this.library.saveRun(run);
     };
     try {
@@ -317,8 +342,37 @@ export class Discovery {
         run.message = `${task.origin} 조회 중 · 후보 ${run.count}편 · API ${run.calls}/${run.maxCalls}회`;
         this.library.saveRun(run);
         this.emit({ type: "progress", runId: id });
+        if (task.kind === "linked") {
+          try {
+            if (this.library.pref<boolean>("linkedDiscoveries") !== true)
+              throw new AppError("DISABLED", "설정에서 PubMed 의미 이웃이 꺼졌습니다.");
+            const neighborhood = await this.ld.neighbors(task.query!, task.size || 20, signal, () => onCall("linked-discoveries"));
+            signal.throwIfAborted();
+            if (!neighborhood.neighbors.length)
+              throw new AppError("NOT_FOUND", "PubMed 의미 이웃이 없습니다.");
+            run.linked ??= {};
+            run.linked[task.seedId!] = { ...run.linked[task.seedId!], ...Object.fromEntries(neighborhood.neighbors.map((n) => [n.pmid, n])) };
+            if (run.linkedFailures) delete run.linkedFailures[task.seedId!];
+            run.tasks.splice(run.tasks.indexOf(task) + 1, 0,
+              ...chunks(neighborhood.neighbors.map((n) => n.pmid), 100).map((ids): Task => ({
+                kind: "pmidBatch", ids, seedId: task.seedId, origin: LINKED_ORIGIN,
+              })),
+            );
+          } catch (error) {
+            if (signal.aborted || (error instanceof AppError && ["RATE_LIMIT", "CANCELLED", "BUDGET"].includes(error.code))) throw error;
+            run.linkedFailures ??= {};
+            run.linkedFailures[task.seedId!] = error instanceof Error ? error.message : "조회 실패";
+            const seed = this.library.get(task.seedId!);
+            run.tasks.splice(run.tasks.indexOf(task) + 1, 0,
+              ...chunks(seed.related, 100).map((ids): Task => ({ kind: "batch", ids, seedId: seed.id, origin: "OpenAlex 관련 주제" })),
+            );
+          }
+          task.done = true;
+          this.library.saveRun(run);
+          continue;
+        }
         const page =
-          task.pendingPage || (await this.fetchTask(task, signal, onCall));
+          task.pendingPage || (await this.fetchTask(task, signal, () => onCall()));
         signal.throwIfAborted();
         this.library.transaction(() => {
           let processed = 0;
@@ -343,6 +397,10 @@ export class Discovery {
                 deferred: false,
                 scope: `확인 시점 ${page.fetchedAt} · 확보한 이웃 안에서 계산`,
               };
+              const pmid = pmidOf(work);
+              const neighbor = pmid && task.seedId ? run.linked?.[task.seedId]?.[pmid] : undefined;
+              if (task.kind === "pmidBatch" && neighbor)
+                evidence.linked = { score: neighbor.score, seedIds: [task.seedId!], isReview: neighbor.isReview };
               this.library.candidate(run, work, evidence);
               run.count = (
                 this.library.db
@@ -390,7 +448,7 @@ export class Discovery {
         (id) => !this.library.get(id).openalex,
       ).length;
       run.status = "completed";
-      run.message = `${run.count}편 확인${run.tasks.some((t) => t.cursor) ? " · 추가 조회할 결과가 있습니다." : ""}${run.ai?.partial ? " · 후보 상한 내 부분 결과" : ""}${unresolved ? ` · 식별자 없는 출발 문헌 ${unresolved}편은 미조회` : ""}${run.ai?.identityConflicts ? ` · 식별자 충돌 ${run.ai.identityConflicts}건 제외` : ""}`;
+      run.message = `${run.count}편 확인${run.tasks.some((t) => t.cursor || (this.library.pref<boolean>("linkedDiscoveries") === true && t.kind === "linked" && (t.size || 20) < 200)) ? " · 추가 조회할 결과가 있습니다." : ""}${run.ai?.partial ? " · 후보 상한 내 부분 결과" : ""}${unresolved ? ` · 식별자 없는 출발 문헌 ${unresolved}편은 미조회` : ""}${run.ai?.identityConflicts ? ` · 식별자 충돌 ${run.ai.identityConflicts}건 제외` : ""}${Object.keys(run.linkedFailures || {}).length ? ` · PubMed 의미 이웃 미조회 ${Object.keys(run.linkedFailures!).length}편` : ""}`;
     } catch (error) {
       const e = error instanceof AppError ? error : null;
       run.status = signal.aborted
@@ -451,7 +509,24 @@ export class Discovery {
             ),
           ),
         ];
+        const pmid = pmidOf(work);
+        const linked = Object.entries(run.linked || {}).flatMap(([seedId, neighbors]) =>
+          pmid && neighbors[pmid] ? [{ seedId, neighbor: neighbors[pmid] }] : [],
+        );
+        if (linked.length) evidence.linked = {
+          score: Math.max(...linked.map((l) => l.neighbor.score)),
+          seedIds: [...new Set(linked.map((l) => l.seedId))],
+          isReview: linked.some((l) => l.neighbor.isReview),
+        };
+        // The relevance filter must see the same semantic signal as the ranking.
+        // Keep the separate deferred flag for candidates lacking an abstract.
+        evidence.score = evidence.linked
+          ? (content.score || 0) + linkedBoost(evidence.linked.score, evidence.linked.seedIds.length)
+          : content.score;
         evidence.reasons = [];
+        if (evidence.linked) evidence.reasons.push(evidence.linked.seedIds.length > 1
+          ? `PubMed 의미 이웃 · 출발 문헌 ${evidence.linked.seedIds.length}편 공통`
+          : `PubMed 의미 이웃 · 유사도 ${evidence.linked.score.toFixed(2)}`);
         if (evidence.seedIds.length)
           evidence.reasons.push(
             `${evidence.denominator}편 중 ${evidence.seedIds.length}편과 ${run.mode.includes("References") || run.mode === "references" ? "참고문헌" : "발견"} 연결`,
@@ -483,7 +558,7 @@ export class Discovery {
         if (work.references === null)
           evidence.reasons.push("참고문헌 정보 미제공");
         const score =
-          (content.score || 0) +
+          (evidence.score || 0) +
           Math.min(0.15, evidence.seedIds.length * 0.025) +
           Math.min(0.03, Math.log1p(work.citations || 0) / 400);
         this.library.updateEvidence(run.id, work.id, evidence, score);

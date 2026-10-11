@@ -1,3 +1,4 @@
+import { pmidOf } from "../../shared/domain";
 import { useEffect, useState } from "react";
 import {
   ArrowUpRight,
@@ -166,6 +167,12 @@ export function Inspector({
           </div>
         </div>
         <div className="paper-links">
+          {pmidOf(work) && (
+            <button onClick={() => void window.bunny
+              .openExternal({ workId: work.id, kind: "linked-discoveries" }).catch(onError)}>
+              Linked Discoveries에서 보기 <ArrowUpRight size={13} />
+            </button>
+          )}
           {work.attachmentCount > 0 && <button onClick={() => onReadPdf()}><FileText size={13} />원문 보기</button>}
           {work.doi && (
             <button

@@ -18,6 +18,7 @@ import type {
 import { AppError, defaultState, now } from "../../shared/types";
 import {
   normalizeDoi,
+  pmidOf,
   normalizeOpenAlex,
   titleSimilarity,
   filterReasons,
@@ -150,7 +151,8 @@ export class Library {
     const row = this.db.prepare("SELECT data FROM works WHERE id=?").get(id) as
       { data: string } | undefined;
     if (!row) throw new AppError("NOT_FOUND", "문헌을 찾을 수 없습니다.");
-    return JSON.parse(row.data);
+    const work: Work = JSON.parse(row.data);
+    return { ...work, pmid: pmidOf(work) };
   }
   findIdentifier(provider: string, value: string): string | undefined {
     return (
@@ -161,6 +163,8 @@ export class Library {
   }
   identities(w: Work): [string, string][] {
     const keys: [string, string][] = [];
+    const pmid = pmidOf(w);
+    if (pmid) keys.push(["pmid", pmid]);
     if (w.doi) keys.push(["doi", w.doi]);
     if (w.openalex) keys.push(["openalex", w.openalex]);
     if (w.source === "bibtex")
@@ -212,6 +216,7 @@ export class Library {
       incoming = {
         ...incoming,
         doi: normalizeDoi(incoming.doi),
+        pmid: pmidOf(incoming),
         openalex: normalizeOpenAlex(incoming.openalex),
       };
       const match = this.match(incoming);
@@ -263,7 +268,7 @@ export class Library {
           "INSERT INTO works VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,citekey=excluded.citekey",
         )
         .run(work.id, JSON.stringify(work), work.citekey);
-      for (const [p, v] of this.identities(incoming))
+      for (const [p, v] of this.identities(work))
         this.db
           .prepare("INSERT OR IGNORE INTO identifiers VALUES(?,?,?)")
           .run(p, v, work.id);

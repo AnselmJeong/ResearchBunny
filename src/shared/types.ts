@@ -4,6 +4,7 @@ export interface Work {
   id: string;
   openalex: string | null;
   doi: string | null;
+  pmid: string | null;
   title: string;
   authors: string[];
   year: number | null;
@@ -68,6 +69,7 @@ export interface Evidence {
   hidden: string[];
   deferred: boolean;
   ai?: { role: string; reason: string; quote: string; limitation: string };
+  linked?: { score: number; seedIds: string[]; isReview?: boolean };
   scope: string;
 }
 export interface WorkView extends Work {
@@ -170,7 +172,8 @@ export const DEFAULT_FILTERS: Filters = {
   hideRetracted: true,
 };
 export interface Task {
-  kind: "lookup" | "batch" | "search" | "cites";
+  kind: "lookup" | "batch" | "search" | "cites" | "linked" | "pmidBatch";
+  size?: LinkedSize;
   ids?: string[];
   query?: string;
   seedId?: string;
@@ -188,7 +191,19 @@ export interface Task {
     fetchedAt: string;
   };
 }
+export type LinkedSize = 20 | 50 | 100 | 200;
+export interface LinkedNeighbor {
+  pmid: string;
+  score: number;
+  isReview: boolean;
+  isRetracted: boolean;
+  diseases: string[];
+  genes: string[];
+  chemicals: string[];
+}
 export interface Run {
+  linked?: Record<string, Record<string, LinkedNeighbor>>;
+  linkedFailures?: Record<string, string>;
   id: string;
   projectId: string;
   mode: DiscoveryMode;
@@ -291,6 +306,7 @@ export interface PdfExportResult {
   unavailable: number;
 }
 export interface Settings {
+  linkedDiscoveries: boolean;
   openalexConfigured: boolean;
   openaiConfigured: boolean;
   ollamaConfigured: boolean;

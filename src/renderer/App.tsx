@@ -962,7 +962,7 @@ export function App() {
                 <input
                   ref={searchInput}
                   aria-label="논문 검색"
-                  placeholder="연구 주제, 제목, DOI로 논문 찾기"
+                  placeholder="연구 주제, 제목, DOI, PMID로 논문 찾기"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                 />
@@ -1731,7 +1731,8 @@ export function App() {
                         </button>
                       )}
                     {scope === "run" &&
-                      currentRun?.tasks.some((t) => t.cursor) &&
+                      currentRun?.tasks.some((t) => t.cursor ||
+                        (snapshot.settings.linkedDiscoveries && t.kind === "linked" && (t.size || 20) < 200)) &&
                       !active && (
                         <button
                           onClick={() =>

@@ -9,6 +9,17 @@ export function normalizeDoi(value: unknown): string | null {
     .toLowerCase();
   return /^10\.\d{4,9}\/\S+$/.test(doi) ? doi : null;
 }
+export function normalizePmid(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = value.trim().match(/^(?:pmid:\s*|https?:\/\/pubmed\.ncbi\.nlm\.nih\.gov\/)?([1-9]\d*)\/?$/i);
+  return match?.[1] ?? null;
+}
+export function pmidOf(work: Work): string | null {
+  const ids = work.raw?.ids;
+  return normalizePmid(work.pmid) ?? normalizePmid(
+    ids && typeof ids === "object" && "pmid" in ids ? ids.pmid : null,
+  );
+}
 export function normalizeOpenAlex(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const match = value.trim().match(/^(?:https?:\/\/openalex\.org\/)?(W\d+)$/i);
@@ -73,6 +84,7 @@ export function blankWork(input: Partial<Work> = {}): Work {
     id: crypto.randomUUID(),
     openalex: null,
     doi: null,
+    pmid: null,
     title: "제목 미확인",
     authors: [],
     year: null,
