@@ -183,7 +183,9 @@ export function Inspector({
               {work.shelf.match === "title" ? "서고에 같은 제목 · " : "서고 · "}{work.shelf.folder}
             </span>
             {work.shelf.match === "identity" && work.shelf.status === "missing" && <span className="warning-text">파일 없음</span>}
-            {work.shelf.match === "identity" && ["review", "provisional"].includes(work.shelf.status) && <span className="badge warning">확인 필요</span>}
+            {work.shelf.match === "identity" && ["review", "provisional"].includes(work.shelf.status) && (work.shelf.stage === "resolved"
+              ? <span className="badge warning">확인 필요</span>
+              : <span className="subtle">서지 확인 대기</span>)}
             {work.shelf.copies > 1 && <span className="subtle">사본 {work.shelf.copies}개</span>}
             <button className="text-button" onClick={() => void window.bunny.shelfReveal({ fileId: work.shelf!.fileId }).catch(onError)}>
               <FolderOpen size={12} />Finder

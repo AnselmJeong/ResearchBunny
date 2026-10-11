@@ -158,8 +158,9 @@ export class ShelfQueries {
           .map((r) => [r.work_id, r.basis]),
       );
       const weak = (b?: string | null) => b === "page1" || b === "title";
-      similar = this.items(hits.map((h) => h.id), new Map(hits.map((h) => [h.id, h.score])), (id) => weak(basis) || weak(bases.get(id)));
-      if (weak(basis)) notices.push("초록 없음 · 정확도 낮음");
+      // Each row flags only its own basis; a weak basis for this paper is one notice for the whole list.
+      similar = this.items(hits.map((h) => h.id), new Map(hits.map((h) => [h.id, h.score])), (id) => weak(bases.get(id)));
+      if (weak(basis)) notices.push(`이 논문은 초록이 없어 ${basis === "page1" ? "PDF 첫 쪽" : "제목"}으로 비교했습니다 · 정확도 낮음`);
     } else notices.push("Ollama 임베딩을 쓸 수 없어 인용 연결만 보여 줍니다.");
     // Citation links use the local citations table only; no API call.
     const cites = work.openalex || work.references?.length

@@ -1729,7 +1729,9 @@ export function App() {
                                   </span>
                                 )}
                                 {scope === "shelf" && w.shelf && ["review", "provisional"].includes(w.shelf.status) && (
-                                  <span className="warning-text">확인 필요</span>
+                                  w.shelf.stage === "resolved"
+                                    ? <span className="warning-text">확인 필요</span>
+                                    : <span className="subtle">서지 확인 대기</span>
                                 )}
                                 {scope === "shelf" && !w.abstract && <span className="subtle">초록 없음</span>}
                                 {scope === "shelf" && w.abstract && w.raw?.abstractSource === "pdf" && <span className="subtle">PDF에서 추출한 초록</span>}
