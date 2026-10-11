@@ -1,9 +1,9 @@
 import type { Library } from "../db/database";
 import type { Shelf } from "./indexer";
 import { embedInput } from "./indexer";
-import { normalizeDoi, normalizeOpenAlex, normalizePmid, titleSimilarity } from "../../shared/domain";
+import { normalizeDoi, normalizeOpenAlex, normalizePmid, titleSimilarity, tokens } from "../../shared/domain";
 import type { ShelfMembership, Work } from "../../shared/types";
-import { titleKey, type ShelfFileInfo, type ShelfHit, type ShelfRelated, type ShelfRelatedItem, type ShelfSearchResult } from "../../shared/shelf";
+import { authorMatches, titleKey, type ShelfFileInfo, type ShelfHit, type ShelfRelated, type ShelfRelatedItem, type ShelfSearchResult } from "../../shared/shelf";
 
 // With OR, a function word would match almost every paper and fill the lexical list.
 const STOPWORDS = new Set(
@@ -43,9 +43,16 @@ interface IndexEntry {
   dois: string[];
   workDoi: string | null;
 }
+/** Title words regardless of order, case, punctuation, markup and stop words. */
+const wordKey = (title: string) => [...new Set(tokens(title))].sort().join(" ");
+const add = <T>(map: Map<string, T[]>, key: string, value: T) => {
+  const list = map.get(key);
+  if (list) list.push(value);
+  else map.set(key, [value]);
+};
 
 export class ShelfQueries {
-  private index: { revision: number; byTitle: Map<string, IndexEntry[]>; byDoi: Map<string, IndexEntry[]>; entries: IndexEntry[] } | null = null;
+  private index: { revision: number; byTitle: Map<string, IndexEntry[]>; byWords: Map<string, IndexEntry[]>; byDoi: Map<string, IndexEntry[]>; byWork: Map<string, IndexEntry[]>; entries: IndexEntry[] } | null = null;
   constructor(private db: Library, private shelf: Shelf) {}
 
   /** Shelf work ids (non-missing, non-auxiliary) for filtering searches and recommendations. */
@@ -204,7 +211,7 @@ export class ShelfQueries {
        FROM shelf_files f JOIN shelf_folders fo ON fo.id=f.folder_id JOIN shelf_roots r ON r.id=f.root_id LEFT JOIN works w ON w.id=f.work_id
        WHERE f.status NOT IN ('missing','auxiliary') AND f.work_id IS NOT NULL`,
     ).all() as { id: string; work_id: string; folder_id: string; folder: string; rel_path: string; root: string; status: string; stage: string; ptitle: string | null; pyear: number | null; pauthor: string | null; dois: string | null; dup: string | null; wtitle: string | null; wyear: number | null; wdoi: string | null }[];
-    const byTitle = new Map<string, IndexEntry[]>(), byDoi = new Map<string, IndexEntry[]>();
+    const byTitle = new Map<string, IndexEntry[]>(), byWords = new Map<string, IndexEntry[]>(), byDoi = new Map<string, IndexEntry[]>(), byWork = new Map<string, IndexEntry[]>();
     const entries: IndexEntry[] = [];
     for (const r of rows) {
       if (r.dup) continue;
@@ -214,17 +221,21 @@ export class ShelfQueries {
         firstAuthor: r.pauthor || "", dois: JSON.parse(r.dois || "[]"), workDoi: r.wdoi,
       };
       entries.push(entry);
+      add(byWork, r.work_id, entry);
       for (const key of new Set([titleKey(r.ptitle || ""), titleKey(r.wtitle || "")]))
-        if (key.length >= 12) byTitle.set(key, [...(byTitle.get(key) || []), entry]);
+        if (key.length >= 12) add(byTitle, key, entry);
+      for (const key of new Set([wordKey(r.ptitle || ""), wordKey(r.wtitle || "")]))
+        if (key.replace(/ /g, "").length >= 12) add(byWords, key, entry);
       for (const doi of new Set([r.wdoi, ...entry.dois].filter(Boolean) as string[]))
-        byDoi.set(doi, [...(byDoi.get(doi) || []), entry]);
+        add(byDoi, doi, entry);
     }
-    this.index = { revision: this.shelf.revision, byTitle, byDoi, entries };
+    this.index = { revision: this.shelf.revision, byTitle, byWords, byDoi, byWork, entries };
     return this.index;
   }
   /**
-   * Shelf files for a paper outside the shelf, by the downloaded-PDF rules:
-   * DOI + title similarity ≥ 0.5, or title similarity ≥ 0.9 without a conflicting DOI.
+   * Shelf files for a paper outside the shelf: the same DOI with title similarity ≥ 0.5,
+   * or, without a conflicting DOI and within a year, the same title, or the same title
+   * words (order, stop words, punctuation and markup aside) by the same first author.
    */
   matchShelf(work: Work): IndexEntry[] {
     const index = this.ensureIndex();
@@ -233,15 +244,20 @@ export class ShelfQueries {
     for (const entry of doi ? index.byDoi.get(doi) || [] : []) {
       if (entry.workDoi === doi || titleSimilarity(entry.title, work.title) >= 0.5) found.set(entry.fileId, entry);
     }
-    for (const entry of index.byTitle.get(titleKey(work.title)) || []) {
-      const conflicting = !!doi && !!entry.workDoi && entry.workDoi !== doi;
-      const yearOk = !work.year || !entry.year || Math.abs(work.year - entry.year) <= 1;
-      if (!conflicting && yearOk) found.set(entry.fileId, entry);
-    }
+    const compatible = (entry: IndexEntry) =>
+      !(doi && entry.workDoi && entry.workDoi !== doi) && (!work.year || !entry.year || Math.abs(work.year - entry.year) <= 1);
+    for (const entry of index.byTitle.get(titleKey(work.title)) || []) if (compatible(entry)) found.set(entry.fileId, entry);
+    for (const entry of index.byWords.get(wordKey(work.title)) || [])
+      if (compatible(entry) && authorMatches(entry.firstAuthor, work.authors[0])) found.set(entry.fileId, entry);
     // Several files of one work (copies) are one candidate.
     const byWork = new Map<string, IndexEntry>();
     for (const entry of found.values()) if (!byWork.has(entry.workId)) byWork.set(entry.workId, entry);
     return [...byWork.values()].filter((entry) => entry.workId !== work.id);
+  }
+  /** Shelf files that hold a paper, checked before any download: its own shelf file, else matching files. */
+  heldBy(work: Work): (IndexEntry & { own: boolean })[] {
+    const own = this.ensureIndex().byWork.get(work.id);
+    return own ? [{ ...own[0], own: true }] : this.matchShelf(work).map((entry) => ({ ...entry, own: false }));
   }
   /** "Same title in the shelf" hints for search results not merged into a shelf work. */
   hints(works: Work[]): Map<string, ShelfMembership> {

@@ -641,6 +641,7 @@ export class Shelf {
   attachTo(fileId: string, workId: string) {
     const row = this.file(fileId);
     const root = this.root();
+    if (row && !row.hash && root && row.root_id === root.id && row.status !== "missing") throw new AppError("SHELF_PENDING", "서고 PDF를 아직 색인하고 있습니다. 색인이 끝난 뒤 다시 시도하세요.");
     if (!row?.hash || !root || row.root_id !== root.id || row.status === "missing") throw new AppError("NOT_FOUND", "연결할 서고 PDF를 찾을 수 없습니다. 서고를 다시 스캔하세요.");
     this.db.get(workId);
     if (row.work_id === workId) return this.ensureAttachment(fileId, root);

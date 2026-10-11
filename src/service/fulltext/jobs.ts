@@ -20,9 +20,11 @@ export interface DownloadTarget {
   downloadDirectory?: string;
 }
 export interface ShelfLinker {
-  match(work: Work): { fileId: string; name: string; folder: string }[];
+  /** Shelf files holding the paper; `own` is the paper's own (already linked) shelf file. */
+  match(work: Work): { fileId: string; name: string; folder: string; own: boolean }[];
   attach(fileId: string, workId: string): void;
 }
+const SHELF_UNREACHABLE = "서고에 있는 PDF를 지금 열 수 없습니다. 서고(NAS) 연결을 확인하세요.";
 export class PdfDownloads {
   active = new Map<string, AbortController>();
   /** Set by the service when a shelf exists: shelf PDFs are linked before any download. */
@@ -107,6 +109,8 @@ export class PdfDownloads {
       const work = this.db.get(item.workId);
       if (!run.download!.includeBooks && isBook(work)) continue;
       if (await this.existing(work.id, signal)) continue;
+      // Papers the shelf holds are linked from there, never copied from the download folder.
+      if (this.shelf?.match(work).length) continue;
       const path = join(staging, randomUUID() + '.part');
       try {
         const downloadedPath = await this.local.copyFor(work, targets, path, signal);
@@ -213,12 +217,18 @@ export class PdfDownloads {
     const works = this.targets(target, false);
     const items: MissingPdfs["items"] = [];
     let existing = 0, books = 0, shelf = 0;
+    const held = new Set<string>();
     for (const work of works) {
       if (await this.existing(work.id)) { existing++; continue; }
       const inShelf = this.shelf?.match(work) || [];
+      if (inShelf[0]?.own) {
+        held.add(work.id);
+        items.push({ workId: work.id, title: work.title, status: "missing", message: `${SHELF_UNREACHABLE} 다운로드하지 않습니다.` });
+        continue;
+      }
       if (inShelf.length === 1) shelf++;
       if (!inShelf.length && !target.includeBooks && isBook(work)) books++;
-      else items.push({ workId: work.id, title: work.title, status: "untried", message: inShelf.length ? `서고에서 찾음 · ${inShelf.length === 1 ? "다운로드 없이 연결할 수 있습니다." : `후보 ${inShelf.length}개 · 직접 확인 후 연결하세요.`}` : "아직 원문 확보를 시도하지 않았습니다.", ...(inShelf.length ? { shelf: inShelf } : {}) });
+      else items.push({ workId: work.id, title: work.title, status: "untried", message: inShelf.length ? `서고에서 찾음 · ${inShelf.length === 1 ? "다운로드 없이 연결할 수 있습니다." : `후보 ${inShelf.length}개 · 직접 확인 후 연결하세요.`}` : "아직 원문 확보를 시도하지 않았습니다.", ...(inShelf.length ? { shelf: inShelf.map(({ fileId, name, folder }) => ({ fileId, name, folder })) } : {}) });
     }
     // Attachment verification is authoritative. History only supplies an explanation,
     // including runs older than the snapshot's 100-run window.
@@ -230,7 +240,7 @@ export class PdfDownloads {
     }
     for (const item of items) {
       const attempt = latest.get(item.workId);
-      if (!attempt || item.shelf) continue;
+      if (!attempt || item.shelf || held.has(item.workId)) continue;
       if (attempt.status === "completed" || attempt.status === "existing") {
         item.status = "missing";
         item.message = "이전에 연결한 PDF를 찾거나 검증할 수 없습니다. 다시 연결하세요.";
@@ -297,6 +307,27 @@ export class PdfDownloads {
     this.db.saveRun(run);
     this.emit({ type, runId: run.id });
   }
+  /**
+   * Settle an item without downloading: a verified PDF first, then the shelf's copy,
+   * which is only linked. Returns false when the paper has to be downloaded.
+   */
+  private async settle(item: PdfDownloadItem, work: Work, signal: AbortSignal) {
+    if (await this.existing(work.id, signal)) { item.status = "existing"; item.message = "검증한 보관 PDF 있음"; return true; }
+    const inShelf = this.shelf?.match(work) || [];
+    if (!inShelf.length) return false;
+    if (inShelf.length > 1) { item.status = "skipped"; item.message = `서고에 후보 ${inShelf.length}개 · 직접 확인 후 연결하세요.`; return true; }
+    try { this.shelf!.attach(inShelf[0].fileId, work.id); }
+    catch (error) {
+      if (!(error instanceof AppError)) throw error;
+      item.status = "failed"; item.errorCode = error.code; item.message = `${error.message} 다운로드하지 않았습니다.`;
+      return true;
+    }
+    delete item.errorCode;
+    // The paper's own shelf file is already linked; the shelf itself is unreachable (e.g. an unmounted NAS).
+    if (inShelf[0].own && !await this.existing(work.id, signal)) { item.status = "skipped"; item.message = `${SHELF_UNREACHABLE} 다운로드하지 않았습니다.`; return true; }
+    item.status = "completed"; item.message = `서고 PDF 연결 · 다운로드 없음 (${inShelf[0].folder})`;
+    return true;
+  }
   private isArchived(projectId: string, workId: string) {
     return this.db.state(projectId, workId).screening === "included" &&
       !!this.db.db.prepare("SELECT 1 FROM project_works WHERE project_id=? AND work_id=?").get(projectId, workId);
@@ -313,6 +344,15 @@ export class PdfDownloads {
     try {
       const staging = join(this.db.root, "downloads", id);
       await mkdir(staging, { recursive: true });
+      // The shelf comes first: settle every paper it holds before Chrome, the download folder or the network.
+      let settled = 0;
+      for (const item of this.shelf ? run.download!.items : []) {
+        signal.throwIfAborted();
+        if (item.status !== "pending" || !this.isArchived(run.projectId, item.workId)) continue;
+        const work = this.db.get(item.workId);
+        if (this.shelf!.match(work).length && await this.settle(item, work, signal)) settled++;
+      }
+      if (settled) this.save(run, "changed");
       await this.reconcile(run, staging, signal).catch(() => { signal.throwIfAborted(); });
       for (const [index, item] of run.download!.items.entries()) {
         signal.throwIfAborted();
@@ -327,15 +367,8 @@ export class PdfDownloads {
             item.status = "skipped"; item.message = "아카이브에서 제거된 문헌"; continue;
           }
           const work = this.db.get(item.workId);
-          if (await this.existing(work.id, itemSignal)) { item.status = "existing"; item.message = "검증한 보관 PDF 있음"; continue; }
-          // Check the shelf again right before any network request.
-          const inShelf = this.shelf?.match(work) || [];
-          if (inShelf.length === 1) {
-            this.shelf!.attach(inShelf[0].fileId, work.id);
-            item.status = "completed"; item.message = `서고 PDF 연결 · 다운로드 없음 (${inShelf[0].folder})`;
-            continue;
-          }
-          if (inShelf.length > 1) { item.status = "skipped"; item.message = `서고에 후보 ${inShelf.length}개 · 직접 확인 후 연결하세요.`; continue; }
+          // Check again right before any network request: indexing may have reached the file since.
+          if (await this.settle(item, work, itemSignal)) continue;
           if (!run.download!.includeBooks && isBook(work)) { item.status = "skipped"; item.message = "책·챕터 기본 제외"; continue; }
           item.status = "running";
           run.message = `원문 ${index + 1}/${run.total} · ${item.title}`;
