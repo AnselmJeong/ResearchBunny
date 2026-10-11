@@ -375,6 +375,10 @@ export interface ListResult {
   deferred: number;
   ids: string[];
   edges: { source: string; target: string }[];
+  /** Graph requests: papers in scope linked to another paper; the rest are not drawn. */
+  graph?: { connected: number };
+  /** Shelf graphs: each drawn work's subfolder path directly below the listed folder. */
+  subfolders?: Record<string, string>;
 }
 export interface ImportPreview {
   token: string;

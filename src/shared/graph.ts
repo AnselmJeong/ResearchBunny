@@ -1,5 +1,41 @@
 /** Graphs use the whole filtered scope up to the rendering limit, independently of list pages. */
-export const GRAPH_LIMIT = 500;
+export const GRAPH_LIMIT = 1000;
+
+/**
+ * Papers worth drawing: those linked to another listed or context paper.
+ * Past the limit the best-connected papers win; the result keeps the scope's order.
+ */
+export function graphNodeIds(
+  ids: string[],
+  contextIds: string[],
+  edges: { source: string; target: string }[],
+  limit = GRAPH_LIMIT,
+): { ids: string[]; connected: number } {
+  const members = new Set([...ids, ...contextIds]);
+  const neighbors = new Map<string, Set<string>>();
+  const link = (a: string, b: string) => {
+    if (!neighbors.has(a)) neighbors.set(a, new Set());
+    neighbors.get(a)!.add(b);
+  };
+  for (const { source, target } of edges)
+    if (source !== target && members.has(source) && members.has(target)) {
+      link(source, target);
+      link(target, source);
+    }
+  const degree = (id: string) => neighbors.get(id)?.size ?? 0;
+  const connected = ids.filter((id) => degree(id) > 0);
+  if (connected.length <= limit) return { ids: connected, connected: connected.length };
+  const rank = new Map(connected.map((id, index) => [id, index]));
+  const chosen = new Set(
+    [...connected].sort((a, b) => degree(b) - degree(a) || rank.get(a)! - rank.get(b)!).slice(0, limit),
+  );
+  const anchors = new Set([...chosen, ...contextIds]);
+  // A paper whose only neighbours fell past the limit would be a new singleton.
+  return {
+    ids: connected.filter((id) => chosen.has(id) && [...neighbors.get(id)!].some((other) => anchors.has(other))),
+    connected: connected.length,
+  };
+}
 
 /** Count distinct citing papers in this scope, not outgoing references. */
 export function incomingCitationCounts(
@@ -22,7 +58,7 @@ export function citationNodeDiameter(count: number, maximum: number): number {
 }
 
 export function resultWindow(graph: boolean, limit: number, offset: number) {
-  return graph ? { limit: GRAPH_LIMIT, offset: 0 } : { limit, offset };
+  return { graph, limit, offset: graph ? 0 : offset };
 }
 
 export function citationWarnings(

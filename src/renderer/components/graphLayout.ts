@@ -1,4 +1,14 @@
 import type { Core, ElementDefinition, EventObject } from "cytoscape";
+import {
+  forceCollide,
+  forceLink,
+  forceManyBody,
+  forceSimulation,
+  forceX,
+  forceY,
+  type SimulationLinkDatum,
+  type SimulationNodeDatum,
+} from "d3-force";
 
 export type GraphPositions = Record<string, { x: number; y: number }>;
 
@@ -73,20 +83,39 @@ export function placeGraph(
     });
     if (previousTimeline !== false) instance.fit(undefined, 50);
   } else {
-    instance
-      .layout({
-        name: "cose",
-        animate: false,
-        randomize: true,
-        nodeDimensionsIncludeLabels: true,
-        nodeRepulsion: () => 18000,
-        idealEdgeLength: () => 130,
-        componentSpacing: 90,
-        numIter: 600,
-        padding: 50,
-      })
-      .run();
+    forceLayout(instance);
   }
+}
+
+/**
+ * Barnes-Hut force layout: cytoscape's cose repels every node pair on every
+ * iteration and takes ~15 s at 1,000 linked papers; this takes about one.
+ */
+export function forceLayout(instance: Core) {
+  type Point = SimulationNodeDatum & { id: string; radius: number };
+  const points: Point[] = instance.nodes().map((node) => ({
+    id: node.id(),
+    radius: (Number(node.data("diameter")) || 24) / 2,
+  }));
+  const links = instance.edges().map((edge) => ({
+    source: edge.source().id(),
+    target: edge.target().id(),
+  }));
+  // Without a start position d3 seeds a deterministic spiral, so a reset is reproducible.
+  const simulation = forceSimulation(points)
+    .force("link", forceLink<Point, SimulationLinkDatum<Point>>(links).id((point) => point.id).distance(110))
+    .force("charge", forceManyBody<Point>().strength(-320).distanceMax(1200))
+    .force("collide", forceCollide<Point>((point) => point.radius + 14))
+    // Weak gravity keeps separate citation clusters on one screen.
+    .force("x", forceX<Point>(0).strength(0.05))
+    .force("y", forceY<Point>(0).strength(0.05))
+    .stop();
+  simulation.tick(Math.ceil(Math.log(simulation.alphaMin()) / Math.log(1 - simulation.alphaDecay())));
+  instance.batch(() => {
+    for (const point of points)
+      instance.getElementById(point.id).position({ x: point.x ?? 0, y: point.y ?? 0 });
+  });
+  instance.fit(undefined, 50);
 }
 
 /** Paper selection must not turn a single-node drag into a group drag. */

@@ -138,6 +138,7 @@ export const schemas = {
     sort: z
       .enum(["rank", "year", "citations", "title", "updated"])
       .default("rank"),
+    graph: z.boolean().default(false),
   }),
   inspect: z.object({ projectId: id, workId: id, runId: id.optional() }),
   mutateWorks: z.object({ projectId: id, ids, patch: state }),

@@ -1,12 +1,13 @@
-import { citationWarnings, citationNodeDiameter, incomingCitationCounts, resultWindow } from "../../src/shared/graph";
+import { citationWarnings, citationNodeDiameter, graphNodeIds, incomingCitationCounts, resultWindow, GRAPH_LIMIT } from "../../src/shared/graph";
 import { restoreNavigation } from "../../src/shared/navigation";
 import { test, expect } from "bun:test";
 import cytoscape from "cytoscape";
-import { archiveNodeColor, TOPIC_COLORS, UNCLASSIFIED_COLOR } from "../../src/shared/classification";
+import { archiveNodeColor, subfolderColors, TOPIC_COLORS, UNCLASSIFIED_COLOR } from "../../src/shared/classification";
 import { defaultState } from "../../src/shared/types";
 import {
   individualNodeDragging,
   capturePositions,
+  forceLayout,
   placeGraph,
   reconcileGraph,
 } from "../../src/renderer/components/graphLayout";
@@ -232,6 +233,75 @@ test("citation warnings isolate future citations without changing the source rec
 });
 
 test("graph query ignores list pagination while list window is preserved", () => {
-  expect(resultWindow(true, 50, 100)).toEqual({ limit: 500, offset: 0 });
-  expect(resultWindow(false, 50, 100)).toEqual({ limit: 50, offset: 100 });
+  expect(resultWindow(true, 50, 100)).toEqual({ graph: true, limit: 50, offset: 0 });
+  expect(resultWindow(false, 50, 100)).toEqual({ graph: false, limit: 50, offset: 100 });
+});
+
+test("graph nodes skip singletons and keep papers linked only to a starting paper", () => {
+  const edges = [
+    { source: "a", target: "b" },
+    { source: "b", target: "a" },
+    { source: "c", target: "seed" },
+    { source: "d", target: "d" },
+    { source: "e", target: "outside" },
+  ];
+  expect(graphNodeIds(["e", "d", "c", "b", "a"], ["seed"], edges)).toEqual({ ids: ["c", "b", "a"], connected: 3 });
+  expect(graphNodeIds(["a", "b"], [], [])).toEqual({ ids: [], connected: 0 });
+  expect(GRAPH_LIMIT).toBe(1000);
+});
+
+test("past the node limit the best-connected papers win without leaving new singletons", () => {
+  // hub links h1..h4; x-y is a separate pair; z only links to y.
+  const edges = [
+    ...["h1", "h2", "h3", "h4"].map((id) => ({ source: id, target: "hub" })),
+    { source: "x", target: "y" },
+    { source: "z", target: "y" },
+  ];
+  const ids = ["x", "h1", "h2", "z", "hub", "h3", "y", "h4"];
+  // hub (4) and y (2) rank first; degree-1 ties then follow the scope order, which the result keeps.
+  expect(graphNodeIds(ids, [], edges, 6)).toEqual({ ids: ["x", "h1", "h2", "z", "hub", "y"], connected: 8 });
+  // With room for three, every neighbour of hub falls past the cut, so hub would be drawn alone.
+  expect(graphNodeIds(ids, [], edges, 3).ids).toEqual(["x", "y"]);
+});
+
+test("subfolder colours go to the largest drawn folders and the rest stay neutral", () => {
+  const folders = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`w${i}`, `Root/F${String(i).padStart(2, "0")}`]));
+  Object.assign(folders, { extra: "Root/F11" });
+  const palette = subfolderColors([...Object.keys(folders), "loose"], folders);
+  expect(palette.groups.length).toBe(TOPIC_COLORS.length);
+  expect(palette.groups[0]).toEqual({ path: "Root/F11", name: "F11", color: TOPIC_COLORS[0] });
+  expect(palette.groups[1].path).toBe("Root/F00");
+  expect(palette.others).toBe(2);
+  expect(palette.loose).toBe(true);
+  expect(palette.color("extra")).toBe(TOPIC_COLORS[0]);
+  expect(palette.color("w10")).toBe(UNCLASSIFIED_COLOR);
+  expect(palette.color("loose")).toBe(UNCLASSIFIED_COLOR);
+  expect(subfolderColors(["a"], {}).groups).toEqual([]);
+});
+
+test("force layout spreads a thousand linked papers quickly and reproducibly", () => {
+  const elements = [
+    ...Array.from({ length: 1000 }, (_, i) => ({ data: { id: `n${i}`, diameter: 24 + (i % 5) * 8 } })),
+    ...Array.from({ length: 1500 }, (_, i) => ({ data: { id: `e${i}`, source: `n${(i * 7) % 1000}`, target: `n${(i * 13 + 1) % 1000}` } })),
+  ].filter((element) => !("source" in element.data) || element.data.source !== element.data.target);
+  const run = () => {
+    const cy = cytoscape({ headless: true, styleEnabled: true, elements, style: [
+      { selector: "node", style: { width: "data(diameter)", height: "data(diameter)" } },
+    ] });
+    try {
+      const started = performance.now();
+      forceLayout(cy);
+      return { positions: capturePositions(cy), elapsed: performance.now() - started };
+    } finally { cy.destroy(); }
+  };
+  const first = run(), second = run();
+  expect(second.positions).toEqual(first.positions);
+  expect(first.elapsed).toBeLessThan(5000);
+  const points = Object.values(first.positions);
+  expect(points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y))).toBe(true);
+  let overlapping = 0;
+  for (let i = 0; i < points.length; i++)
+    for (let j = i + 1; j < points.length; j++)
+      if (Math.hypot(points[i].x - points[j].x, points[i].y - points[j].y) < 24) overlapping++;
+  expect(overlapping).toBe(0);
 });
