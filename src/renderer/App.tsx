@@ -17,7 +17,6 @@ import {
   Download,
   FileText,
   Folder,
-  History,
   Inbox,
   List,
   LoaderCircle,
@@ -78,7 +77,7 @@ import { RightPane } from "./components/RightPane";
 import { ResizableInspector } from "./components/ResizableInspector";
 import { Modal } from "./components/Modal";
 import { DiscoveryMenu } from "./components/DiscoveryMenu";
-import { HistoryWorkspace } from "./components/HistoryWorkspace";
+import { ImportResults } from "./components/ImportResults";
 import { DownloadDialog } from "./components/DownloadDialog";
 import { Settings } from "./components/Settings";
 import {
@@ -123,7 +122,6 @@ type Dialog =
   | "seeds"
   | "export"
   | "collection"
-  | "history"
   | "bulk"
   | "deleteTrash"
   | null;
@@ -497,9 +495,7 @@ export function App() {
   ) => {
     readerRequest.current++;
     setReaderVisible(false);
-    setDialog((current) =>
-      current === "settings" || current === "history" ? null : current,
-    );
+    setDialog((current) => (current === "settings" ? null : current));
     const key = viewKey({ scope: next, scopeId: id });
     if (key === viewKey(viewRef.current)) return;
     const target =
@@ -521,7 +517,7 @@ export function App() {
   };
   const travel = (delta: number) => {
     if (readerActive) { setReaderVisible(false); return; }
-    if (dialog === "settings" || dialog === "history") {
+    if (dialog === "settings") {
       setDialog(null);
       return;
     }
@@ -648,7 +644,8 @@ export function App() {
     if (run.download || run.import?.matchExistingOnly) { setDialog("download"); return; }
     navigate("run", run.id, {
       filters: { ...run.filters },
-      query: run.query,
+      // An import's query is a label ("PDF 가져오기 (n개)"), not a search term.
+      ...(run.import ? {} : { query: run.query }),
       selected: fallbackSelection,
     });
   };
@@ -779,7 +776,7 @@ export function App() {
             trash: "휴지통",
             excluded: "제외 문헌",
           }[scope as string] || "문헌";
-  const fullPage = dialog === "settings" || dialog === "history";
+  const fullPage = dialog === "settings";
   const hiddenSelected = selected.filter(
     (id) => !list.ids.includes(id) && !list.context?.some((w) => w.id === id),
   ).length;
@@ -912,43 +909,6 @@ export function App() {
           ) : null}
           </div>
           </details>
-          <button
-            className={
-              dialog === "history" ? "active history-nav" : "history-nav"
-            }
-            onClick={() => setDialog("history")}
-          >
-            <History size={17} />
-            탐색 이력
-          </button>
-          <div className="nav-label">
-            최근 탐색
-            <button
-              className="icon-button"
-              title="탐색 이력"
-              onClick={() => setDialog("history")}
-            >
-              <History size={14} />
-            </button>
-          </div>
-          {explorationRuns.slice(0, 5).map((r) => (
-            <button
-              data-help={`${MODES[r.mode]} · ${r.query || "저장된 탐색"}. 이 단계의 선택과 필터를 복원합니다.`}
-              className="recent-run"
-              key={r.id}
-              onClick={() => openRun(r)}
-            >
-              {["running", "queued"].includes(r.status) ? (
-                <LoaderCircle size={14} className="spin" />
-              ) : (
-                <History size={14} />
-              )}
-              <span className="ellipsis">{r.query || MODES[r.mode]}</span>
-            </button>
-          ))}
-          {!explorationRuns.length && (
-            <p className="nav-empty">탐색 경로가 여기에 남습니다.</p>
-          )}
         </nav>
         <div className="sidebar-bottom">
           <button onClick={() => setDialog("import")}>
@@ -1105,13 +1065,7 @@ export function App() {
             <div className="breadcrumb">
               <span className="breadcrumb-project" title={currentProject?.name}>{currentProject?.name}</span>
               <ChevronRight size={13} />
-              <strong>
-                {dialog === "settings"
-                  ? "설정"
-                  : dialog === "history"
-                    ? "탐색 이력"
-                    : title}
-              </strong>
+              <strong>{dialog === "settings" ? "설정" : title}</strong>
             </div>
           )}
           <div className="topbar-actions" hidden={fullPage}>
@@ -1169,22 +1123,6 @@ export function App() {
               setInspectorId(null);
               refresh();
             }}
-          />
-        )}
-        {dialog === "history" && (
-          <HistoryWorkspace
-            key={projectId}
-            runs={explorationRuns}
-            projectId={projectId}
-            currentId={scopeId}
-            views={rememberView(navigation, viewRef.current).views}
-            labels={MODES}
-            onOpen={openRun}
-            onError={onError}
-            busy={!!active}
-            onResume={(runId) =>
-              task(() => window.bunny.controlRun({ runId, action: "resume" }))
-            }
           />
         )}
         {!fullPage && (
@@ -1324,13 +1262,24 @@ export function App() {
                           : currentRun.query || "문헌 탐색"}
                       </span>
                     </div>
-                    <button
-                      className="text-button"
-                      onClick={() => setDialog("history")}
-                    >
-                      기록 보기
-                      <ArrowUpRight size={12} />
-                    </button>
+                  </div>
+                )}
+                {scope === "run" && currentRun?.import && (
+                  <div className="run-import-results">
+                    <ImportResults
+                      runId={currentRun.id}
+                      refreshKey={currentRun.updatedAt}
+                      busy={busy || !!active}
+                      onError={onError}
+                      onResume={() =>
+                        task(() =>
+                          window.bunny.controlRun({
+                            runId: currentRun.id,
+                            action: "resume",
+                          }),
+                        )
+                      }
+                    />
                   </div>
                 )}
                 <div className="selection-bar">

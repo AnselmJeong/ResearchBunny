@@ -525,20 +525,6 @@ small {
   color: #9ba69a;
   letter-spacing: 0.4px;
 }
-.nav-label .icon-button {
-  min-height: 18px;
-  padding: 0;
-}
-.nav-empty {
-  font-size: 12px;
-  color: var(--muted);
-  padding: 7px 9px;
-}
-.sidebar nav > .recent-run {
-  font-size: 12px;
-  min-height: 32px;
-  color: var(--muted);
-}
 .sidebar-bottom {
   padding: 10px 0 12px;
   border-top: 1px solid var(--border);
@@ -795,6 +781,16 @@ small {
 }
 .run-context button {
   font-size: 12px;
+}
+.run-import-results {
+  margin: -8px 24px 16px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.run-import-results ul {
+  max-height: 220px;
+  overflow: auto;
+  overflow-wrap: anywhere;
 }
 .discovery-toolbar {
   display: flex;
@@ -1866,33 +1862,6 @@ small {
 .modal > .check {
   margin: 12px 0;
 }
-.history-list > details {
-  padding: 15px 0;
-  border-bottom: 1px solid var(--border);
-}
-.history-list > details > summary {
-  display: flex;
-  justify-content: space-between;
-  gap: 15px;
-  font-size: 12px;
-  line-height: 1.6;
-  list-style: none;
-}
-.history-list p {
-  margin: 12px 0;
-}
-.history-list details > details {
-  font-size: 12px;
-  margin: 13px 0;
-}
-.history-list pre {
-  max-height: 300px;
-  overflow: auto;
-  background: var(--soft);
-  padding: 10px;
-  font-size: 12px;
-  white-space: pre-wrap;
-}
 .graph-wrap {
   position: relative;
   width: 100%;
@@ -2243,8 +2212,7 @@ html[data-theme="dark"] .graph-wrap {
 .row-reason {
   color: var(--muted);
 }
-.nav-label,
-.nav-empty {
+.nav-label {
   color: var(--muted);
 }
 
@@ -2362,15 +2330,6 @@ html[data-theme="dark"] .graph-wrap {
 .sidebar .nav-label {
   margin-top: 8px;
   padding-top: 14px;
-}
-.sidebar .history-nav {
-  margin-top: 24px;
-  border-top: 1px solid var(--border);
-  border-radius: 0;
-}
-.sidebar .recent-run {
-  font-size: 11px;
-  min-height: 30px;
 }
 .topbar {
   height: 62px;
@@ -2886,192 +2845,6 @@ html[data-theme="dark"] .graph-wrap {
 .settings-content > .modal-footer {
   margin-top: 22px;
 }
-.history-workspace {
-  display: flex;
-  min-height: 0;
-  flex: 1;
-  background: var(--panel);
-}
-.history-main {
-  flex: 1;
-  min-width: 0;
-  overflow: auto;
-}
-.history-main .workspace-heading .subtle {
-  margin-top: 6px;
-  font-size: 13px;
-}
-.history-tree,
-.history-children {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-.history-tree {
-  padding: 8px 26px 26px;
-}
-.history-tree > li + li {
-  margin-top: 36px;
-  padding-top: 28px;
-  border-top: 1px solid var(--border);
-}
-.history-stage {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 16px;
-  max-width: 540px;
-  margin: 0 auto;
-  background: var(--panel);
-}
-.history-stage.current {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-.history-stage.focused {
-  outline: 1px solid var(--accent);
-}
-.stage-select {
-  width: 100%;
-  border: 0;
-  padding: 0;
-  background: transparent;
-  white-space: normal;
-  text-align: left;
-  align-items: start;
-  justify-content: start;
-  gap: 12px;
-}
-.stage-select:hover {
-  background: transparent;
-}
-.stage-number {
-  width: 30px;
-  height: 30px;
-  flex: none;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--accent);
-  color: var(--panel);
-  font-size: 13px;
-}
-.stage-content {
-  display: block;
-  min-width: 0;
-  line-height: 1.7;
-}
-.stage-content strong {
-  font-size: 15px;
-}
-.stage-query {
-  display: block;
-  margin-top: 8px;
-  overflow-wrap: anywhere;
-  font-size: 13px;
-}
-.stage-content time {
-  display: block;
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 8px;
-}
-.current-label {
-  color: var(--accent);
-  font-size: 11px;
-  margin-left: 8px;
-}
-.stage-open {
-  display: flex;
-  margin: 14px 0 0 auto;
-  font-size: 12px;
-}
-.history-children {
-  display: flex;
-  gap: 18px;
-  padding-top: 28px;
-  position: relative;
-}
-.history-children > li {
-  flex: 1;
-  min-width: 0;
-  position: relative;
-}
-.history-children::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 50%;
-  height: 14px;
-  border-left: 1px solid var(--border);
-}
-.history-children > li::before {
-  content: "";
-  position: absolute;
-  top: -14px;
-  left: 50%;
-  height: 14px;
-  border-left: 1px solid var(--border);
-}
-.history-children > li::after {
-  content: "";
-  position: absolute;
-  top: -14px;
-  left: -9px;
-  right: -9px;
-  border-top: 1px solid var(--border);
-}
-.history-children > li:first-child::after {
-  left: 50%;
-}
-.history-children > li:last-child::after {
-  right: 50%;
-}
-.history-children .history-children {
-  flex-direction: column;
-  padding-left: 14px;
-  border-left: 1px solid var(--border);
-}
-.history-children .history-children > li::before,
-.history-children .history-children > li::after,
-.history-children .history-children::before {
-  display: none;
-}
-.history-count {
-  padding: 0 26px 24px;
-}
-.history-inspector h2 {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 14px;
-}
-.stage-papers {
-  padding-left: 20px;
-  font-size: 13px;
-  line-height: 1.6;
-}
-.stage-papers li {
-  padding-left: 5px;
-  margin-bottom: 17px;
-}
-.stage-papers small {
-  display: block;
-}
-.stage-restore {
-  width: 100%;
-  margin: 20px 0 12px;
-}
-.history-details {
-  margin: 24px 0 16px;
-}
-.history-details pre {
-  font-size: 11px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: 260px;
-  overflow: auto;
-}
 @media (max-width: 1250px) {
   .app-shell {
     grid-template-columns: 190px minmax(0, 1fr);
@@ -3100,25 +2873,13 @@ html[data-theme="dark"] .graph-wrap {
   .reading-filter {
     order: 5;
   }
-  .history-children {
-    flex-direction: column;
-    padding-left: 16px;
-    border-left: 1px solid var(--border);
-  }
-  .history-children::before,
-  .history-children > li::before,
-  .history-children > li::after {
-    display: none;
-  }
 }
 
 .sidebar nav > button,
 .sidebar-bottom > button {
   color: var(--text);
 }
-.sidebar .nav-label,
-.sidebar .nav-empty,
-.sidebar .recent-run {
+.sidebar .nav-label {
   color: var(--muted);
 }
 .paper-main h3 {
