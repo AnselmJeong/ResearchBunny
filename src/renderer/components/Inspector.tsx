@@ -347,6 +347,7 @@ export function Inspector({
                       doi: `DOI 일치${shelfFile.resolution.doi ? ` (${shelfFile.resolution.doi})` : ""} · 파일명 제목 유사도 ${shelfFile.resolution.similarity ?? "–"}`,
                       title: `제목 검색 일치 · 유사도 ${shelfFile.resolution.similarity ?? "–"}`,
                       hash: "앱이 관리하던 PDF와 내용이 같음",
+                      app: "앱이 받아 서고 수신함에 저장함",
                       manual: shelfFile.resolution.note || "직접 확인함",
                       provisional: `파일명 서지 사용 · ${shelfFile.resolution.note || "자동 확인 실패"}`,
                     }[shelfFile.resolution.method]
@@ -566,7 +567,7 @@ export function Inspector({
                     </button>
                     <small>
                       {a.exists
-                        ? `${(a.size / 1024 / 1024).toFixed(1)} MB · ${a.mode === "managed" ? "관리 복사" : "외부 연결"}`
+                        ? `${(a.size / 1024 / 1024).toFixed(1)} MB · ${a.mode === "managed" ? "관리 복사" : a.shelfFileId ? "서고" : "외부 연결"}`
                         : "파일 연결 끊김"}{" "}
                       · {a.status}
                     </small>

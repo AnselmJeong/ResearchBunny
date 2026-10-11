@@ -234,8 +234,8 @@ export class ChromeDownloads implements BrowserRetrieval {
         for (const [file, stamp] of files) {
           const before = baseline.get(file), previous = previousFiles.get(file);
           if ((before?.mtime === stamp.mtime && before.size === stamp.size) || rejected.has(file) || previous?.size !== stamp.size || previous.mtime !== stamp.mtime) continue;
-          const candidate: RetrievedPdf = {sourceUrl:pending || publicUrl(lastUrl) || initial, doi, method:"chrome", requireIdentity:!file.endsWith(filename)};
-          await copyFile(file, path); // Preserve the user's original download.
+          const candidate: RetrievedPdf = {sourceUrl:pending || publicUrl(lastUrl) || initial, doi, method:"chrome", requireIdentity:!file.endsWith(filename), original:file};
+          await copyFile(file, path); // The original stays until the verified copy is stored.
           try { await validate(candidate); return candidate; }
           catch (error) { itemSignal.throwIfAborted(); rejected.add(file); if (file.endsWith(filename)) throw error; }
         }

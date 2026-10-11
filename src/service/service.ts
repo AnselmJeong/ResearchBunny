@@ -14,7 +14,7 @@ import type {
   ImportResult,
   Settings,
 } from "../shared/types";
-import { AppError } from "../shared/types";
+import { AppError, type Attachment } from "../shared/types";
 import { blankWork, titleSimilarity, safeWebUrl, pmidOf } from "../shared/domain";
 import { Library } from "./db/database";
 import { LinkedDiscoveries } from "./providers/linked-discoveries";
@@ -92,12 +92,23 @@ export class Service {
     });
     this.pdf = new PdfImports(this.db, this.oa, workerPath, emit);
     this.downloads = new PdfDownloads(this.db, workerPath, emit);
+    // With a shelf, every PDF the app obtains is stored in its inbox; there is no second store.
+    const inbox = {
+      configured: () => !!this.shelf.root(),
+      deposit: (path: string, workId: string, options: { hash: string; signal: AbortSignal; fields: Partial<Attachment> }) => this.shelf.deposit(path, workId, options),
+    };
     this.downloads.shelf = {
+      ...inbox,
       match: (work) => this.shelf.root() ? this.shelfQueries.heldBy(work).map((m) => ({ fileId: m.fileId, name: m.path.split("/").pop() || m.title, folder: m.folder, own: m.own })) : [],
       attach: (fileId, workId) => this.shelf.attachTo(fileId, workId),
     };
+    this.pdf.shelf = inbox;
     this.classifier = new ArchiveClassifier(this.db, this.ai, emit);
     this.sorter = new ShelfSorter(this.db, this.shelf, this.shelfQueries, this.ai, emit);
+  }
+  /** Downloads and imports are stored in the shelf inbox: refuse to start while a configured shelf is offline. */
+  private async shelfWritable() {
+    if (this.shelf.root()) await this.shelf.writableRoot();
   }
   /** Shelf papers first (top 3 abstracts), then the usual OpenAlex · PubMed evidence. */
   async evidence(query: string, keys: SearchKeys, signal: AbortSignal) {
@@ -291,6 +302,7 @@ export class Service {
         const run = this.db.run(args.runId);
         if (run.download) {
           if (!["cancel", "skip"].includes(args.action) && this.busy()) throw new AppError("BUSY", "진행 중인 작업을 완료하거나 취소하세요.");
+          if (args.action === "resume") await this.shelfWritable();
           return this.downloads.control(args.runId, args.action, args.useBrowser, args.downloadDirectory);
         }
         if (args.action === "skip") throw new AppError("INVALID", "문헌 건너뛰기는 원문 확보 작업에서 사용하세요.");
@@ -304,7 +316,10 @@ export class Service {
             "RATE_LIMIT",
             "요청 한도 대기 시간 후 재개하세요.",
           );
-        if (run.import) return this.pdf.control(args.runId, args.action);
+        if (run.import) {
+          if (args.action !== "cancel" && run.import.mode === "managed") await this.shelfWritable();
+          return this.pdf.control(args.runId, args.action);
+        }
         return this.discovery.control(args.runId, args.action);
       }
       case "previewBib":
@@ -321,9 +336,11 @@ export class Service {
       case "pdfImport":
         if (this.busy())
           throw new AppError("BUSY", "진행 중인 작업을 완료하거나 취소하세요.");
+        if (args.options?.mode === "managed") await this.shelfWritable();
         return this.pdf.start(args.projectId, args.paths, args.options);
       case "pdfMatch":
         if (this.busy()) throw new AppError("BUSY", "진행 중인 작업을 완료하거나 취소하세요.");
+        await this.shelfWritable();
         return this.pdf.start(args.projectId, args.paths, { mode: "managed", matchExistingOnly: true });
       case "pdfInfo": return this.reader.info(schemas.pdfInfo.parse(args));
       case "pdfReadChunk": return this.reader.chunk(schemas.pdfReadChunk.parse(args));
@@ -335,6 +352,7 @@ export class Service {
         return this.downloads.missing(args);
       case "downloadPdfs":
         if (this.busy()) throw new AppError("BUSY", "진행 중인 작업을 완료하거나 취소하세요.");
+        await this.shelfWritable();
         return this.downloads.start(args);
       case "importItems":
         return this.db.db
@@ -549,6 +567,10 @@ export class Service {
       case "shelfControl":
         this.shelf.command(schemas.shelfControl.parse(args).action);
         return;
+      case "shelfAdopt":
+        schemas.shelfAdopt.parse(args);
+        if (this.busy()) throw new AppError("BUSY", "진행 중인 작업을 완료하거나 취소하세요.");
+        return this.shelf.adoptManaged();
       case "shelfPull": {
         const config = this.shelf.config();
         if (!config) throw new AppError("SHELF_CONFIG", "서고 위치를 먼저 설정하세요.");

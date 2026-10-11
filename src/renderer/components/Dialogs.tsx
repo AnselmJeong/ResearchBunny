@@ -15,12 +15,15 @@ type Common = { onClose: () => void; onError: (error: unknown) => void };
 export function ImportDialog({
   projectId,
   collections,
+  shelf,
   onImported,
   onRun,
   ...common
 }: Common & {
   projectId: string;
   collections: Collection[];
+  /** A shelf is configured: copies are stored in its inbox. */
+  shelf: boolean;
   onImported: (result: ImportResult) => void;
   onRun: (run: Run) => void;
 }) {
@@ -211,11 +214,17 @@ export function ImportDialog({
           <div className="radio-list">
             {(
               [
-                [
-                  "managed",
-                  "앱 관리 폴더에 복사",
-                  "원본과 독립적으로 보관합니다.",
-                ],
+                shelf
+                  ? [
+                      "managed",
+                      "서고 수신함에 복사",
+                      "서고 이름(연도 - 저자 - 제목)으로 저장합니다.",
+                    ] as const
+                  : [
+                      "managed",
+                      "앱 관리 폴더에 복사",
+                      "원본과 독립적으로 보관합니다.",
+                    ] as const,
                 [
                   "linked",
                   "기존 위치에 연결",

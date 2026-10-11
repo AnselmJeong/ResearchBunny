@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { CodexStatus, CodexModel } from "./codex";
 import type { ChatSession, ChatThreadSummary } from "./chat";
-import type { ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo, ShelfSortResult, ShelfSortState } from "./shelf";
+import type { ShelfAdoptResult, ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo, ShelfSortResult, ShelfSortState } from "./shelf";
 import type {
   Snapshot,
   ListResult,
@@ -294,6 +294,7 @@ export const schemas = {
   chooseShelfRoot: z.object({}),
   shelfControl: z.object({ action: z.enum(["pause", "resume", "cancel", "retryFailed", "reresolve", "reembed", "confirmMissing", "scan"]) }),
   shelfPull: z.object({}),
+  shelfAdopt: z.object({}),
   shelfRelated: z.object({ projectId: id, workId: id, limit: z.number().int().min(1).max(50).default(10), otherFoldersOnly: z.boolean().default(false) }),
   shelfSearch: z.object({ projectId: id, query: z.string().trim().min(1).max(2000), limit: z.number().int().min(1).max(200).default(30) }),
   shelfFile: z.object({ fileId: id }),
@@ -380,6 +381,7 @@ export interface Outputs {
   chooseShelfRoot: string | null;
   shelfControl: void;
   shelfPull: void;
+  shelfAdopt: ShelfAdoptResult;
   shelfRelated: ShelfRelated;
   shelfSearch: ShelfSearchResult;
   shelfFile: ShelfFileDetails;

@@ -139,6 +139,11 @@ export function extractPdf(
 }
 export class PdfImports {
   active = new Map<string, AbortController>();
+  /** Set by the service when a shelf exists: copies go to its inbox instead of the app's folder. */
+  shelf?: {
+    configured(): boolean;
+    deposit(path: string, workId: string, options: { hash: string; signal: AbortSignal; fields: Partial<Attachment> }): Promise<Attachment>;
+  };
   constructor(
     private db: Library,
     private oa: OpenAlex,
@@ -298,7 +303,11 @@ export class PdfImports {
           }
           signal.throwIfAborted();
           let attachmentPath = path;
-          if (job.mode === "managed") {
+          let stored: Attachment | null = null;
+          if (job.mode === "managed" && this.shelf?.configured()) {
+            stored = await this.shelf.deposit(path, work!.id, { hash, signal, fields: { status: `${status} · 서고 수신함에 저장` } });
+            attachmentPath = stored.path;
+          } else if (job.mode === "managed") {
             const target = join(this.db.root, "attachments", hash + ".pdf");
             const temporary = target + "." + randomUUID() + ".staging";
             try {
@@ -322,7 +331,7 @@ export class PdfImports {
             if (job.matchExistingOnly && this.db.state(run.projectId, work!.id).screening !== "included")
               throw new AppError("ARCHIVE_REMOVED", "연결 중 아카이브에서 제거된 문헌입니다.");
             this.db.ensureMembership(run.projectId, work!.id);
-            if (job.mode !== "metadata") {
+            if (job.mode !== "metadata" && !stored) {
               const attachment = this.db.attachments(work!.id).find(a => a.hash === hash);
               this.db.saveAttachment({
                 ...attachment,

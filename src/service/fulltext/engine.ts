@@ -113,7 +113,11 @@ export function untilAborted<T>(pending: Promise<T>, signal: AbortSignal): Promi
     if (signal.aborted) abort();
   });
 }
-export interface RetrievedPdf { sourceUrl: string; doi: string | null; version?: string; requireIdentity?: boolean; method?: "chrome" | "http" }
+export interface RetrievedPdf {
+  sourceUrl: string; doi: string | null; version?: string; requireIdentity?: boolean; method?: "chrome" | "http";
+  /** The browser's own download; moved to the shelf (deleted) once the PDF is stored there. */
+  original?: string;
+}
 export class FulltextEngine {
   constructor(
     private fetcher: DownloadFetch = fetch,

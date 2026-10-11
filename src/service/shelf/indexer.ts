@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { copyFile, lstat, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { Library } from "../db/database";
 import type { OpenAlex } from "../providers/openalex";
@@ -17,10 +18,12 @@ import {
   DEFAULT_SHELF_EXCLUDE,
   EMBED_PROMPTS,
   extractAbstractCandidate,
+  formatShelfFilename,
   isInboxFolder,
   pageLead,
   parseShelfFilename,
   type EmbedBasis,
+  type ShelfAdoptResult,
   type ShelfConfig,
   type ShelfFileInfo,
   type ShelfIndexCounts,
@@ -60,6 +63,9 @@ export interface RootRow {
 const CHUNK = 48;
 const RESCAN_MS = 30 * 60 * 1000;
 const OFFLINE_RETRY_MS = 2 * 60 * 1000;
+/** Hidden while being written: neither the scanner nor intake.py picks up dot files. */
+const TEMP_PREFIX = ".researchbunny-";
+const TEMP_MAX_AGE_MS = 60 * 60 * 1000;
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 const parseInfo = (row: Pick<FileRow, "info">): ShelfFileInfo => JSON.parse(row.info || "{}");
 async function pool<T>(items: T[], size: number, fn: (item: T) => Promise<void>) {
@@ -74,6 +80,14 @@ export function embedInput(work: Work, info: ShelfFileInfo | null): { basis: Emb
     return { basis: work.raw?.abstractSource === "pdf" ? "pdf-abstract" : "abstract", title: work.title, text: work.abstract.trim() };
   if (info?.page1?.trim()) return { basis: "page1", title: work.title, text: info.page1.trim() };
   return { basis: "title", title: work.title, text: "" };
+}
+/** First free "name.pdf", "name (2).pdf", … in a folder, numbered the way intake.py numbers clashes. */
+async function freeName(dir: string, name: string) {
+  const stem = name.replace(/\.pdf$/i, "");
+  for (let n = 1; ; n++) {
+    const candidate = n === 1 ? name : `${stem} (${n}).pdf`;
+    if (!(await lstat(join(dir, candidate)).catch(() => null))) return candidate;
+  }
 }
 
 export class Shelf {
@@ -280,6 +294,7 @@ export class Shelf {
       return;
     }
     this.online = true;
+    await this.removeStaleTemps(root);
     const walked = await walk(root.path, config.exclude, signal);
     // A share can disappear mid-walk; never turn an unmount into missing files.
     if (!(await rootOnline(root.path))) {
@@ -509,7 +524,7 @@ export class Shelf {
         extraction: result.status,
       };
       const auxiliary = isAuxiliaryPdf(result) || isAuxiliaryPdf({ title: info.parsed?.title || "", text: "" });
-      const stage: ShelfStage = auxiliary || info.resolution?.method === "hash" ? "resolved" : "extracted";
+      const stage: ShelfStage = auxiliary || info.resolution?.method === "hash" || info.resolution?.method === "app" ? "resolved" : "extracted";
       this.db.db.prepare("UPDATE shelf_files SET info=?,stage=?,status=? WHERE id=?")
         .run(JSON.stringify(next), stage, auxiliary ? "auxiliary" : row.status, id);
       if (row.work_id && next.abstract) {
@@ -604,6 +619,133 @@ export class Shelf {
     }
     if (match.id === provisional.id) return this.db.upsert(incoming).work.id;
     return this.db.upsert({ ...incoming, id: provisional.id, citekey: provisional.citekey, edits: provisional.edits }).work.id;
+  }
+
+  // ---- storing PDFs in the inbox ----
+  /** The shelf root, checked readable now. Downloads and imports are stored there, so an offline shelf stops them. */
+  async writableRoot(): Promise<RootRow> {
+    const root = this.root();
+    if (!root) throw new AppError("SHELF_NONE", "서고를 설정하지 않았습니다.");
+    if (!(await rootOnline(root.path))) {
+      this.online = false;
+      throw new AppError("SHELF_OFFLINE", `서고(${root.path})가 연결되지 않아 PDF를 저장할 수 없습니다. NAS를 연결한 뒤 다시 시도하세요.`);
+    }
+    this.online = true;
+    return root;
+  }
+  /**
+   * Store a verified PDF of a work in the inbox (the shelf root) under the
+   * shelf's `연도 - 저자 - 제목.pdf` name, or link the work to identical bytes
+   * already on the shelf. The file is registered with the work at once, so the
+   * index extracts it without another bibliographic lookup. The app only adds
+   * files to the root; moving them into folders stays with the shelf's intake tool.
+   * Copies of the same bytes in the app's own folder become links and are removed.
+   */
+  async deposit(source: string, workId: string, options: { hash?: string; signal?: AbortSignal; method?: "app" | "hash"; fields?: Partial<Attachment> } = {}): Promise<Attachment> {
+    const { signal } = options;
+    const root = await this.writableRoot();
+    const hash = options.hash || (await hashFile(source, signal));
+    const work = this.db.get(workId);
+    let fileId = (this.db.db.prepare("SELECT id FROM shelf_files WHERE root_id=? AND hash=? AND status!='missing' ORDER BY json_extract(info,'$.duplicateOf') IS NOT NULL, rel_path LIMIT 1").get(root.id, hash) as { id: string } | undefined)?.id;
+    if (!fileId) {
+      const temp = join(root.path, `${TEMP_PREFIX}${randomUUID()}.part`);
+      let name: string;
+      try {
+        await copyFile(source, temp);
+        if ((await hashFile(temp, signal)) !== hash) throw new AppError("COPY_HASH", "서고에 복사한 PDF의 내용이 원본과 다릅니다.");
+        signal?.throwIfAborted();
+        name = await freeName(root.path, formatShelfFilename(work));
+        await rename(temp, join(root.path, name));
+      } finally {
+        await rm(temp, { force: true });
+      }
+      const info = await stat(join(root.path, name));
+      const id = randomUUID();
+      this.db.transaction(() => {
+        this.db.db.prepare("INSERT INTO shelf_folders VALUES(?,?,'',NULL,?,1) ON CONFLICT(root_id,rel_path) DO UPDATE SET present=1").run(folderId(root.id, ""), root.id, root.name);
+        const fileInfo: ShelfFileInfo = { parsed: parseShelfFilename(name), resolution: { method: options.method || "app", at: now() } };
+        this.db.db.prepare("INSERT INTO shelf_files VALUES(?,?,?,?,?,?,?,?,?,?,NULL,'hashed','ok',?,?,NULL)")
+          .run(id, root.id, folderId(root.id, ""), name, info.size, Math.trunc(info.mtimeMs), hash, info.size, Math.trunc(info.mtimeMs), workId, JSON.stringify(fileInfo), now());
+        // The work's earlier copy of these bytes keeps its id (and download details) as the shelf file's attachment.
+        const own = this.db.attachments(workId).find((a) => a.hash === hash && !a.shelfFileId);
+        if (own) this.db.db.prepare("UPDATE shelf_files SET attachment_id=? WHERE id=?").run(own.id, id);
+      });
+      fileId = id;
+    }
+    const stored = fileId;
+    const replaced = new Set<string>();
+    const attachment = this.db.transaction(() => {
+      const copies = (this.db.db.prepare("SELECT data FROM attachments WHERE json_extract(data,'$.hash')=? AND json_extract(data,'$.shelfFileId') IS NULL").all(hash) as { data: string }[])
+        .map((r) => JSON.parse(r.data) as Attachment);
+      for (const workToLink of new Set([workId, ...copies.map((a) => a.workId)])) {
+        this.attachTo(stored, workToLink);
+        for (const left of this.db.attachments(workToLink).filter((a) => a.hash === hash && !a.shelfFileId)) {
+          this.db.db.prepare("DELETE FROM attachments WHERE id=?").run(left.id);
+          if (left.mode === "managed") replaced.add(left.path);
+        }
+      }
+      for (const a of copies) if (a.mode === "managed") replaced.add(a.path);
+      const linked = this.db.attachments(workId).find((a) => a.shelfFileId === stored)!;
+      const result = { ...linked, ...options.fields };
+      this.db.saveAttachment(result);
+      this.ftsRefresh(workId);
+      return result;
+    });
+    // Only files inside the app's own folder that nothing points to any more.
+    for (const path of replaced)
+      if (path === join(this.db.root, "attachments", hash + ".pdf") && !this.db.db.prepare("SELECT 1 FROM attachments WHERE json_extract(data,'$.path')=? LIMIT 1").get(path))
+        await rm(path, { force: true });
+    this.managed = null;
+    this.revision++;
+    return attachment;
+  }
+  /** Distinct PDFs still kept in the app's own folder (from before the shelf stored downloads). */
+  managedCount() {
+    return (this.db.db.prepare("SELECT count(DISTINCT json_extract(data,'$.hash')) AS n FROM attachments WHERE json_extract(data,'$.mode')='managed'").get() as { n: number }).n;
+  }
+  /**
+   * Move the PDFs kept in the app's own folder into the inbox. Identical bytes on
+   * the shelf are linked instead. When the shelf already holds the paper as a
+   * different file, both stay and the paper is reported, never duplicated.
+   */
+  async adoptManaged(signal?: AbortSignal): Promise<ShelfAdoptResult> {
+    const root = await this.writableRoot();
+    const groups = new Map<string, Attachment[]>();
+    for (const { data } of this.db.db.prepare("SELECT data FROM attachments WHERE json_extract(data,'$.mode')='managed' ORDER BY rowid").all() as { data: string }[]) {
+      const a = JSON.parse(data) as Attachment;
+      groups.set(a.hash, [...(groups.get(a.hash) || []), a]);
+    }
+    const result: ShelfAdoptResult = { moved: 0, linked: 0, kept: [], failed: [] };
+    const hasShelfPdf = this.db.db.prepare("SELECT 1 FROM attachments a JOIN shelf_files f ON f.id=json_extract(a.data,'$.shelfFileId') WHERE a.work_id=? AND f.status!='missing' LIMIT 1");
+    const inProject = this.db.db.prepare("SELECT 1 FROM project_works WHERE work_id=? LIMIT 1");
+    for (const [hash, group] of groups) {
+      signal?.throwIfAborted();
+      const onShelf = !!this.db.db.prepare("SELECT 1 FROM shelf_files WHERE root_id=? AND hash=? AND status!='missing'").get(root.id, hash);
+      if (!onShelf && group.every((a) => hasShelfPdf.get(a.workId))) {
+        result.kept.push(...group.map((a) => a.workId));
+        continue;
+      }
+      try {
+        if ((await hashFile(group[0].path, signal)) !== hash) throw new AppError("HASH_MISMATCH", "보관 PDF의 내용이 기록과 다릅니다.");
+        const primary = group.find((a) => inProject.get(a.workId)) || group[0];
+        await this.deposit(group[0].path, primary.workId, { hash, signal, method: "hash", fields: { status: "앱 보관 PDF · 서고 수신함으로 옮김" } });
+        if (onShelf) result.linked++;
+        else result.moved++;
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (error instanceof AppError && error.code === "SHELF_OFFLINE") throw error;
+        result.failed.push({ workId: group[0].workId, reason: error instanceof AppError ? error.message : `파일 접근 실패 (${(error as NodeJS.ErrnoException)?.code || "unknown"})` });
+      }
+    }
+    this.emit({ type: "changed" });
+    return result;
+  }
+  /** Temporary files of interrupted deposits; a deposit in progress is younger than an hour. */
+  private async removeStaleTemps(root: RootRow) {
+    for (const name of (await readdir(root.path).catch(() => [] as string[])).filter((n) => n.startsWith(TEMP_PREFIX) && n.endsWith(".part"))) {
+      const info = await lstat(join(root.path, name)).catch(() => null);
+      if (info?.isFile() && Date.now() - info.mtimeMs > TEMP_MAX_AGE_MS) await rm(join(root.path, name), { force: true });
+    }
   }
 
   // ---- links between files, works and attachments ----
@@ -1039,7 +1181,7 @@ export class Shelf {
       ? (this.db.db.prepare("SELECT id,rel_path,json_extract(info,'$.error') AS error FROM shelf_files WHERE root_id=? AND status='failed' ORDER BY rel_path LIMIT 100").all(root.id) as { id: string; rel_path: string; error: string | null }[])
           .map((r) => ({ fileId: r.id, path: r.rel_path, reason: r.error || "처리 실패" }))
       : [];
-    return { summary: this.summary(), config, ollama, failures };
+    return { summary: this.summary(), managed: this.managedCount(), config, ollama, failures };
   }
   /** Absolute path for Finder; refuses files outside the configured shelf. */
   filePath(fileId: string) {

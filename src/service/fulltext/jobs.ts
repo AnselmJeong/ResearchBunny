@@ -8,7 +8,7 @@ import { ChromeDownloads, chromeDownloadDirectories, type BrowserRetrieval } fro
 import { LocalDownloads, isAuxiliaryPdf } from "./local-downloads";
 import type { RetrievedPdf } from "./engine";
 import { titleSimilarity } from "../../shared/domain";
-import { AppError, DEFAULT_FILTERS, now, type AppEvent, type MissingPdfs, type PdfDownloadItem, type PdfDownloadPreview, type PdfDownloadScope, type Run, type Work } from "../../shared/types";
+import { AppError, DEFAULT_FILTERS, now, type AppEvent, type Attachment, type MissingPdfs, type PdfDownloadItem, type PdfDownloadPreview, type PdfDownloadScope, type Run, type Work } from "../../shared/types";
 
 export interface DownloadTarget {
   projectId: string;
@@ -23,6 +23,9 @@ export interface ShelfLinker {
   /** Shelf files holding the paper; `own` is the paper's own (already linked) shelf file. */
   match(work: Work): { fileId: string; name: string; folder: string; own: boolean }[];
   attach(fileId: string, workId: string): void;
+  /** A shelf is configured: verified PDFs go to its inbox instead of the app's folder. */
+  configured(): boolean;
+  deposit(path: string, workId: string, options: { hash: string; signal: AbortSignal; fields: Partial<Attachment> }): Promise<Attachment>;
 }
 const SHELF_UNREACHABLE = "서고에 있는 PDF를 지금 열 수 없습니다. 서고(NAS) 연결을 확인하세요.";
 export class PdfDownloads {
@@ -75,6 +78,7 @@ export class PdfDownloads {
   }
   private async attach(run: Run, item: PdfDownloadItem, work: Work, path: string, signal: AbortSignal, retrieved: RetrievedPdf, downloadedPath?: string) {
     const hash = await hashFile(path, signal);
+    if (this.shelf?.configured()) return this.store(run, item, work, path, hash, signal, retrieved, downloadedPath);
     const size = (await stat(path)).size;
     const destination = join(this.db.root, 'attachments', hash + '.pdf');
     signal.throwIfAborted();
@@ -94,6 +98,25 @@ export class PdfDownloads {
       delete item.errorCode;
       this.save(run, 'changed');
     });
+    await this.syncHistory();
+  }
+  /** Store the verified PDF in the shelf inbox; the browser's original download is then removed. */
+  private async store(run: Run, item: PdfDownloadItem, work: Work, path: string, hash: string, signal: AbortSignal, retrieved: RetrievedPdf, downloadedPath?: string) {
+    if (!this.isArchived(run.projectId, work.id)) { item.status = 'skipped'; item.message = '확보 중 아카이브에서 제거됨'; return; }
+    const attachment = await this.shelf!.deposit(path, work.id, {hash, signal, fields:{
+      status:downloadedPath ? '다운로드 파일 복구 · PDF 검증됨 · 서고 수신함에 저장' : '원문 확보 · PDF 검증됨 · 서고 수신함에 저장',
+      sourceUrl:retrieved.sourceUrl, retrievalMethod:retrieved.method, fetchedAt:now(), version:retrieved.version}});
+    this.db.transaction(() => {
+      item.status = 'completed';
+      item.message = `${downloadedPath ? '다운로드 파일 자동 복구·검증' : `${retrieved.method === 'chrome' ? 'Chrome에서 ' : ''}PDF 확보·검증`} · 서고 수신함에 저장 (${attachment.name})`;
+      item.sourceUrl = retrieved.sourceUrl; item.retrievalMethod = retrieved.method;
+      if (downloadedPath) item.downloadedPath = downloadedPath;
+      delete item.errorCode;
+      this.save(run, 'changed');
+    });
+    const original = downloadedPath || retrieved.original;
+    // Remove the download only while it still holds the bytes now on the shelf.
+    if (original && await hashFile(original).catch(() => null) === hash) await rm(original, {force:true}).catch(() => {});
     await this.syncHistory();
   }
   private async reconcile(run: Run, staging: string, signal: AbortSignal) {
@@ -402,6 +425,11 @@ export class PdfDownloads {
           await this.attach(run, item, work, path, itemSignal, retrieved);
         } catch (error) {
           signal.throwIfAborted();
+          if (error instanceof AppError && error.code === "SHELF_OFFLINE") {
+            item.status = "pending"; item.message = error.message;
+            this.emit({type:"service-error", message:error.message});
+            throw error;
+          }
           if (error instanceof AppError) item.errorCode = error.code;
           item.status = itemControl.signal.aborted ? "skipped" : "failed";
           item.message = itemControl.signal.aborted ? "사용자가 이 문헌을 건너뛰었습니다." : error instanceof AppError ? error.message : (error as Error)?.name === "TimeoutError"
