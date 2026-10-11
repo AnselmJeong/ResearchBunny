@@ -14,7 +14,8 @@
 | Phase 3 · 하이브리드 검색, 검색 실행의 `shelf` 작업, 고정 묶음, 배지, 필터, `서고만 검색` | 완료 | `discovery/engine.ts`, `shelf/search.ts`, `App.tsx`, `Filters.tsx` |
 | Phase 3 · 원문 확보의 서고 확인, `서고에서 연결` | 완료 | `fulltext/jobs.ts`, `MissingPdfList.tsx`, `DownloadDialog.tsx` |
 | Phase 3 · AI 대화의 서고 근거 | 완료 | `service.ts`(`evidence`), `AISidebar.tsx` |
-| Phase 4 (선택) | 하지 않음 | – |
+| Phase 4 (선택) · 수신함 논문의 폴더 제안 | 계획과 달리 승인한 PDF를 앱이 직접 옮긴다 | [수신함 정리 구현 기록](shelf-sort.md) |
+| Phase 4 (선택) · 그 밖의 항목 | 하지 않음 | – |
 
 ## 계획과 다르게 정한 점
 

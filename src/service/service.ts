@@ -33,6 +33,7 @@ import { schemas } from "../shared/contracts";
 import { Shelf } from "./shelf/indexer";
 import { ShelfQueries } from "./shelf/search";
 import { SHELF_ALL } from "../shared/shelf";
+import { ShelfSorter } from "./shelf/sorter";
 import { searchEvidence, type SearchKeys } from "./chat/search";
 import type { ChatSource } from "../shared/chat";
 export class Service {
@@ -49,6 +50,7 @@ export class Service {
   classifier: ArchiveClassifier;
   shelf: Shelf;
   shelfQueries: ShelfQueries;
+  sorter: ShelfSorter;
   secrets: {
     openalex?: string;
     openai?: string;
@@ -95,6 +97,7 @@ export class Service {
       attach: (fileId, workId) => this.shelf.attachTo(fileId, workId),
     };
     this.classifier = new ArchiveClassifier(this.db, this.ai, emit);
+    this.sorter = new ShelfSorter(this.db, this.shelf, this.shelfQueries, this.ai, emit);
   }
   /** Shelf papers first (top 3 abstracts), then the usual OpenAlex · PubMed evidence. */
   async evidence(query: string, keys: SearchKeys, signal: AbortSignal) {
@@ -129,7 +132,7 @@ export class Service {
       .map(([workId, v]) => ({ workId, score: v.score, folder: v.folder, folderId: memberships.get(workId)?.folderId || "", lexicalRank: null, semanticRank: null }));
   }
   busy() {
-    return this.chat.active.size > 0 || this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0;
+    return this.chat.active.size > 0 || this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0 || !!this.sorter.active;
   }
   settings(): Settings {
     const saved = this.db.pref<Partial<AIConfig>>("ai");
@@ -581,9 +584,19 @@ export class Service {
       }
       case "shelfFilePath":
         return this.shelf.filePath(String(args.fileId));
+      case "shelfSortState":
+        return this.sorter.state();
+      case "shelfSortStart":
+        return this.sorter.start();
+      case "shelfSortCancel":
+        this.sorter.cancel();
+        return;
+      case "shelfSortApply":
+        return this.sorter.apply(schemas.shelfSortApply.parse(args).items);
       case "shutdown":
         this.downloads.stopRecoveryMonitor();
         this.shelf.stop();
+        this.sorter.cancel();
         this.chat.close();
         this.codex.close();
         for (const control of [

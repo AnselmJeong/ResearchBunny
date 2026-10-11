@@ -1,4 +1,5 @@
-// Shelf ("서고"): a read-only, app-wide PDF library kept outside projects.
+// Shelf ("서고"): an app-wide PDF library kept outside projects. Indexing never
+// changes the folder; only an approved inbox sort (수신함 정리) moves PDFs.
 export const DEFAULT_SHELF_EXCLUDE = ["_system", "_news", "_to_delete", "_duplicated", "_summaries"];
 export const DEFAULT_EMBED_MODEL = "embeddinggemma-2:latest";
 export const DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434";
@@ -6,6 +7,72 @@ export const DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434";
 export const SHELF_ALL = "all";
 export const SHELF_INBOX = "inbox";
 export const SHELF_REVIEW = "review";
+/** Sort destinations besides taxonomy leaves, named as `_system/intake.py` names them. */
+export const SHELF_UNCATEGORIZED = "_uncategorized";
+export const SHELF_DUPLICATED = "_duplicated";
+/** The inbox is the shelf root plus `_uncategorized`. */
+export const isInboxFolder = (relPath: string) =>
+  relPath === "" || relPath === SHELF_UNCATEGORIZED || relPath.startsWith(SHELF_UNCATEGORIZED + "/");
+
+export interface ShelfSortLeaf {
+  /** Folder path relative to the shelf root, e.g. `01 Psychiatric Disorders/Mood Disorders - Clinical`. */
+  path: string;
+  domain: string;
+  name: string;
+  def: string;
+}
+export interface ShelfSortVote {
+  path: string;
+  /** Share of the similarity-weighted neighbour vote, 0–1. */
+  share: number;
+  /** Cosine similarity of the closest neighbour in that folder. */
+  similarity: number;
+}
+export interface ShelfSortItem {
+  fileId: string;
+  relPath: string;
+  /** Current folder: "" for the root or an `_uncategorized` path. */
+  folder: string;
+  title: string;
+  year: number | null;
+  authors: string[];
+  /** Proposed destination: a leaf path, `_uncategorized`, `_duplicated`, or null to leave the file. */
+  target: string | null;
+  /** ai: AI decision on embedding candidates; duplicate/version: an existing copy decided it; embedding: AI unavailable. */
+  source: "ai" | "duplicate" | "version" | "embedding";
+  confidence: "high" | "medium" | "low" | null;
+  reason: string;
+  votes: ShelfSortVote[];
+  /** Whether the AI chose the folder the neighbour vote ranked first; null without both. */
+  agree: boolean | null;
+  /** Library copy behind a duplicate or version decision. */
+  existing?: string;
+}
+export interface ShelfSortJob {
+  status: "idle" | "running" | "ready" | "failed" | "cancelled";
+  message: string;
+  done?: number;
+  total?: number;
+  updatedAt: string;
+}
+export interface ShelfSortState {
+  job: ShelfSortJob;
+  createdAt: string | null;
+  /** file: `_system/taxonomy.json`; folders: leaf folders of the shelf tree. */
+  taxonomy: "file" | "folders" | null;
+  leaves: ShelfSortLeaf[];
+  items: ShelfSortItem[];
+  /** Inbox PDFs not indexed far enough to judge yet. */
+  waiting: { fileId: string; relPath: string; reason: string }[];
+  /** `_system` exists, so moves go to move_log.jsonl and logs/, and index.json is rebuilt. */
+  ledger: boolean;
+}
+export interface ShelfSortResult {
+  moved: number;
+  uncategorized: number;
+  duplicated: number;
+  skipped: { relPath: string; reason: string }[];
+}
 
 // Retrieval prompts from the EmbeddingGemma 2 model card
 // (ai.google.dev/gemma/docs/embeddinggemma/model_card_2): documents use

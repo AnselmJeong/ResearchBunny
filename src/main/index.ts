@@ -262,6 +262,7 @@ const hostRpc = BrowserView.defineRPC<BunnyRPC>({
               "shelfFile",
               "shelfReveal",
               "chooseShelfRoot",
+              "shelfSortState",
             ].includes(name)
           )
             emit({ type: "changed" });

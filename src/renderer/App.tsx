@@ -17,6 +17,7 @@ import {
   Download,
   FileText,
   Folder,
+  FolderInput,
   Inbox,
   List,
   LoaderCircle,
@@ -79,6 +80,7 @@ import { Modal } from "./components/Modal";
 import { DiscoveryMenu } from "./components/DiscoveryMenu";
 import { ImportResults } from "./components/ImportResults";
 import { DownloadDialog } from "./components/DownloadDialog";
+import { ShelfSortDialog } from "./components/ShelfSortDialog";
 import { Settings } from "./components/Settings";
 import {
   ImportDialog,
@@ -124,6 +126,7 @@ type Dialog =
   | "collection"
   | "bulk"
   | "deleteTrash"
+  | "shelfSort"
   | null;
 function Bunny({ size = 27 }: { size?: number }) {
   return (
@@ -1201,6 +1204,11 @@ export function App() {
                     {classifying ? <LoaderCircle size={15} className="spin" /> : <Sparkles size={15} />}
                     {classifying ? "분류 중" : classification?.topics.length ? `분류 갱신${classification.unclassified ? ` · 미분류 ${classification.unclassified}편` : ""}` : "분류"}
                   </button>}
+                  {scope === "shelf" && scopeId === SHELF_INBOX && <button className="secondary" disabled={!snapshot.shelf.online}
+                    data-help="비슷한 서고 논문의 폴더(로컬 임베딩)와 AI 판정으로 수신함 PDF가 갈 폴더를 제안합니다. 확인하고 승인한 PDF만 옮깁니다."
+                    onClick={() => setDialog("shelfSort")}>
+                    <FolderInput size={15} /> 수신함 정리
+                  </button>}
                   <div className="view-switch">
                     {(
                       [
@@ -2066,6 +2074,8 @@ export function App() {
           onRun={openRun}
         />
       )}
+      {dialog === "shelfSort" && <ShelfSortDialog aiEnabled={snapshot.settings.aiEnabled}
+        onClose={() => setDialog(null)} onError={onError} onSettings={() => setDialog("settings")} />}
       {dialog === "download" && <DownloadDialog key={projectId} projectId={projectId} selected={selected} scope={scope} scopeId={scopeId}
         runs={snapshot.runs} busy={busy || !!active || !!classifying}
         onClose={() => setDialog(null)} onError={onError} />}

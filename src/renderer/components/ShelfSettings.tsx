@@ -46,7 +46,7 @@ export function ShelfSettings({ onError, onChanged }: { onError: (error: unknown
   const remote = !isLoopbackUrl(ollamaUrl);
   return <section id="settings-shelf" className="settings-group shelf-settings">
     <h3><LibraryBig size={16} /> 서고</h3>
-    <p className="subtle">이미 정리해 둔 PDF 폴더를 읽기 전용으로 색인합니다. 파일을 옮기거나 이름을 바꾸거나 새 파일을 만들지 않습니다. 서고 논문은 모든 프로젝트에서 열람·추천·검색에 쓰이고, 프로젝트에 저장할 때만 아카이브에 들어갑니다.</p>
+    <p className="subtle">이미 정리해 둔 PDF 폴더를 색인합니다. 색인은 파일을 옮기거나 이름을 바꾸거나 새 파일을 만들지 않습니다. 파일을 옮기는 것은 수신함 정리에서 승인한 PDF뿐이며, 파일명은 그대로 둡니다. 서고 논문은 모든 프로젝트에서 열람·추천·검색에 쓰이고, 프로젝트에 저장할 때만 아카이브에 들어갑니다.</p>
     <label className="field">서고 위치
       <span className="inline-field">
         <input value={path} placeholder="/Volumes/LIBRARY/Articles" onChange={(e) => setPath(e.target.value)} />
