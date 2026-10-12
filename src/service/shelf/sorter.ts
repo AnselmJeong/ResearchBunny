@@ -185,6 +185,19 @@ export async function writeIndex(rootPath: string) {
   await rename(temp, join(rootPath, "index.json"));
 }
 
+/**
+ * Record PDFs deleted with a permanent deletion in the intake ledger, when the
+ * shelf keeps one: a `## delete` block in today's log and a rebuilt index.json.
+ */
+export async function logDeletion(rootPath: string, rels: string[]) {
+  if (!rels.length || !(await isDir(join(rootPath, "_system")))) return false;
+  await mkdir(join(rootPath, "_system", "logs"), { recursive: true });
+  await appendFile(join(rootPath, "_system", "logs", `intake-${localStamp().slice(0, 10)}.md`),
+    `\n## delete ${localStamp(new Date(), true)} · ResearchBunny\n${rels.map((r) => `- (deleted) ${r}\n`).join("")}`);
+  await writeIndex(rootPath);
+  return true;
+}
+
 async function freeName(dir: string, name: string) {
   const ext = extname(name), stem = name.slice(0, name.length - ext.length);
   let candidate = name;

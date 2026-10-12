@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtemp, mkdir, readdir, stat, rename, rm, copyFile, utimes } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, stat, rename, rm, copyFile, utimes } from "node:fs/promises";
 import { basename, join, resolve, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { Service } from "../../src/service/service";
@@ -527,6 +527,63 @@ test("full-text jobs link shelf PDFs instead of downloading; deletion and merges
     expect(fileOf(service, SMITH)!.work_id).toBe(smith.work_id);
     expect(service.db.db.prepare("SELECT count(*) AS n FROM work_embeddings WHERE work_id=?").get(smith.work_id)).toEqual({ n: 1 });
     expect((await service.call("shelfSearch", { projectId, query: "interoceptive", limit: 5 })).hits[0].workId).toBe(smith.work_id);
+  });
+});
+
+test("permanent deletion deletes a paper's shelf PDFs in every folder, and trashed papers leave the sidebar counts", async () => {
+  await fixture(async ({ service, dir, projectId, ollama }) => {
+    await configure(service, dir, ollama.url);
+    const lost = fileOf(service, LOST)!, smith = fileOf(service, SMITH)!, kim = fileOf(service, KIM)!;
+    const other = service.db.createProject("다른 프로젝트", "").id;
+    service.db.mutate(other, [smith.work_id], { screening: "included" });
+    // A paper in this project's trash leaves its counts, as it already leaves its lists; other projects still count it.
+    service.db.mutate(projectId, [lost.work_id, smith.work_id, kim.work_id], { screening: "trash" });
+    const counted = service.shelf.summary(projectId);
+    expect(counted).toMatchObject({ inbox: 1, review: 1, total: 2 });
+    expect(counted.folders.find((f) => f.name === "01 Domain A")!.count).toBe(0);
+    expect(list(service, projectId, "shelf", SHELF_INBOX).total).toBe(1);
+    expect(service.shelf.summary(other)).toMatchObject({ inbox: 2, review: 2, total: 5 });
+
+    // The confirmation names every shelf PDF of the papers, the copy in another folder included.
+    const preview = await service.call("previewTrashDeletion", { projectId, target: { kind: "selected", ids: [lost.work_id, smith.work_id] } });
+    expect(preview.count).toBe(2);
+    expect(preview.shelfFiles.sort()).toEqual([SMITH, COPY, LOST].sort());
+
+    // An unmounted share refuses the deletion and changes nothing.
+    await rename(dir, dir + "-offline");
+    await expect(service.call("deleteTrashedWorks", { projectId, target: { kind: "all" } })).rejects.toThrow(/NAS/);
+    await rename(dir + "-offline", dir);
+    expect(service.db.counts(projectId).trash).toBe(3);
+
+    // A PDF that cannot be deleted keeps its paper in the trash.
+    await rm(join(dir, KIM));
+    await mkdir(join(dir, KIM));
+    const gone = (rel: string) => stat(join(dir, rel)).then(() => false, () => true);
+    const result = await service.call("deleteTrashedWorks", { projectId, target: { kind: "all" } });
+    await service.shelf.wait();
+    expect(result.ids.sort()).toEqual([lost.work_id, smith.work_id].sort());
+    expect(result.shelf.deleted.sort()).toEqual([SMITH, COPY, LOST].sort());
+    expect(result.shelf.failed).toEqual([{ relPath: KIM, reason: "PDF 파일이 아닙니다." }]);
+    for (const rel of [SMITH, COPY, LOST]) {
+      expect(await gone(rel)).toBe(true);
+      expect(fileOf(service, rel)).toBeUndefined();
+    }
+    expect(service.db.counts(projectId).trash).toBe(1);
+
+    // A paper nothing else uses leaves the library; one another project keeps loses only its PDF.
+    expect(service.db.db.prepare("SELECT 1 FROM works WHERE id=?").get(lost.work_id)).toBeNull();
+    expect(service.db.get(smith.work_id).doi).toBe("10.1000/intero");
+    expect(service.db.attachments(smith.work_id)).toHaveLength(0);
+    // Left for the other project: Park and the supplement (Kim's PDF became a folder, so the rescan marks it missing).
+    expect(service.shelf.summary(other)).toMatchObject({ inbox: 1, total: 2 });
+
+    // The rescan after deleting brings nothing back, and the intake ledger records the deletion.
+    expect(list(service, projectId, "shelf", SHELF_ALL).works.map((w) => w.id)).not.toContain(smith.work_id);
+    const [logName] = await readdir(join(dir, "_system", "logs"));
+    expect(await readFile(join(dir, "_system", "logs", logName), "utf8")).toContain(`- (deleted) ${LOST}\n`);
+    const index = JSON.parse(await readFile(join(dir, "index.json"), "utf8"));
+    expect(index.files[basename(COPY)]).toBeUndefined();
+    expect(index.files[basename(PARK)]).toEqual({ category: "02 Domain B" });
   });
 });
 

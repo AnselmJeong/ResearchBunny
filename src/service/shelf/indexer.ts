@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, lstat, readdir, rename, rm, stat } from "node:fs/promises";
+import { copyFile, lstat, readdir, rename, rm, stat, unlink } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { Library } from "../db/database";
 import type { OpenAlex } from "../providers/openalex";
@@ -1135,6 +1135,50 @@ export class Shelf {
     this.revision++;
   }
 
+  // ---- permanent deletion ----
+  /** The current root's files of these works, missing ones included. */
+  filesOf(workIds: string[]): FileRow[] {
+    const root = this.root();
+    if (!root || !workIds.length) return [];
+    return this.db.db.prepare("SELECT * FROM shelf_files WHERE root_id=? AND work_id IN (SELECT value FROM json_each(?)) ORDER BY rel_path")
+      .all(root.id, JSON.stringify(workIds)) as FileRow[];
+  }
+  /** Delete these PDFs from disk; run inside `hold`. A file that is already gone counts as deleted. */
+  async unlinkFiles(rows: FileRow[]) {
+    const root = this.root();
+    if (!root) throw new AppError("SHELF_CONFIG", "서고를 먼저 연결하세요.");
+    const deleted: FileRow[] = [], failed: { row: FileRow; reason: string }[] = [];
+    for (const row of rows) {
+      const path = join(root.path, row.rel_path);
+      const info = await lstat(path).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? null : error);
+      if (info instanceof Error) failed.push({ row, reason: `파일을 확인하지 못했습니다 (${(info as NodeJS.ErrnoException).code || "unknown"}).` });
+      else if (info && !info.isFile()) failed.push({ row, reason: "PDF 파일이 아닙니다." });
+      else if (!info) deleted.push(row);
+      else await unlink(path).then(
+        () => deleted.push(row),
+        (error: NodeJS.ErrnoException) => error.code === "ENOENT" ? deleted.push(row) : failed.push({ row, reason: `지우지 못했습니다 (${error.code || "unknown"}).` }),
+      );
+    }
+    return { deleted, failed };
+  }
+  /** Take deleted files out of the index with every attachment made from them; works nothing else uses go too. */
+  drop(fileIds: string[]) {
+    if (!fileIds.length) return;
+    this.db.transaction(() => {
+      const works = new Set<string>();
+      for (const id of fileIds) {
+        const row = this.file(id);
+        if (!row) continue;
+        this.db.db.prepare("DELETE FROM attachments WHERE id=? OR json_extract(data,'$.shelfFileId')=?").run(row.attachment_id || "", id);
+        this.db.db.prepare("DELETE FROM shelf_files WHERE id=?").run(id);
+        if (row.work_id) works.add(row.work_id);
+      }
+      for (const work of works) this.dropWorkIfOrphan(work);
+      this.db.touch();
+    });
+    this.revision++;
+  }
+
   // ---- embeddings ----
   private async ensureModel(): Promise<string | null> {
     const config = this.config();
@@ -1261,13 +1305,19 @@ export class Shelf {
       : 0;
     return { files, works, stages, statuses, embedded, embeddable };
   }
-  summary(): ShelfSummary {
+  /**
+   * Sidebar counts. With a project, papers in its trash are left out, as the
+   * shelf lists leave them out; the index counts (`counts`) stay project-free.
+   */
+  summary(projectId?: string): ShelfSummary {
     const root = this.root();
     const counts = this.counts(root?.id);
     if (!root) return { configured: false, root: null, online: false, folders: [], inbox: 0, review: 0, total: 0, counts, job: this.job };
+    const trashed = projectId ? " AND work_id NOT IN (SELECT work_id FROM project_works WHERE project_id=? AND json_extract(state,'$.screening')='trash')" : "";
+    const scope = projectId ? [root.id, projectId] : [root.id];
     const folders = this.db.db.prepare("SELECT id,parent_id AS parentId,name,rel_path AS relPath FROM shelf_folders WHERE root_id=? AND present=1 ORDER BY rel_path").all(root.id) as { id: string; parentId: string | null; name: string; relPath: string }[];
     const direct = new Map(
-      (this.db.db.prepare("SELECT folder_id,count(DISTINCT work_id) AS n FROM shelf_files WHERE root_id=? AND status!='missing' AND work_id IS NOT NULL AND json_extract(info,'$.duplicateOf') IS NULL GROUP BY folder_id").all(root.id) as { folder_id: string; n: number }[])
+      (this.db.db.prepare(`SELECT folder_id,count(DISTINCT work_id) AS n FROM shelf_files WHERE root_id=? AND status!='missing' AND work_id IS NOT NULL AND json_extract(info,'$.duplicateOf') IS NULL${trashed} GROUP BY folder_id`).all(...scope) as { folder_id: string; n: number }[])
         .map((r) => [r.folder_id, r.n]),
     );
     const byId = new Map(folders.map((f) => [f.id, { ...f, count: 0 }]));
@@ -1280,7 +1330,10 @@ export class Shelf {
       }
     }
     const inbox = folders.filter((f) => isInboxFolder(f.relPath)).reduce((sum, f) => sum + (direct.get(f.id) || 0), 0);
-    const review = this.reviewCount(root.id);
+    const review = (this.db.db.prepare(`SELECT count(DISTINCT work_id) AS n FROM shelf_files WHERE root_id=? AND stage='resolved' AND status IN ('review','provisional') AND work_id IS NOT NULL${trashed}`).get(...scope) as { n: number }).n;
+    const total = projectId
+      ? (this.db.db.prepare(`SELECT count(DISTINCT work_id) AS n FROM shelf_files WHERE root_id=? AND status!='missing' AND work_id IS NOT NULL${trashed}`).get(...scope) as { n: number }).n
+      : counts.works;
     return {
       configured: true,
       root: { id: root.id, path: root.path, name: root.name, lastScanAt: root.last_scan_at },
@@ -1288,7 +1341,7 @@ export class Shelf {
       folders: [...byId.values()].filter((f) => !isInboxFolder(f.relPath)),
       inbox,
       review,
-      total: counts.works,
+      total,
       counts,
       job: this.job,
     };

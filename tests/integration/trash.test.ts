@@ -254,7 +254,7 @@ test("deletion command validates scope and refuses while jobs run", async () => 
         projectId,
         target: { kind: "all" },
       }),
-      { ids: [work.id] },
+      { ids: [work.id], shelf: { deleted: [], failed: [] } },
     );
   } finally {
     service.db.close();

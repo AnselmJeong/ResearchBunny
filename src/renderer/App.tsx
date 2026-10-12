@@ -187,6 +187,8 @@ export function App() {
   const [trashDeletion, setTrashDeletion] = useState<{
     request: Input<"deleteTrashedWorks">;
     count: number;
+    /** Shelf PDFs that the deletion removes from disk. */
+    shelfFiles: string[];
   } | null>(null);
   const [name, setName] = useState(""),
     [bulkReason, setBulkReason] = useState(""),
@@ -612,16 +614,16 @@ export function App() {
     );
   };
   const confirmTrashDeletion = (all = false) => {
-    setTrashDeletion({
-      request: {
-        projectId,
-        target: all
-          ? { kind: "all" }
-          : { kind: "selected", ids: [...selected] },
-      },
-      count: all ? snapshot?.counts.trash || 0 : selected.length,
+    const request: Input<"deleteTrashedWorks"> = {
+      projectId,
+      target: all ? { kind: "all" } : { kind: "selected", ids: [...selected] },
+    };
+    // The dialog names the shelf PDFs first: they leave the disk, not just this project.
+    void task(async () => {
+      const { count, shelfFiles } = await window.bunny.previewTrashDeletion(request);
+      setTrashDeletion({ request, count, shelfFiles });
+      setDialog("deleteTrash");
     });
-    setDialog("deleteTrash");
   };
   const clearPending = () => {
     if (busy || active || classifying) return;
@@ -638,7 +640,7 @@ export function App() {
   const deleteTrash = () => {
     if (!trashDeletion || busy) return;
     void task(async () => {
-      const { ids } = await window.bunny.deleteTrashedWorks(
+      const { ids, shelf } = await window.bunny.deleteTrashedWorks(
         trashDeletion.request,
       );
       for (const id of ids) {
@@ -655,7 +657,10 @@ export function App() {
       );
       setDialog(null);
       setTrashDeletion(null);
-      flash(`${ids.length}편을 영구 삭제했습니다.`);
+      const files = shelf.deleted.length ? ` 서고 PDF ${shelf.deleted.length}개를 지웠습니다.` : "";
+      if (shelf.failed.length)
+        flash(`${ids.length}편을 영구 삭제했습니다.${files} 서고 PDF ${shelf.failed.length}개는 지우지 못해 그 문헌은 휴지통에 남겼습니다: ${shelf.failed[0].relPath} · ${shelf.failed[0].reason}`, true);
+      else flash(`${ids.length}편을 영구 삭제했습니다.${files}`);
     });
   };
   const openRun = (run: Run, fallbackSelection: string[] = []) => {
@@ -2200,9 +2205,25 @@ export function App() {
           </p>
           <p>
             문헌의 메모와 컬렉션 연결도 삭제되며, 복원하거나 실행 취소할 수
-            없습니다. 다른 프로젝트의 문헌과 PDF 파일은 유지되므로, 서고에
-            PDF가 있는 문헌은 서고 목록에 다시 나타납니다.
+            없습니다. 다른 프로젝트의 문헌은 유지됩니다.
           </p>
+          {trashDeletion.shelfFiles.length > 0 && (
+            <div className="trash-shelf-files" role="alert">
+              <p className="danger">
+                서고 PDF {trashDeletion.shelfFiles.length}개도 디스크에서 바로
+                지웁니다. 휴지통을 거치지 않으며, 모든 프로젝트의 서고에서
+                사라집니다.
+              </p>
+              <ul>
+                {trashDeletion.shelfFiles.slice(0, 5).map((path) => (
+                  <li key={path} title={path}>{path}</li>
+                ))}
+                {trashDeletion.shelfFiles.length > 5 && (
+                  <li className="subtle">외 {trashDeletion.shelfFiles.length - 5}개</li>
+                )}
+              </ul>
+            </div>
+          )}
           <footer className="modal-footer">
             <button
               disabled={busy}

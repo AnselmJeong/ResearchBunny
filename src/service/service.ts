@@ -26,15 +26,16 @@ import { parseBib, exportBib, type BibEntry } from "./interchange/bibtex";
 import { PdfImports, hashFile, verifyPdf } from "./interchange/pdf";
 import { createBackup, restoreBackup } from "./interchange/backup";
 import { mergeWorks, undoMerge } from "./db/merge";
-import { deleteTrashedWorks } from "./db/trash";
+import { deleteTrashedWorks, trashTargets } from "./db/trash";
 import { ArchiveClassifier, classificationSnapshot } from "./archive-classification";
 import { PdfDownloads } from "./fulltext/jobs";
 import { planPdfExport, pdfExportTargets, previewPdfExport, exportPdfFolders } from "./interchange/pdf-export";
-import { schemas } from "../shared/contracts";
+import { schemas, type TrashDeletion } from "../shared/contracts";
 import { Shelf } from "./shelf/indexer";
 import { ShelfQueries } from "./shelf/search";
 import { SHELF_ALL } from "../shared/shelf";
-import { ShelfSorter } from "./shelf/sorter";
+import { ShelfSorter, logDeletion } from "./shelf/sorter";
+import { rootOnline } from "./shelf/scanner";
 import { searchEvidence, type SearchKeys } from "./chat/search";
 import type { ChatSource } from "../shared/chat";
 export class Service {
@@ -108,6 +109,30 @@ export class Service {
     this.sorter = new ShelfSorter(this.db, this.shelf, this.shelfQueries, this.ai, emit);
   }
   /** Downloads and imports are stored in the shelf inbox: refuse to start while a configured shelf is offline. */
+  /**
+   * Permanent deletion also deletes the papers' PDFs from the shelf, in every
+   * folder, so the shelf never lists them again. Files go first: a paper whose
+   * PDF cannot be deleted stays in the trash.
+   */
+  private async deleteTrash(projectId: string, selected?: string[]): Promise<TrashDeletion> {
+    const ids = trashTargets(this.db, projectId, selected);
+    const files = this.shelf.filesOf(ids);
+    if (!files.length) return { ...deleteTrashedWorks(this.db, projectId, ids), shelf: { deleted: [], failed: [] } };
+    const root = this.shelf.root()!;
+    if (!(await rootOnline(root.path)))
+      throw new AppError("SHELF_OFFLINE", `서고(${root.path})가 연결되지 않아 서고 PDF를 지울 수 없습니다. NAS를 연결한 뒤 영구 삭제하세요.`);
+    return this.shelf.hold(async () => {
+      const { deleted, failed } = await this.shelf.unlinkFiles(files);
+      const kept = new Set(failed.map((f) => f.row.work_id));
+      const result = deleteTrashedWorks(this.db, projectId, ids.filter((id) => !kept.has(id)));
+      this.shelf.drop(deleted.map((f) => f.id));
+      await logDeletion(root.path, deleted.filter((f) => f.status !== "missing").map((f) => f.rel_path)).catch(() => false);
+      return {
+        ...result,
+        shelf: { deleted: deleted.map((f) => f.rel_path), failed: failed.map((f) => ({ relPath: f.row.rel_path, reason: f.reason })) },
+      };
+    });
+  }
   private async shelfWritable() {
     if (this.shelf.root()) await this.shelf.writableRoot();
   }
@@ -189,7 +214,7 @@ export class Service {
           runs: this.db.runs(projectId),
           counts: this.db.counts(projectId),
           settings: this.settings(),
-          shelf: this.shelf.summary(),
+          shelf: this.shelf.summary(projectId),
           ui: this.db.pref("ui:" + projectId) || {},
         };
       }
@@ -269,11 +294,14 @@ export class Service {
             "BUSY",
             "탐색·가져오기 작업이 끝난 뒤 영구 삭제하세요.",
           );
-        return deleteTrashedWorks(
-          this.db,
+        return this.deleteTrash(
           args.projectId,
           args.target.kind === "selected" ? args.target.ids : undefined,
         );
+      case "previewTrashDeletion": {
+        const ids = trashTargets(this.db, args.projectId, args.target.kind === "selected" ? args.target.ids : undefined);
+        return { count: ids.length, shelfFiles: this.shelf.filesOf(ids).filter((f) => f.status !== "missing").map((f) => f.rel_path) };
+      }
       case "editWork": {
         const work = this.db.edit(args.workId, args.patch);
         if (this.db.db.prepare("SELECT 1 FROM shelf_files WHERE work_id=? LIMIT 1").get(work.id)) {

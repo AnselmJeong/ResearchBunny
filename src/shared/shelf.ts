@@ -1,6 +1,7 @@
 // Shelf ("서고"): the app-wide PDF library kept outside projects. Indexing is
 // read-only; the app's own downloads and imports are added to the root (inbox),
-// and only an approved inbox sort (수신함 정리) moves PDFs.
+// only an approved inbox sort (수신함 정리) moves PDFs, and only a confirmed
+// permanent deletion from the trash deletes them.
 export const DEFAULT_SHELF_EXCLUDE = ["_system", "_news", "_to_delete", "_duplicated", "_summaries"];
 export const DEFAULT_EMBED_MODEL = "embeddinggemma-2:latest";
 export const DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434";

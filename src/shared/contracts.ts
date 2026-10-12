@@ -30,6 +30,13 @@ const chatTarget = { projectId: id, workId: id, context: chatContext.optional(),
 const pdfTarget = { projectId: id, workId: id, attachmentId: id };
 const ids = z.array(id).max(10000);
 const text = z.string().max(20000);
+const trashTarget = z.object({
+  projectId: id,
+  target: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("selected"), ids: ids.min(1) }),
+    z.object({ kind: z.literal("all") }),
+  ]),
+});
 const downloadTarget = z.object({
   projectId: id,
   scope: z.enum(["archive", "selected", "topic", "unclassified", "collection"]),
@@ -144,13 +151,8 @@ export const schemas = {
   mutateWorks: z.object({ projectId: id, ids, patch: state }),
   restoreWorks: z.object({ projectId: id, ids }),
   clearPending: z.object({ projectId: id }),
-  deleteTrashedWorks: z.object({
-    projectId: id,
-    target: z.discriminatedUnion("kind", [
-      z.object({ kind: z.literal("selected"), ids: ids.min(1) }),
-      z.object({ kind: z.literal("all") }),
-    ]),
-  }),
+  deleteTrashedWorks: trashTarget,
+  previewTrashDeletion: trashTarget,
   editWork: z.object({ workId: id, patch: metadata }),
   manualWork: z.object({ projectId: id, metadata }),
   setSeeds: z.object({
@@ -334,7 +336,8 @@ export interface Outputs {
   mutateWorks: void;
   restoreWorks: void;
   clearPending: { ids: string[] };
-  deleteTrashedWorks: { ids: string[] };
+  deleteTrashedWorks: TrashDeletion;
+  previewTrashDeletion: { count: number; shelfFiles: string[] };
   editWork: Work;
   manualWork: Work;
   setSeeds: SeedProfile;
@@ -404,6 +407,15 @@ export type API = {
   onEvent: (callback: (event: AppEvent) => void) => () => void;
 };
 export type PayloadPatch = Partial<LibraryState>;
+/** Permanently deleted works, and the shelf PDFs deleted with them (paths relative to the shelf). */
+export interface TrashDeletion {
+  ids: string[];
+  shelf: {
+    deleted: string[];
+    /** PDFs that could not be deleted; their papers stay in the trash. */
+    failed: { relPath: string; reason: string }[];
+  };
+}
 export interface ShelfFileDetails {
   fileId: string;
   workId: string | null;

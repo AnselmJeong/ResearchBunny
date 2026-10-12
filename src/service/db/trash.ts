@@ -8,29 +8,36 @@ import {
   type Evidence,
 } from "../../shared/types";
 
-// Removal is project-scoped. Shared records and PDF files are preserved.
+/** The trashed works a deletion targets: the selection, or the whole trash of the project. */
+export function trashTargets(db: Library, projectId: string, selected?: string[]) {
+  db.project(projectId);
+  const trash = new Set(
+    (
+      db.db
+        .prepare(
+          "SELECT work_id AS id FROM project_works WHERE project_id=? AND json_extract(state,'$.screening')='trash'",
+        )
+        .all(projectId) as { id: string }[]
+    ).map((row) => row.id),
+  );
+  const ids = [...new Set(selected ?? trash)];
+  if (ids.some((id) => !trash.has(id)))
+    throw new AppError(
+      "NOT_IN_TRASH",
+      "휴지통에 있는 문헌만 영구 삭제할 수 있습니다. 목록을 새로 확인하세요.",
+    );
+  return ids;
+}
+
+// Removal is project-scoped and keeps shared records. Shelf PDFs are deleted
+// beforehand by the service; any other PDF file is preserved.
 export function deleteTrashedWorks(
   db: Library,
   projectId: string,
   selected?: string[],
 ) {
   return db.transaction(() => {
-    db.project(projectId);
-    const trash = new Set(
-      (
-        db.db
-          .prepare(
-            "SELECT work_id AS id FROM project_works WHERE project_id=? AND json_extract(state,'$.screening')='trash'",
-          )
-          .all(projectId) as { id: string }[]
-      ).map((row) => row.id),
-    );
-    const ids = [...new Set(selected ?? trash)];
-    if (ids.some((id) => !trash.has(id)))
-      throw new AppError(
-        "NOT_IN_TRASH",
-        "휴지통에 있는 문헌만 영구 삭제할 수 있습니다. 목록을 새로 확인하세요.",
-      );
+    const ids = trashTargets(db, projectId, selected);
     if (!ids.length) return { ids };
     const removed = new Set(ids);
     const keep = (values: string[]) => values.filter((id) => !removed.has(id));
