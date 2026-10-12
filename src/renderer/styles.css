@@ -366,6 +366,12 @@ small {
   gap: 8px;
   color: var(--accent);
 }
+.project-new.project-manage {
+  color: var(--muted);
+}
+.project-new.project-manage:hover {
+  color: var(--text);
+}
 .project-create {
   padding: 9px;
 }
@@ -3514,6 +3520,20 @@ html[data-theme="dark"] .selection-bar .primary {
 .shelf-move-path { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); overflow-wrap: anywhere; }
 .shelf-move-path strong { color: var(--text); }
 .shelf-move .stack-actions { margin-top: 8px; }
+.project-manage-list { list-style: none; margin: 14px 0 0; padding: 0; border: 1px solid var(--border); border-radius: 8px; }
+.project-manage-list > li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 9px 8px 9px 12px; border-top: 1px solid var(--border); }
+.project-manage-list > li:first-child { border-top: 0; }
+.project-manage-copy { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; }
+.project-manage-copy strong { min-width: 0; overflow-wrap: anywhere; font-size: 13px; line-height: 1.5; }
+.project-manage-copy .subtle { flex-basis: 100%; line-height: 1.5; }
+.project-manage-actions { display: flex; flex: none; gap: 2px; }
+.project-delete:hover:not(:disabled) { color: var(--danger); }
+.project-rename { display: flex; flex: 1 1 100%; align-items: center; gap: 4px; }
+.project-rename input { flex: 1; min-width: 0; }
+.project-manage-list .project-error { flex-basis: 100%; margin: 2px 0 0; }
+.project-delete-body { display: grid; gap: 10px; line-height: 1.6; }
+.project-delete-scope { margin: 0; padding-left: 20px; line-height: 1.8; }
+.project-delete-body .project-error { margin: 0; }
 .shelf-settings code { padding: 2px 6px; border-radius: 4px; background: var(--soft); font-size: 12px; }
 .shelf-candidate { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 4px 0; font-size: 12px; }
 .shelf-candidate > button { margin-left: auto; }

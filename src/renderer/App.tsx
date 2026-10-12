@@ -361,7 +361,10 @@ export function App() {
         .then((result) => {
           if (valid) setList(result);
         })
-        .catch(onError)
+        .catch((error) => {
+          // A list for a project or view left since is not this view's error.
+          if (valid) onError(error);
+        })
         .finally(() => {
           if (valid) setLoading(false);
         });
@@ -862,9 +865,13 @@ export function App() {
           onCreate={async (name, question) => {
             await persistNavigation();
             const project = await window.bunny.createProject({ name, question });
-            setSnapshot(current => current && ({ ...current, projects: [...current.projects.filter(p => p.id !== project.id), project] }));
+            setSnapshot(current => current && ({ ...current, projects: [project, ...current.projects.filter(p => p.id !== project.id)] }));
             setProjectId(project.id);
             flash("새 프로젝트를 만들었습니다.");
+          }}
+          onManage={() => {
+            setDialog("settings");
+            requestAnimationFrame(() => document.getElementById("settings-projects")?.scrollIntoView());
           }} />
         <nav>
           <button
@@ -1164,6 +1171,31 @@ export function App() {
               setSelected([]);
               setInspectorId(null);
               refresh();
+            }}
+            projects={snapshot.projects}
+            projectId={projectId}
+            onRenameProject={async (id, name) => {
+              const project = await window.bunny.updateProject({ projectId: id, name });
+              setSnapshot(current => current && ({ ...current, projects: current.projects.map(p => p.id === id ? project : p) }));
+            }}
+            onDeleteProject={async (id) => {
+              const deleted = snapshot.projects.find(p => p.id === id);
+              const next = snapshot.projects.find(p => p.id !== id);
+              const leaving = id === projectId && !!next;
+              if (leaving) {
+                // Leave the project first, so nothing reads or saves it once it is gone.
+                await persistNavigation();
+                setProjectId(next.id);
+              }
+              try {
+                await window.bunny.deleteProject({ projectId: id });
+              } catch (error) {
+                // Nothing was deleted: go back to the project.
+                if (leaving) setProjectId(id);
+                throw error;
+              }
+              setSnapshot(current => current && ({ ...current, projects: current.projects.filter(p => p.id !== id) }));
+              flash(`‘${deleted?.name}’ 프로젝트를 삭제했습니다.`);
             }}
           />
         )}

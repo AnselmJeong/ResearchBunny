@@ -6,6 +6,7 @@ import type {
   Work,
   WorkView,
   Project,
+  ProjectStats,
   Collection,
   SeedProfile,
   Run,
@@ -98,6 +99,8 @@ export class Library {
       CREATE TABLE IF NOT EXISTS work_embeddings(work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,model TEXT NOT NULL,prompt TEXT NOT NULL,basis TEXT NOT NULL,text_hash TEXT NOT NULL,dim INTEGER NOT NULL,vector BLOB NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(work_id,model));
       CREATE TABLE IF NOT EXISTS embedding_cache(key TEXT PRIMARY KEY,model TEXT NOT NULL,vector BLOB NOT NULL,used_at TEXT NOT NULL);
       CREATE VIRTUAL TABLE IF NOT EXISTS shelf_fts USING fts5(work_id UNINDEXED,title,authors,abstract,venue,tokenize='unicode61 remove_diacritics 2');
+      -- A side table instead of a projects column, so older apps still read and create projects.
+      CREATE TABLE IF NOT EXISTS project_opens(project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,opened_at TEXT NOT NULL);
       PRAGMA user_version=3;
     `);
     if (!this.projects().length) this.createProject("내 연구", "");
@@ -130,10 +133,12 @@ export class Library {
       .get(key) as { data: string } | undefined;
     return row ? JSON.parse(row.data) : undefined;
   }
+  /** Most recently opened first; the first project is the one the app opens. */
   projects(): Project[] {
     return this.db
       .prepare(
-        "SELECT id,name,question,created_at AS createdAt FROM projects ORDER BY created_at",
+        // A project not opened since it was made counts as opened then.
+        "SELECT p.id,p.name,p.question,p.created_at AS createdAt FROM projects p LEFT JOIN project_opens o ON o.project_id=p.id ORDER BY coalesce(o.opened_at,p.created_at) DESC,p.created_at DESC,p.rowid DESC",
       )
       .all() as Project[];
   }
@@ -149,6 +154,38 @@ export class Library {
       .run(p);
     this.touch();
     return p;
+  }
+  /** Moves the project to the top of the list; a no-op when it is already there. */
+  openProject(id: string) {
+    if (this.projects()[0]?.id === id) return;
+    this.project(id);
+    this.db
+      .prepare("INSERT INTO project_opens VALUES(?,?) ON CONFLICT(project_id) DO UPDATE SET opened_at=excluded.opened_at")
+      .run(id, now());
+  }
+  updateProject(id: string, name: string, question?: string): Project {
+    this.project(id);
+    this.db
+      .prepare("UPDATE projects SET name=?,question=coalesce(?,question) WHERE id=?")
+      .run(name, question ?? null, id);
+    // A later merge undo restores the projects table; it must see this edit.
+    this.touch();
+    return this.project(id);
+  }
+  projectStats(): Record<string, ProjectStats> {
+    const stats: Record<string, ProjectStats> = Object.fromEntries(
+      this.projects().map((p) => [p.id, { archive: 0, entries: 0, collections: 0, runs: 0, chats: 0 }]),
+    );
+    const add = (sql: string, key: keyof ProjectStats) => {
+      for (const row of this.db.prepare(sql).all() as { id: string; n: number }[])
+        if (stats[row.id]) stats[row.id][key] = row.n;
+    };
+    add("SELECT project_id AS id,count(*) AS n FROM project_works GROUP BY project_id", "entries");
+    add("SELECT project_id AS id,count(*) AS n FROM project_works WHERE json_extract(state,'$.screening')='included' GROUP BY project_id", "archive");
+    add("SELECT project_id AS id,count(*) AS n FROM collections GROUP BY project_id", "collections");
+    add("SELECT project_id AS id,count(*) AS n FROM runs GROUP BY project_id", "runs");
+    add("SELECT project_id AS id,count(*) AS n FROM chat_threads GROUP BY project_id", "chats");
+    return stats;
   }
   collections(projectId: string): Collection[] {
     return this.db

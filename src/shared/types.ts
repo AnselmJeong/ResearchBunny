@@ -98,6 +98,17 @@ export interface Project {
   question: string;
   createdAt: string;
 }
+/** What a project holds, for managing projects and confirming a deletion. */
+export interface ProjectStats {
+  /** Papers in the archive. */
+  archive: number;
+  /** Every paper the project keeps a state for: archive, review, trash and excluded. */
+  entries: number;
+  collections: number;
+  /** Explorations, imports and full-text jobs. */
+  runs: number;
+  chats: number;
+}
 export interface Collection {
   id: string;
   projectId: string;

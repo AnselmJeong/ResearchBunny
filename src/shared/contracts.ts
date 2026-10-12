@@ -12,6 +12,7 @@ import type {
   Attachment,
   Settings,
   Project,
+  ProjectStats,
   PdfDownloadPreview,
   MissingPdfs,
   PdfExportPreview,
@@ -108,8 +109,11 @@ export const schemas = {
   updateProject: z.object({
     projectId: id,
     name: z.string().trim().min(1).max(160),
-    question: text,
+    /** Left out, the research question stays as it is. */
+    question: text.optional(),
   }),
+  projectStats: z.object({}),
+  deleteProject: z.object({ projectId: id }),
   createCollection: z.object({
     projectId: id,
     name: z.string().trim().min(1).max(160),
@@ -328,7 +332,9 @@ export interface Outputs {
   classifyArchive: ClassificationJob;
   cancelClassification: void;
   createProject: Project;
-  updateProject: void;
+  updateProject: Project;
+  projectStats: Record<string, ProjectStats>;
+  deleteProject: { purged: number };
   createCollection: Collection;
   collectionMembers: void;
   list: ListResult;

@@ -247,6 +247,7 @@ const hostRpc = BrowserView.defineRPC<BunnyRPC>({
             ![
               "pdfInfo", "pdfReadChunk", "chatThreads", "chatSession", "chatSend", "chatCancel", "chatClear", "chatOpenSource", "ollamaModels",
               "snapshot",
+              "projectStats",
               "list",
               "inspect",
               "attachments",

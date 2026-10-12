@@ -27,6 +27,7 @@ import { PdfImports, hashFile, verifyPdf } from "./interchange/pdf";
 import { createBackup, restoreBackup } from "./interchange/backup";
 import { mergeWorks, undoMerge } from "./db/merge";
 import { deleteTrashedWorks, settledUi, trashTargets } from "./db/trash";
+import { deleteProject } from "./db/projects";
 import { ArchiveClassifier, classificationSnapshot } from "./archive-classification";
 import { PdfDownloads } from "./fulltext/jobs";
 import { planPdfExport, pdfExportTargets, previewPdfExport, exportPdfFolders } from "./interchange/pdf-export";
@@ -203,6 +204,8 @@ export class Service {
       case "snapshot": {
         const projectId = args.projectId || this.db.projects()[0].id;
         this.db.project(projectId);
+        // Opening a project moves it to the top of the list, and the app reopens it next time.
+        this.db.openProject(projectId);
         await this.downloads.syncHistory();
         const history = this.db.seedHistory(projectId);
         return {
@@ -221,11 +224,13 @@ export class Service {
       case "createProject":
         return this.db.createProject(args.name, args.question);
       case "updateProject":
-        this.db.project(args.projectId);
-        this.db.db
-          .prepare("UPDATE projects SET name=?,question=? WHERE id=?")
-          .run(args.name, args.question, args.projectId);
-        return;
+        return this.db.updateProject(args.projectId, args.name, args.question);
+      case "projectStats":
+        return this.db.projectStats();
+      case "deleteProject":
+        if (this.busy())
+          throw new AppError("BUSY", "탐색·가져오기·자동 분류·AI 대화 작업이 끝난 뒤 프로젝트를 삭제하세요.");
+        return deleteProject(this.db, args.projectId);
       case "createCollection":
         return this.db.createCollection(
           args.projectId,

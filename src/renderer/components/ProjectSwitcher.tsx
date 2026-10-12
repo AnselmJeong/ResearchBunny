@@ -1,12 +1,15 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, ChevronDown, Plus } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Plus, Settings2 } from "lucide-react";
 import type { Project } from "../../shared/types";
 
-export function ProjectSwitcher({ projects, projectId, onSelect, onCreate }: {
+export function ProjectSwitcher({ projects, projectId, onSelect, onCreate, onManage }: {
+  /** Most recently opened first. */
   projects: Project[];
   projectId: string;
   onSelect: (id: string) => Promise<void>;
   onCreate: (name: string, question: string) => Promise<void>;
+  /** Opens renaming and deleting in settings. */
+  onManage: () => void;
 }) {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -169,6 +172,8 @@ export function ProjectSwitcher({ projects, projectId, onSelect, onCreate }: {
         <div className="project-menu-footer" role="group" aria-label="프로젝트 작업">
           <button type="button" role="menuitem" tabIndex={-1} className="project-new" disabled={busy}
             onClick={() => { setError(""); setCreating(true); }}><Plus size={16} aria-hidden="true" />새 프로젝트 만들기</button>
+          <button type="button" role="menuitem" tabIndex={-1} className="project-new project-manage" disabled={busy}
+            onClick={() => { close(); onManage(); }}><Settings2 size={16} aria-hidden="true" />프로젝트 관리</button>
         </div>
         {error && <p className="project-error" role="alert">{error}</p>}
       </>}

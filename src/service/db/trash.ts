@@ -29,6 +29,36 @@ export function trashTargets(db: Library, projectId: string, selected?: string[]
   return ids;
 }
 
+/**
+ * Deletes the records of the given works that nothing uses any more: no
+ * project, exploration, collection, shelf file or the `referenced` set (works
+ * that seeds and run histories still name). PDF files are never touched.
+ */
+export function purgeUnreferencedWorks(db: Library, ids: Iterable<string>, referenced: Set<string>) {
+  let purged = 0;
+  for (const id of ids) {
+    if (
+      referenced.has(id) ||
+      db.db
+        .prepare(
+          // Shelf papers belong to the app-wide shelf: removing them from a project keeps the record.
+          "SELECT 1 FROM project_works WHERE work_id=? UNION ALL SELECT 1 FROM candidates WHERE work_id=? UNION ALL SELECT 1 FROM collection_works WHERE work_id=? UNION ALL SELECT 1 FROM shelf_files WHERE work_id=? LIMIT 1",
+        )
+        .get(id, id, id, id)
+    )
+      continue;
+    for (const table of ["identifiers", "metadata_snapshots", "attachments"])
+      db.db.prepare(`DELETE FROM ${table} WHERE work_id=?`).run(id);
+    db.db.prepare("DELETE FROM citations WHERE citing_id=?").run(id);
+    db.db
+      .prepare("UPDATE import_items SET work_id=NULL WHERE work_id=?")
+      .run(id);
+    db.db.prepare("DELETE FROM works WHERE id=?").run(id);
+    purged++;
+  }
+  return purged;
+}
+
 // Removal is project-scoped and keeps shared records. Shelf PDFs are deleted
 // beforehand by the service; any other PDF file is preserved.
 export function deleteTrashedWorks(
@@ -158,25 +188,7 @@ export function deleteTrashedWorks(
     }
     // Merge snapshots contain complete old tables; discard them after irreversible deletion.
     db.db.prepare("DELETE FROM merge_history").run();
-    for (const id of ids) {
-      if (
-        otherReferences.has(id) ||
-        db.db
-          .prepare(
-            // Shelf papers belong to the app-wide shelf: removing them from a project keeps the record.
-            "SELECT 1 FROM project_works WHERE work_id=? UNION ALL SELECT 1 FROM candidates WHERE work_id=? UNION ALL SELECT 1 FROM collection_works WHERE work_id=? UNION ALL SELECT 1 FROM shelf_files WHERE work_id=? LIMIT 1",
-          )
-          .get(id, id, id, id)
-      )
-        continue;
-      for (const table of ["identifiers", "metadata_snapshots", "attachments"])
-        db.db.prepare(`DELETE FROM ${table} WHERE work_id=?`).run(id);
-      db.db.prepare("DELETE FROM citations WHERE citing_id=?").run(id);
-      db.db
-        .prepare("UPDATE import_items SET work_id=NULL WHERE work_id=?")
-        .run(id);
-      db.db.prepare("DELETE FROM works WHERE id=?").run(id);
-    }
+    purgeUnreferencedWorks(db, ids, otherReferences);
     db.touch();
     const ui = db.pref<Record<string, unknown>>("ui:" + projectId) || {};
     db.pref("ui:" + projectId, {
