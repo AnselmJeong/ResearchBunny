@@ -1615,12 +1615,17 @@ export function App() {
                         <div key={w.id} className={`shelf-pinned-row ${inspectorId === w.id ? "inspected" : ""}`}>
                           <input type="checkbox" aria-label={`${w.title} 선택`} checked={selected.includes(w.id)}
                             onChange={(e) => setSelected((ids) => e.target.checked ? [...new Set([...ids, w.id])] : ids.filter((id) => id !== w.id))} />
-                          <button onClick={() => void openArticle(w.id).catch(onError)}>
+                          <button onClick={() => inspect(w.id)}>
                             <strong>{w.title}</strong>
                             <span>{w.authors.slice(0, 2).join(" · ") || "저자 미상"}{w.authors.length > 2 ? " 외" : ""} · {w.year || "연도 미상"}</span>
                           </button>
                           <span className="folder-chip" title={w.shelf?.path}>{w.evidence?.shelf?.folder?.split("/").pop() || w.shelf?.folder.split("/").pop() || "수신함"}</span>
                           <span className="pinned-origins">{w.evidence?.origins.filter((o) => !o.startsWith("내 서고")).length ? "외부 검색에도 있음" : ""}</span>
+                          {w.attachmentCount > 0 && (
+                            <button className="icon-button read-row" aria-label={`${w.title} 원문 보기`} title="원문 보기" onClick={() => void openArticle(w.id).catch(onError)}>
+                              <FileText size={14} />
+                            </button>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -1754,9 +1759,9 @@ export function App() {
                             />
                             <button
                               className="paper-main"
-                              title={w.attachmentCount && scope !== "shelf" ? "문헌 선택 · 첨부 원문 보기" : "문헌 선택"}
-                              // Shelf PDFs may sit on a NAS: browsing shows the record; 원문 보기 opens the file.
-                              onClick={() => scope === "shelf" ? inspect(w.id) : void openArticle(w.id).catch(onError)}
+                              title="문헌 선택"
+                              // Browsing shows the record only; the PDF loads on 원문 보기.
+                              onClick={() => inspect(w.id)}
                             >
                               <h3>{w.title}</h3>
                               <p>
@@ -1824,33 +1829,45 @@ export function App() {
                                 ? (w.citations?.toLocaleString() ?? "—")
                                 : READ[w.state.reading]}
                             </span>
-                            <button
-                              className={
-                                "icon-button save-row " +
-                                (w.state.screening === "included"
-                                  ? "active"
-                                  : "")
-                              }
-                              title={
-                                w.state.screening === "included"
-                                  ? "저장됨 · 클릭해 대기함으로 이동"
-                                  : "아카이브에 저장"
-                              }
-                              onClick={() =>
-                                patch([w.id], {
-                                  screening:
-                                    w.state.screening === "included"
-                                      ? "pending"
-                                      : "included",
-                                })
-                              }
-                            >
-                              {w.state.screening === "included" ? (
-                                <Check size={17} />
-                              ) : (
-                                <Bookmark size={17} />
+                            <div className="row-actions">
+                              <button
+                                className={
+                                  "icon-button save-row " +
+                                  (w.state.screening === "included"
+                                    ? "active"
+                                    : "")
+                                }
+                                title={
+                                  w.state.screening === "included"
+                                    ? "저장됨 · 클릭해 대기함으로 이동"
+                                    : "아카이브에 저장"
+                                }
+                                onClick={() =>
+                                  patch([w.id], {
+                                    screening:
+                                      w.state.screening === "included"
+                                        ? "pending"
+                                        : "included",
+                                  })
+                                }
+                              >
+                                {w.state.screening === "included" ? (
+                                  <Check size={17} />
+                                ) : (
+                                  <Bookmark size={17} />
+                                )}
+                              </button>
+                              {w.attachmentCount > 0 && (
+                                <button
+                                  className="icon-button read-row"
+                                  aria-label={`${w.title} 원문 보기`}
+                                  title="원문 보기"
+                                  onClick={() => void openArticle(w.id).catch(onError)}
+                                >
+                                  <FileText size={15} />
+                                </button>
                               )}
-                            </button>
+                            </div>
                           </article>
                         ))}
                       </div>
