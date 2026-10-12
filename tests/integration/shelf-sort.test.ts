@@ -253,8 +253,27 @@ test("inbox proposals combine neighbour votes, AI decisions and duplicate rules,
   const summary = service.shelf.summary();
   expect(summary.inbox).toBe(3);
   expect(summary.folders.find((f) => f.relPath === MEMORY)!.count).toBe(4);
-  // Applied items leave the saved proposal; the skipped one stays.
-  expect(service.sorter.state().items.map((i) => i.relPath)).toEqual([INBOX.baek]);
+  // Applied items leave the saved proposal; the skipped one stays, and the job describes it, not the past move.
+  expect(result.ledger).toBe(true);
+  const left = service.sorter.view();
+  expect(left.items.map((i) => i.relPath)).toEqual([INBOX.baek]);
+  expect(left.job.message).toBe("남은 제안 1편 · 옮길 논문 1편");
+  // Files the proposal parked in _uncategorized are not new; a PDF that arrives afterwards is.
+  expect(left).toMatchObject({ inbox: 3, fresh: 0 });
+  await pdf(join(dir, "2026 - Gil - Hippocampal theta and memory.pdf"), ["Hippocampal theta and memory", "Theta rhythms organise hippocampal memory."]);
+  await service.shelf.scan("test");
+  await service.shelf.wait();
+  expect(service.sorter.view()).toMatchObject({ inbox: 4, fresh: 1 });
+
+  // Moving the last item finishes the proposal, so the next visit starts from today's inbox.
+  await service.call("shelfSortApply", { items: [{ fileId: byPath(items, INBOX.baek).fileId, target: PAIN }] });
+  await service.shelf.wait();
+  const finished = service.sorter.view();
+  expect(finished).toMatchObject({ createdAt: null, items: [], waiting: [], job: { status: "idle", message: "" }, inbox: 3, fresh: 3 });
+
+  // A proposal saved before the inbox counts existed reads every inbox PDF as new.
+  service.db.pref("shelf:sort", { ...finished, job: { status: "ready", message: "152편을 옮겼습니다.", updatedAt: finished.job.updatedAt }, createdAt: finished.job.updatedAt, covered: undefined });
+  expect(service.sorter.view()).toMatchObject({ items: [], inbox: 3, fresh: 3 });
 }));
 
 test("without _system or a working AI: folder leaves, no ledger, vote fallback and budget-sized batches", async () => fixture(async ({ service, dir, calls }) => {

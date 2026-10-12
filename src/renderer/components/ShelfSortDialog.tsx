@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FolderInput, LoaderCircle, RefreshCw, Square, TriangleAlert } from "lucide-react";
 import { Modal } from "./Modal";
-import { SHELF_DUPLICATED, SHELF_UNCATEGORIZED, type ShelfSortItem, type ShelfSortResult, type ShelfSortState } from "../../shared/shelf";
+import { SHELF_DUPLICATED, SHELF_UNCATEGORIZED, type ShelfSortItem, type ShelfSortResult, type ShelfSortView } from "../../shared/shelf";
 
 type Choice = { target: string; checked: boolean };
 type View = "all" | "review" | "duplicates";
@@ -22,7 +22,7 @@ export function ShelfSortDialog({ aiEnabled, onClose, onError, onSettings }: {
   onError: (error: unknown) => void;
   onSettings: () => void;
 }) {
-  const [state, setState] = useState<ShelfSortState | null>(null);
+  const [state, setState] = useState<ShelfSortView | null>(null);
   const [choices, setChoices] = useState<{ createdAt: string | null; map: Record<string, Choice> }>({ createdAt: null, map: {} });
   const [view, setView] = useState<View>("all");
   const [applying, setApplying] = useState(false);
@@ -46,6 +46,9 @@ export function ShelfSortDialog({ aiEnabled, onClose, onError, onSettings }: {
 
   const running = state?.job.status === "running";
   const items = useMemo(() => state?.items || [], [state]);
+  // Without items left to review, a saved proposal says nothing about today's inbox.
+  const open = !!items.length;
+  const settled = !!state && !running && !open && (state.job.status === "idle" || state.job.status === "ready");
   const choice = (item: ShelfSortItem) => choices.map[item.fileId] || initial(item);
   const setChoice = (item: ShelfSortItem, next: Partial<Choice>) =>
     setChoices((current) => ({ ...current, map: { ...current.map, [item.fileId]: { ...choice(item), ...next } } }));
@@ -90,22 +93,27 @@ export function ShelfSortDialog({ aiEnabled, onClose, onError, onSettings }: {
         AI 연결이 꺼져 있습니다. <button className="text-button" onClick={onSettings}>설정 열기</button>
       </p>}
       <div className="shelf-sort-status" role="status">
-        <span className={state?.job.status === "failed" ? "danger" : ""}>
+        <span className={state?.job.status === "failed" ? "danger" : settled && !state.inbox ? "green" : ""}>
           {running && <LoaderCircle size={13} className="spin" />}
-          {state?.job.message || "아직 제안이 없습니다."}
+          {!state ? "" : settled
+            ? state.inbox ? `수신함에 PDF ${state.inbox.toLocaleString()}편이 있습니다.` : "✓ 수신함에 정리할 PDF가 없습니다."
+            : state.job.message}
         </span>
         {running
           ? <button className="icon-button" title="제안 만들기 취소" aria-label="제안 만들기 취소" onClick={() => void window.bunny.shelfSortCancel({}).catch(onError)}><Square size={14} /></button>
           : <button disabled={!aiEnabled || applying} onClick={() => void start()}>
-            <RefreshCw size={14} />{state?.createdAt ? "제안 다시 만들기" : "제안 만들기"}
+            <RefreshCw size={14} />{open ? "제안 다시 만들기" : "제안 만들기"}
           </button>}
       </div>
       {result && <div className="shelf-sort-result" role="status">
         <strong>{(result.moved + result.uncategorized + result.duplicated).toLocaleString()}편을 옮겼습니다.</strong>
-        <span className="subtle"> 분류 {result.moved} · 미분류 {result.uncategorized} · 중복 {result.duplicated}{state?.ledger ? " · move_log.jsonl·intake 로그·index.json 갱신" : ""}</span>
+        <span className="subtle"> 분류 {result.moved} · 미분류 {result.uncategorized} · 중복 {result.duplicated}{result.ledger ? " · move_log.jsonl·intake 로그·index.json 갱신" : ""}</span>
         {!!result.skipped.length && <ul>{result.skipped.map((s) => <li key={s.relPath + s.reason} className="danger">{s.relPath} · {s.reason}</li>)}</ul>}
       </div>}
       {!!state?.waiting.length && !running && <p className="subtle">색인 대기 {state.waiting.length}편은 이번 제안에서 빠졌습니다.</p>}
+      {open && !running && !!state?.fresh && <p className="warning-text">
+        이 제안 뒤에 수신함에 들어온 PDF {state.fresh.toLocaleString()}편은 제안에 없습니다. 제안을 다시 만들면 함께 다룹니다.
+      </p>}
       {!!items.length && !running && <>
         <div className="shelf-sort-toolbar">
           <div className="view-switch" role="tablist" aria-label="제안 보기">
@@ -155,7 +163,6 @@ export function ShelfSortDialog({ aiEnabled, onClose, onError, onSettings }: {
           })}
         </ul>
       </>}
-      {state?.job.status === "ready" && !items.length && <p className="green" role="status">✓ 수신함에 정리할 PDF가 없습니다.</p>}
     </div>
     <div className="modal-footer">
       <button onClick={onClose}>닫기</button>

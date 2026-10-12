@@ -19,6 +19,7 @@ import {
   type ShelfSortLeaf,
   type ShelfSortResult,
   type ShelfSortState,
+  type ShelfSortView,
   type ShelfSortVote,
 } from "../../shared/shelf";
 
@@ -209,6 +210,19 @@ export class ShelfSorter {
   state(): ShelfSortState {
     return { ...emptyState(), ...this.db.pref<ShelfSortState>(STATE_KEY) };
   }
+  /** The saved proposal checked against today's inbox, so PDFs that arrived since it are visible. */
+  view(): ShelfSortView {
+    const state = this.state();
+    const root = this.shelf.root();
+    if (!root) return { ...state, inbox: 0, fresh: 0 };
+    const folders = (this.db.db.prepare("SELECT id,rel_path FROM shelf_folders WHERE root_id=?").all(root.id) as { id: string; rel_path: string }[])
+      .filter((f) => isInboxFolder(f.rel_path)).map((f) => f.id);
+    const ids = folders.length
+      ? (this.db.db.prepare(`SELECT id FROM shelf_files WHERE status!='missing' AND folder_id IN (${folders.map(() => "?").join(",")})`).all(...folders) as { id: string }[])
+      : [];
+    const covered = new Set(state.covered ?? [...state.items, ...state.waiting].map((i) => i.fileId));
+    return { ...state, inbox: ids.length, fresh: ids.filter((r) => !covered.has(r.id)).length };
+  }
   private save(state: ShelfSortState) {
     this.db.pref(STATE_KEY, state);
     this.emit({ type: "shelf" });
@@ -225,7 +239,7 @@ export class ShelfSorter {
     return (this.db.db.prepare("SELECT rel_path FROM shelf_folders WHERE root_id=? AND present=1").all(rootId) as { rel_path: string }[]).map((r) => r.rel_path);
   }
 
-  start(): ShelfSortState {
+  start(): ShelfSortView {
     if (this.active || this.applying) throw new AppError("BUSY", this.active ? "수신함 정리 제안을 만드는 중입니다." : "파일을 옮기는 중입니다. 끝난 뒤 다시 만드세요.");
     if (!this.shelf.root() || !this.shelf.config()) throw new AppError("SHELF_CONFIG", "서고를 먼저 연결하세요.");
     if (!{ ...DEFAULT_AI, ...this.db.pref<AIConfig>("ai") }.aiEnabled)
@@ -245,7 +259,7 @@ export class ShelfSorter {
         this.active = null;
         this.emit({ type: "changed" });
       });
-    return state;
+    return this.view();
   }
   cancel() {
     this.active?.abort();
@@ -350,6 +364,7 @@ export class ShelfSorter {
       items,
       waiting,
       ledger,
+      covered: inbox.map((r) => r.id),
     });
   }
 
@@ -473,7 +488,7 @@ export class ShelfSorter {
     const moveLog = join(root.path, "_system", "move_log.jsonl");
     this.applying = true;
     return this.shelf.hold(async () => {
-      const result: ShelfSortResult = { moved: 0, uncategorized: 0, duplicated: 0, skipped: [] };
+      const result: ShelfSortResult = { moved: 0, uncategorized: 0, duplicated: 0, skipped: [], ledger };
       const filed: string[] = [], parked: string[] = [], done = new Set<string>();
       for (const { fileId, target } of requested) {
         const row = this.shelf.file(fileId);
@@ -514,15 +529,16 @@ export class ShelfSorter {
           `\n## run ${localStamp(new Date(), true)} · ResearchBunny\n${filed.map((r) => `- ${r}\n`).join("")}${parked.map((r) => `- (uncategorized) ${r}\n`).join("")}`);
         await writeIndex(root.path);
       }
+      // The saved job describes what is left to review, never a past move: that is the caller's result.
+      // A proposal with nothing left is finished, so the next visit starts from today's inbox.
       const state = this.state();
       const items = state.items.filter((i) => !done.has(i.fileId));
       const left = items.filter((i) => i.target && i.target !== i.folder).length;
-      this.save({
+      if (!items.length) this.save(emptyState());
+      else this.save({
         ...state,
         items,
-        job: state.job.status === "ready"
-          ? job("ready", `${result.moved + result.uncategorized + result.duplicated}편을 옮겼습니다.${left ? ` 옮기지 않은 제안 ${left}편.` : ""}`)
-          : state.job,
+        job: state.job.status === "ready" ? job("ready", `남은 제안 ${items.length}편 · 옮길 논문 ${left}편`) : state.job,
       });
       return result;
     }).finally(() => {

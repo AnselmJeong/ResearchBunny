@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { CodexStatus, CodexModel } from "./codex";
 import type { ChatSession, ChatThreadSummary } from "./chat";
-import type { ShelfAdoptResult, ShelfMovePreview, ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo, ShelfSortResult, ShelfSortState } from "./shelf";
+import type { ShelfAdoptResult, ShelfMovePreview, ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo, ShelfSortResult, ShelfSortView } from "./shelf";
 import type {
   Snapshot,
   ListResult,
@@ -390,8 +390,8 @@ export interface Outputs {
   shelfResolve: ShelfFileDetails;
   shelfReveal: void;
   shelfLink: void;
-  shelfSortState: ShelfSortState;
-  shelfSortStart: ShelfSortState;
+  shelfSortState: ShelfSortView;
+  shelfSortStart: ShelfSortView;
   shelfSortCancel: void;
   shelfSortApply: ShelfSortResult;
   duplicates: WorkView[];

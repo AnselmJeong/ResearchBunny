@@ -614,7 +614,7 @@ export class Service {
       case "shelfFilePath":
         return this.shelf.filePath(String(args.fileId));
       case "shelfSortState":
-        return this.sorter.state();
+        return this.sorter.view();
       case "shelfSortStart":
         return this.sorter.start();
       case "shelfSortCancel":

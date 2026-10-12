@@ -67,12 +67,23 @@ export interface ShelfSortState {
   waiting: { fileId: string; relPath: string; reason: string }[];
   /** `_system` exists, so moves go to move_log.jsonl and logs/, and index.json is rebuilt. */
   ledger: boolean;
+  /** Every inbox file the proposal looked at, including those already moved. */
+  covered?: string[];
+}
+/** The saved proposal plus the inbox as it is now. */
+export interface ShelfSortView extends ShelfSortState {
+  /** Inbox PDFs now (root and `_uncategorized`). */
+  inbox: number;
+  /** Inbox PDFs that arrived after the proposal was made. */
+  fresh: number;
 }
 export interface ShelfSortResult {
   moved: number;
   uncategorized: number;
   duplicated: number;
   skipped: { relPath: string; reason: string }[];
+  /** The moves went to move_log.jsonl and logs/, and index.json was rebuilt. */
+  ledger: boolean;
 }
 
 // Retrieval prompts from the EmbeddingGemma 2 model card
