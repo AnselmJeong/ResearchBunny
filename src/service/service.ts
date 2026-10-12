@@ -644,7 +644,7 @@ export class Service {
       case "shelfSortState":
         return this.sorter.view();
       case "shelfSortStart":
-        return this.sorter.start();
+        return this.sorter.start(schemas.shelfSortStart.parse(args));
       case "shelfSortCancel":
         this.sorter.cancel();
         return;

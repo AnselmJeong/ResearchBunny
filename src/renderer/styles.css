@@ -3539,6 +3539,7 @@ html[data-theme="dark"] .selection-bar .primary {
 .shelf-sort { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .shelf-sort-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 14px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--soft); font-size: 12px; }
 .shelf-sort-status > span { display: inline-flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.shelf-sort-status > .shelf-sort-actions { flex-shrink: 0; gap: 14px; }
 .shelf-sort-result { margin: 0 0 14px; font-size: 12px; }
 .shelf-sort-result ul { margin: 6px 0 0; padding-left: 18px; overflow-wrap: anywhere; }
 .trash-shelf-files { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--soft); font-size: 12px; }

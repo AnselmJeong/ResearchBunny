@@ -103,8 +103,8 @@ async function fixture(fn: (ctx: { service: Service; dir: string; calls: { data:
     await rm(root, { recursive: true, force: true });
   }
 }
-async function propose(service: Service) {
-  service.sorter.start();
+async function propose(service: Service, uncategorized = false) {
+  service.sorter.start({ uncategorized });
   for (let i = 0; i < 4000 && service.sorter.active; i++) await Bun.sleep(5);
   expect(service.sorter.active).toBeNull();
   return service.sorter.state();
@@ -183,15 +183,16 @@ test("inbox proposals combine neighbour votes, AI decisions and duplicate rules,
   // Proposing never touches the shelf.
   expect(await readdir(dir)).toEqual(before);
 
+  // The inbox is the shelf root: what an earlier run parked in _uncategorized is not proposed again.
   const items = state.items;
-  expect(items).toHaveLength(8);
+  expect(items).toHaveLength(7);
+  expect(items.find((i) => i.relPath === INBOX.eun)).toBeUndefined();
   expect(byPath(items, INBOX.ahn)).toMatchObject({ target: MEMORY, source: "ai", confidence: "high", agree: true });
   expect(byPath(items, INBOX.ahn).votes[0].path).toBe(MEMORY);
   expect(byPath(items, INBOX.baek)).toMatchObject({ target: PAIN, source: "ai", agree: true });
   expect(byPath(items, INBOX.choi)).toMatchObject({ target: SLEEP, source: "ai", agree: false });
   expect(byPath(items, INBOX.choi).votes[0].path).toBe(MEMORY);
   expect(byPath(items, INBOX.dong)).toMatchObject({ target: "_uncategorized", confidence: "low", agree: null });
-  expect(byPath(items, INBOX.eun)).toMatchObject({ target: "_uncategorized", folder: "_uncategorized" });
   expect(byPath(items, INBOX.copy)).toMatchObject({ target: "_duplicated", source: "duplicate", existing: KIM, reason: "같은 파일이 이미 서고에 있습니다." });
   expect(byPath(items, INBOX.leeAgain)).toMatchObject({ target: "_duplicated", source: "duplicate", existing: LEE });
   expect(byPath(items, INBOX.version)).toMatchObject({ target: MEMORY, source: "version", existing: KIM });
@@ -199,7 +200,7 @@ test("inbox proposals combine neighbour votes, AI decisions and duplicate rules,
   // One AI call: only papers without an existing copy, with candidates and the rules of candidate leaves.
   expect(calls).toHaveLength(1);
   const payload = calls[0].data;
-  expect(payload.papers.map((p) => p.title).sort()).toEqual(["A gardening note on quantum soil", "Chronic pain nociception in spinal circuits", "Hippocampal memory consolidation during sleep", "Hippocampal memory replay during navigation", "Pottery glaze chemistry notes"]);
+  expect(payload.papers.map((p) => p.title).sort()).toEqual(["A gardening note on quantum soil", "Chronic pain nociception in spinal circuits", "Hippocampal memory consolidation during sleep", "Hippocampal memory replay during navigation"]);
   expect(payload.leaves).toHaveLength(3);
   const ahn = payload.papers.find((p) => p.title.includes("navigation"))!;
   expect(ahn.text).toContain("Hippocampal replay supports memory");
@@ -250,30 +251,62 @@ test("inbox proposals combine neighbour votes, AI decisions and duplicate rules,
   expect(row(service, `_duplicated/${INBOX.copy}`)).toBeUndefined();
   expect(service.db.db.prepare("SELECT 1 FROM works WHERE id=?").get(leeAgain.work_id)).toBeNull();
   expect((service.db.db.prepare("SELECT count(*) AS n FROM shelf_files WHERE status='missing'").get() as { n: number }).n).toBe(0);
+  // Papers moved to _uncategorized leave the inbox and are counted apart.
   const summary = service.shelf.summary();
-  expect(summary.inbox).toBe(3);
+  expect(summary.inbox).toBe(1);
+  expect(summary.uncategorized).toEqual({ id: folderId(service.shelf.root()!.id, "_uncategorized"), count: 2 });
+  expect(summary.folders.some((f) => f.relPath.startsWith("_uncategorized"))).toBe(false);
+  expect(service.db.shelfScope("inbox")).toEqual([row(service, INBOX.baek)!.work_id]);
   expect(summary.folders.find((f) => f.relPath === MEMORY)!.count).toBe(4);
   // Applied items leave the saved proposal; the skipped one stays, and the job describes it, not the past move.
   expect(result.ledger).toBe(true);
   const left = service.sorter.view();
   expect(left.items.map((i) => i.relPath)).toEqual([INBOX.baek]);
   expect(left.job.message).toBe("남은 제안 1편 · 옮길 논문 1편");
-  // Files the proposal parked in _uncategorized are not new; a PDF that arrives afterwards is.
-  expect(left).toMatchObject({ inbox: 3, fresh: 0 });
-  await pdf(join(dir, "2026 - Gil - Hippocampal theta and memory.pdf"), ["Hippocampal theta and memory", "Theta rhythms organise hippocampal memory."]);
+  // It still covers the whole inbox and has a move left, so reopening the window resumes it.
+  expect(left).toMatchObject({ inbox: 1, uncategorized: 2, fresh: 0, current: true });
+  // A PDF that arrives afterwards makes it stale: reopening starts from today's inbox instead.
+  const GIL = "2026 - Gil - Hippocampal theta and memory.pdf";
+  await pdf(join(dir, GIL), ["Hippocampal theta and memory", "Theta rhythms organise hippocampal memory."]);
   await service.shelf.scan("test");
   await service.shelf.wait();
-  expect(service.sorter.view()).toMatchObject({ inbox: 4, fresh: 1 });
+  expect(service.sorter.view()).toMatchObject({ inbox: 2, fresh: 1, current: false });
 
   // Moving the last item finishes the proposal, so the next visit starts from today's inbox.
   await service.call("shelfSortApply", { items: [{ fileId: byPath(items, INBOX.baek).fileId, target: PAIN }] });
   await service.shelf.wait();
   const finished = service.sorter.view();
-  expect(finished).toMatchObject({ createdAt: null, items: [], waiting: [], job: { status: "idle", message: "" }, inbox: 3, fresh: 3 });
+  expect(finished).toMatchObject({ createdAt: null, items: [], waiting: [], job: { status: "idle", message: "" }, inbox: 1, fresh: 1, current: false });
 
-  // A proposal saved before the inbox counts existed reads every inbox PDF as new.
-  service.db.pref("shelf:sort", { ...finished, job: { status: "ready", message: "152편을 옮겼습니다.", updatedAt: finished.job.updatedAt }, createdAt: finished.job.updatedAt, covered: undefined });
-  expect(service.sorter.view()).toMatchObject({ items: [], inbox: 3, fresh: 3 });
+  // A proposal saved before 0.3.3 kept no list of what it saw, so it never comes back on reopening.
+  service.db.pref("shelf:sort", { ...left, job: { status: "ready", message: "89편을 옮겼습니다.", updatedAt: left.job.updatedAt }, covered: undefined });
+  expect(service.sorter.view()).toMatchObject({ inbox: 1, fresh: 1, current: false });
+
+  // Until asked for, _uncategorized stays out of proposals and its papers count as existing copies.
+  const EUN_COPY = "2025 - Eun - Pottery glaze chemistry notes (1).pdf";
+  await copyFile(join(dir, INBOX.eun), join(dir, EUN_COPY));
+  await service.shelf.scan("test");
+  await service.shelf.wait();
+  calls.length = 0;
+  const plain = await propose(service);
+  expect(plain.items.map((i) => i.relPath).sort()).toEqual([EUN_COPY, GIL].sort());
+  expect(byPath(plain.items, EUN_COPY)).toMatchObject({ target: "_duplicated", source: "duplicate", existing: INBOX.eun });
+  expect(calls.flatMap((c) => c.data.papers.map((p) => p.title))).toEqual(["Hippocampal theta and memory"]);
+  await service.call("shelfSortApply", { items: [{ fileId: byPath(plain.items, EUN_COPY).fileId, target: "_duplicated" }] });
+  await service.shelf.wait();
+
+  // Asked for, _uncategorized is judged again. Papers that would stay put are not a move:
+  // once the only move is made, the proposal is finished.
+  calls.length = 0;
+  const wide = await propose(service, true);
+  expect(wide.items.map((i) => i.relPath).sort()).toEqual([GIL, INBOX.eun, `_uncategorized/${INBOX.dong}`].sort());
+  expect(byPath(wide.items, INBOX.eun)).toMatchObject({ folder: "_uncategorized", target: "_uncategorized", confidence: "low" });
+  expect(byPath(wide.items, GIL)).toMatchObject({ target: MEMORY });
+  expect(calls[0].data.papers).toHaveLength(3);
+  expect(service.sorter.view()).toMatchObject({ inbox: 1, uncategorized: 2, fresh: 0, current: true });
+  await service.call("shelfSortApply", { items: [{ fileId: byPath(wide.items, GIL).fileId, target: MEMORY }] });
+  await service.shelf.wait();
+  expect(service.sorter.view()).toMatchObject({ createdAt: null, items: [], inbox: 0, uncategorized: 2, current: false });
 }));
 
 test("without _system or a working AI: folder leaves, no ledger, vote fallback and budget-sized batches", async () => fixture(async ({ service, dir, calls }) => {
@@ -287,7 +320,7 @@ test("without _system or a working AI: folder leaves, no ledger, vote fallback a
   expect(failed.taxonomy).toBe("folders");
   expect(failed.ledger).toBe(false);
   expect(failed.leaves.map((l) => l.path)).toEqual([MEMORY, PAIN, SLEEP]);
-  expect(failed.job.message).toContain("AI 판정 실패 5편");
+  expect(failed.job.message).toContain("AI 판정 실패 4편");
   expect(byPath(failed.items, INBOX.ahn)).toMatchObject({ source: "embedding", target: MEMORY, reason: "AI 판정 실패: 사용 한도에 도달했습니다." });
 
   // A small input budget splits the inbox into several calls, each within the limit.
@@ -300,7 +333,7 @@ test("without _system or a working AI: folder leaves, no ledger, vote fallback a
   const split = await propose(service);
   expect(calls.length).toBeGreaterThan(1);
   expect(calls.every((c) => c.bytes <= limit)).toBe(true);
-  expect(calls.reduce((sum, c) => sum + c.data.papers.length, 0)).toBe(5);
+  expect(calls.reduce((sum, c) => sum + c.data.papers.length, 0)).toBe(4);
   expect(byPath(split.items, INBOX.choi)).toMatchObject({ target: SLEEP, source: "ai" });
   service.db.pref("ai", { ...DEFAULT_AI, aiProvider: "codex", aiEnabled: true, aiMaxInputTokens: 3000 });
   expect((await propose(service)).job).toMatchObject({ status: "failed", message: expect.stringContaining("AI 입력 상한") });

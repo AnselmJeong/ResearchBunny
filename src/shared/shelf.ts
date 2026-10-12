@@ -12,9 +12,11 @@ export const SHELF_REVIEW = "review";
 /** Sort destinations besides taxonomy leaves, named as `_system/intake.py` names them. */
 export const SHELF_UNCATEGORIZED = "_uncategorized";
 export const SHELF_DUPLICATED = "_duplicated";
-/** The inbox is the shelf root plus `_uncategorized`. */
-export const isInboxFolder = (relPath: string) =>
-  relPath === "" || relPath === SHELF_UNCATEGORIZED || relPath.startsWith(SHELF_UNCATEGORIZED + "/");
+/** The inbox is the shelf root: PDFs nobody has sorted yet. */
+export const isInboxFolder = (relPath: string) => relPath === "";
+/** `_uncategorized` and below: sorted, but no folder fitted. Shown apart from the inbox, re-sorted only on request. */
+export const isUncategorizedFolder = (relPath: string) =>
+  relPath === SHELF_UNCATEGORIZED || relPath.startsWith(SHELF_UNCATEGORIZED + "/");
 
 export interface ShelfSortLeaf {
   /** Folder path relative to the shelf root, e.g. `01 Psychiatric Disorders/Mood Disorders - Clinical`. */
@@ -68,15 +70,19 @@ export interface ShelfSortState {
   waiting: { fileId: string; relPath: string; reason: string }[];
   /** `_system` exists, so moves go to move_log.jsonl and logs/, and index.json is rebuilt. */
   ledger: boolean;
-  /** Every inbox file the proposal looked at, including those already moved. */
+  /** Every file the proposal looked at, including those already moved. */
   covered?: string[];
 }
 /** The saved proposal plus the inbox as it is now. */
 export interface ShelfSortView extends ShelfSortState {
-  /** Inbox PDFs now (root and `_uncategorized`). */
+  /** Inbox PDFs now (the shelf root). */
   inbox: number;
+  /** PDFs in `_uncategorized` now; a proposal includes them only when asked. */
+  uncategorized: number;
   /** Inbox PDFs that arrived after the proposal was made. */
   fresh: number;
+  /** The proposal saw every inbox PDF and still has something to move, so reopening resumes it. */
+  current: boolean;
 }
 export interface ShelfSortResult {
   moved: number;
@@ -163,6 +169,8 @@ export interface ShelfSummary {
   online: boolean;
   folders: ShelfFolderNode[];
   inbox: number;
+  /** The `_uncategorized` folder, listed apart from the tree; null while it holds no papers. */
+  uncategorized: { id: string; count: number } | null;
   review: number;
   total: number;
   counts: ShelfIndexCounts;
