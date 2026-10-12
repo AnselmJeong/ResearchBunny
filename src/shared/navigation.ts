@@ -72,6 +72,26 @@ export function forgetWorks(
     ),
   };
 }
+/** Trash hides papers from every other list and restored papers leave the trash, so drop selections those views can no longer show. */
+export function deselectWorks(
+  history: NavigationHistory,
+  ids: string[],
+  inTrashViews: boolean,
+): NavigationHistory {
+  const removed = new Set(ids);
+  if (!removed.size) return history;
+  return {
+    ...history,
+    views: Object.fromEntries(
+      Object.entries(history.views).map(([key, view]) => [
+        key,
+        (view.scope === "trash") === inTrashViews
+          ? { ...view, selected: view.selected.filter((id) => !removed.has(id)) }
+          : view,
+      ]),
+    ),
+  };
+}
 export const viewKey = (view: Pick<WorkspaceView, "scope" | "scopeId">) =>
   `${view.scope}:${view.scopeId}`;
 export const defaultView = (

@@ -12,13 +12,14 @@
   - for every project.
 
   The confirmation lists the PDFs it will delete. An offline shelf refuses the deletion. A PDF that cannot be deleted keeps its paper in the trash, and the message names it. The index drops the deleted files with their attachments, and works nothing else uses leave the library. With `_system` present, the deletion is logged as a `## delete … · ResearchBunny` block in `logs/intake-YYYY-MM-DD.md`, and `index.json` is rebuilt. `move_log.jsonl` is not written, because nothing moved.
+- Trashing papers now clears them from every view's remembered selection, and restoring clears them from the trash view's. Before, a paper selected in another view stayed selected there, hidden from its list, so the status bar counted it and selection-bar actions still applied to it. Selections saved before 0.3.3 are settled when a project loads.
 - Papers in the current project's trash no longer count in the sidebar's shelf, folder, `수신함` and `확인 필요` numbers; the lists already hid them. This made `수신함 1` appear above an empty inbox list. The shelf status line (`서고 N편 · 확인 필요 N편`) still counts every indexed file.
 
 Library schema stays at 3. A proposal saved by 0.3.1 or 0.3.2 is read as before; when its items are used up, its old message is ignored.
 
 ## Validation
 
-- Typecheck and lint passed. Integration suite: **193 passed, zero failed** across 21 files.
+- Typecheck and lint passed. Integration suite: **194 passed, zero failed** across 21 files. This includes the selection test merged from the trash-selection fix.
 - The inbox-sort test now also checks the following after the first move. Without the fix it fails, because the sorter has no inbox count.
   - The remaining proposal reads `남은 제안 1편 · 옮길 논문 1편` with 3 inbox PDFs and none new.
   - A PDF added afterwards counts as 1 new.

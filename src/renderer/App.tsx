@@ -63,6 +63,7 @@ import {
   viewKey,
   runPath,
   forgetWorks,
+  deselectWorks,
   type WorkspaceView,
 } from "../shared/navigation";
 import { HelpTooltip } from "./components/HelpTooltip";
@@ -581,6 +582,11 @@ export function App() {
       () => window.bunny.mutateWorks({ projectId, ids, patch: update }),
       message,
     );
+  // Other views remember their own selections; papers that leave a list must leave them too.
+  const deselectElsewhere = (ids: string[], inTrashViews: boolean) => {
+    navigationRef.current = deselectWorks(navigationRef.current, ids, inTrashViews);
+    setNavigation(navigationRef.current);
+  };
   const trashSelected = () => {
     if (busy || !selected.length) return;
     patch(
@@ -588,6 +594,18 @@ export function App() {
       { screening: "trash" },
       `${selected.length}편을 휴지통으로 옮겼습니다. 상단 되돌리기로 복원할 수 있습니다.`,
     );
+    deselectElsewhere(selected, false);
+    setDialog(null);
+    setSelected([]);
+  };
+  const restoreSelected = () => {
+    if (busy || !selected.length) return;
+    const ids = [...selected];
+    void task(
+      () => window.bunny.restoreWorks({ projectId, ids }),
+      `${ids.length}편을 휴지통에서 복원했습니다.`,
+    );
+    deselectElsewhere(ids, true);
     setDialog(null);
     setSelected([]);
   };
@@ -2382,15 +2400,7 @@ export function App() {
               </button>
             )}
             {scope === "trash" && (
-              <button
-                onClick={() =>
-                  void task(
-                    () =>
-                      window.bunny.restoreWorks({ projectId, ids: selected }),
-                    "문헌을 복원했습니다.",
-                  )
-                }
-              >
+              <button disabled={busy || !selected.length} onClick={restoreSelected}>
                 휴지통에서 복원
               </button>
             )}
