@@ -866,3 +866,33 @@ test("shelf graph colours by the subfolder directly below the listed folder", ()
   assert.equal(leaf.works.length, 0);
   assert.deepEqual(leaf.subfolders, {});
 }));
+
+test("trashed works leave shelf folders and runs in that project only, and come back on restore", () => fixture((db) => {
+  const projectId = db.projects()[0].id, other = db.createProject("Other", "").id;
+  db.db.prepare("INSERT INTO shelf_roots VALUES('r','/shelf','shelf','[]','2026-01-01',NULL)").run();
+  db.db.prepare("INSERT INTO shelf_folders VALUES('f:','r','',NULL,'shelf',1)").run();
+  const [kept, trashed] = [raw(801, "Kept on the shelf"), raw(802, "Sent to the trash")].map((item) => db.upsert(fromOpenAlex(item)).work);
+  for (const work of [kept, trashed])
+    db.db.prepare("INSERT INTO shelf_files VALUES(?,?,?,?,1,1,NULL,NULL,NULL,?,NULL,'resolved','ok','{}','2026-01-01',NULL)")
+      .run(`file:${work.id}`, "r", "f:", `${work.id}.pdf`, work.id);
+  const run = {
+    id: "run-trash", projectId, mode: "search" as const, query: "q", seedProfileId: null, inputIds: [],
+    filters: { ...DEFAULT_FILTERS }, status: "completed" as const, createdAt: "2026-01-01", updatedAt: "2026-01-01",
+    calls: 0, maxCalls: 1, maxCandidates: 10, total: null, count: 2, message: "", tasks: [], rankingVersion: "test", phase: "collect",
+  };
+  db.saveRun(run);
+  for (const work of [kept, trashed])
+    db.candidate(run, work, { origins: [], seedIds: [], sharedIds: [], denominator: 0, relation: "search", score: 0.5, reasons: [], hidden: [], deferred: false, scope: "" });
+  const ids = (scope: string, scopeId: string, project = projectId) =>
+    db.list({ projectId: project, scope, scopeId, query: "", filters: DEFAULT_FILTERS, showHidden: true, offset: 0, limit: 50, sort: "rank" }).ids;
+  db.mutate(projectId, [trashed.id], { screening: "trash" });
+  assert.deepEqual(ids("shelf", "all"), [kept.id]);
+  assert.deepEqual(ids("shelf", "f:"), [kept.id]);
+  assert.deepEqual(ids("run", run.id), [kept.id]);
+  assert.deepEqual(ids("trash", ""), [trashed.id]);
+  // The shelf is app-wide: another project still lists the paper.
+  assert.deepEqual(new Set(ids("shelf", "all", other)), new Set([kept.id, trashed.id]));
+  db.mutate(projectId, [trashed.id], { screening: "pending" });
+  assert.deepEqual(new Set(ids("shelf", "all")), new Set([kept.id, trashed.id]));
+  assert.deepEqual(new Set(ids("run", run.id)), new Set([kept.id, trashed.id]));
+}));

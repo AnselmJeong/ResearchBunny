@@ -579,6 +579,16 @@ export function App() {
       () => window.bunny.mutateWorks({ projectId, ids, patch: update }),
       message,
     );
+  const trashSelected = () => {
+    if (busy || !selected.length) return;
+    patch(
+      selected,
+      { screening: "trash" },
+      `${selected.length}편을 휴지통으로 옮겼습니다. 상단 되돌리기로 복원할 수 있습니다.`,
+    );
+    setDialog(null);
+    setSelected([]);
+  };
   const saveToCollection = (target: string) => {
     const ids = [...selected],
       creating = target === NEW_COLLECTION,
@@ -1357,6 +1367,16 @@ export function App() {
                     <Download size={14} />
                     내보내기
                   </button>
+                  {scope !== "trash" && (
+                    <button
+                      className="danger"
+                      disabled={busy || !selected.length}
+                      onClick={trashSelected}
+                    >
+                      <Trash2 size={14} />
+                      휴지통
+                    </button>
+                  )}
                   <button title="일괄 편집" onClick={() => setDialog("bulk")}>
                     <MoreHorizontal size={17} />
                   </button>
@@ -2180,7 +2200,8 @@ export function App() {
           </p>
           <p>
             문헌의 메모와 컬렉션 연결도 삭제되며, 복원하거나 실행 취소할 수
-            없습니다. 다른 프로젝트의 문헌과 PDF 파일은 유지됩니다.
+            없습니다. 다른 프로젝트의 문헌과 PDF 파일은 유지되므로, 서고에
+            PDF가 있는 문헌은 서고 목록에 다시 나타납니다.
           </p>
           <footer className="modal-footer">
             <button
@@ -2322,15 +2343,8 @@ export function App() {
             {scope !== "trash" && (
               <button
                 className="danger"
-                onClick={() => {
-                  patch(
-                    selected,
-                    { screening: "trash" },
-                    "휴지통으로 옮겼습니다.",
-                  );
-                  setDialog(null);
-                  setSelected([]);
-                }}
+                disabled={busy || !selected.length}
+                onClick={trashSelected}
               >
                 <Trash2 size={14} />
                 휴지통
