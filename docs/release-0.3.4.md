@@ -64,6 +64,16 @@ Library schema stays at 3. Projects' opening times are kept in a new `project_op
   - Archive: 75 saved papers taken out with 모두 선택 and restored by undo.
   - Lists: a row click read no PDF; the row button and the inspector's `원문 보기` did.
   - After merging, the combined renderer showed `아카이브에서 빼기`, inspector-only row clicks and `프로젝트 관리` without script or service errors.
+- The extracted stable app passed the restricted-PATH packaged runtime test and strict signature verification.
+
+## Installation
+
+- Backed up the previous app and a consistent SQLite snapshot under `~/Library/Application Support/ResearchBunny/app-backups/20261012-230751-merged-worktrees-0.3.4` (integrity ok, schema 3, **10,996 works**, **8,528 attachments**, **8,534 shelf files**, 5 projects, matching the live library). The replaced 0.3.3 bundle is kept there as `ResearchBunny-0.3.3-installed.app`.
+- Replaced `/Applications/ResearchBunny.app` with version **0.3.4**; all **441 files** match the package and strict signature verification passed. The installed app started its service on the existing library, which gained the `project_opens` table and stays at schema 3.
+
+Artifacts: `out/electrobun/stable-macos-arm64-ResearchBunny.dmg` and `out/electrobun/stable-macos-arm64-ResearchBunny.app.tar.zst`. Local validation logs are under `.qa/release-0.3.4/`.
+
+Local ad-hoc signing on macOS Apple Silicon; no Developer ID signing or Apple notarization.
 
 Not merged:
 - Two worktrees held only untracked plan documents identical to `docs/archive_plan.md` and `docs/linked-discoveries-plan.md` on `main`.
