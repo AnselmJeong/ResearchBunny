@@ -26,7 +26,7 @@ import { parseBib, exportBib, type BibEntry } from "./interchange/bibtex";
 import { PdfImports, hashFile, verifyPdf } from "./interchange/pdf";
 import { createBackup, restoreBackup } from "./interchange/backup";
 import { mergeWorks, undoMerge } from "./db/merge";
-import { deleteTrashedWorks } from "./db/trash";
+import { deleteTrashedWorks, settledUi } from "./db/trash";
 import { ArchiveClassifier, classificationSnapshot } from "./archive-classification";
 import { PdfDownloads } from "./fulltext/jobs";
 import { planPdfExport, pdfExportTargets, previewPdfExport, exportPdfFolders } from "./interchange/pdf-export";
@@ -190,7 +190,7 @@ export class Service {
           counts: this.db.counts(projectId),
           settings: this.settings(),
           shelf: this.shelf.summary(),
-          ui: this.db.pref("ui:" + projectId) || {},
+          ui: settledUi(this.db, projectId),
         };
       }
       case "createProject":

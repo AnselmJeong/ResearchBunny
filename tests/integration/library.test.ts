@@ -896,3 +896,34 @@ test("trashed works leave shelf folders and runs in that project only, and come 
   assert.deepEqual(new Set(ids("shelf", "all")), new Set([kept.id, trashed.id]));
   assert.deepEqual(new Set(ids("run", run.id)), new Set([kept.id, trashed.id]));
 }));
+
+test("remembered selections drop papers that left the list through the trash", async () => {
+  const { defaultView, deselectWorks, restoreNavigation, visitView } = await import("../../src/shared/navigation");
+  const { settledUi } = await import("../../src/service/db/trash");
+  await fixture((db) => {
+    const projectId = db.projects()[0].id;
+    const [trashed, kept, restored] = [raw(811, "Trashed later"), raw(812, "Still listed"), raw(813, "Restored later")].map((item) => db.upsert(fromOpenAlex(item)).work);
+    const shelf = defaultView({ scope: "shelf", scopeId: "all", selected: [trashed.id, kept.id] });
+    const trash = defaultView({ scope: "trash", selected: [trashed.id, restored.id] });
+    const history = visitView(restoreNavigation(shelf), shelf, trash);
+    // Trashing from one view clears the paper from every other view but the trash.
+    const afterTrash = deselectWorks(history, [trashed.id], false);
+    assert.deepEqual(afterTrash.views["shelf:all"].selected, [kept.id]);
+    assert.deepEqual(afterTrash.views["trash:"].selected, [trashed.id, restored.id]);
+    assert.deepEqual(deselectWorks(history, [restored.id], true).views["trash:"].selected, [trashed.id]);
+
+    // Selections saved before this fix are settled when the project loads.
+    db.mutate(projectId, [trashed.id], { screening: "trash" });
+    db.mutate(projectId, [restored.id], { screening: "included" });
+    db.pref("ui:" + projectId, { navigation: history, other: 1 });
+    const settled = settledUi(db, projectId) as { navigation: unknown; other: number };
+    const views = restoreNavigation(settled).views;
+    assert.deepEqual(views["shelf:all"].selected, [kept.id]);
+    assert.deepEqual(views["trash:"].selected, [trashed.id]);
+    assert.equal(settled.other, 1);
+    // Nothing to settle: the saved state is returned as is.
+    db.pref("ui:" + projectId, { navigation: afterTrash });
+    db.mutate(projectId, [restored.id], { screening: "trash" });
+    assert.deepEqual(settledUi(db, projectId), { navigation: afterTrash });
+  });
+});

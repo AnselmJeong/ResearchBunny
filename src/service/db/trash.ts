@@ -1,5 +1,5 @@
 import type { Library } from "./database";
-import { forgetWorks, restoreNavigation } from "../../shared/navigation";
+import { deselectWorks, forgetWorks, restoreNavigation } from "../../shared/navigation";
 import {
   AppError,
   type Run,
@@ -178,4 +178,30 @@ export function deleteTrashedWorks(
     });
     return { ids };
   });
+}
+
+/** Saved UI state whose remembered selections match the trash: trashed papers leave other views, restored ones leave the trash view. */
+export function settledUi(db: Library, projectId: string): Record<string, unknown> {
+  const ui = db.pref<Record<string, unknown>>("ui:" + projectId) || {};
+  const navigation = restoreNavigation(ui);
+  const views = Object.values(navigation.views);
+  const selected = [...new Set(views.flatMap((view) => view.selected))];
+  if (!selected.length) return ui;
+  const trashed = new Set(
+    (
+      db.db
+        .prepare(
+          "SELECT work_id AS id FROM project_works WHERE project_id=? AND work_id IN (SELECT value FROM json_each(?)) AND json_extract(state,'$.screening')='trash'",
+        )
+        .all(projectId, JSON.stringify(selected)) as { id: string }[]
+    ).map((row) => row.id),
+  );
+  const restored = views
+    .filter((view) => view.scope === "trash")
+    .flatMap((view) => view.selected.filter((id) => !trashed.has(id)));
+  if (!trashed.size && !restored.length) return ui;
+  return {
+    ...ui,
+    navigation: deselectWorks(deselectWorks(navigation, [...trashed], false), restored, true),
+  };
 }
