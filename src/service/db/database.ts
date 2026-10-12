@@ -479,6 +479,20 @@ export class Library {
       this.touch();
     });
   }
+  /** Returns saved papers to the review queue; papers that are not saved stay where they are. */
+  unarchive(projectId: string, ids: string[]): { ids: string[] } {
+    return this.transaction(() => {
+      this.project(projectId);
+      const screening = this.db.prepare(
+        "SELECT json_extract(state,'$.screening') AS screening FROM project_works WHERE project_id=? AND work_id=?",
+      );
+      const saved = [...new Set(ids)].filter(
+        (id) => (screening.get(projectId, id) as { screening: string } | undefined)?.screening === "included",
+      );
+      if (saved.length) this.mutate(projectId, saved, { screening: "pending" });
+      return { ids: saved };
+    });
+  }
   clearPending(projectId: string): { ids: string[] } {
     return this.transaction(() => {
       this.project(projectId);

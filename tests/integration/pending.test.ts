@@ -104,3 +104,35 @@ test("new searches reset pending, rediscover old candidates, preserve history, a
   assert.equal(db.undo(projectId), true);
   assert.equal(db.counts(projectId).pending, 1);
 }));
+
+test("unarchiving returns only saved papers to the review queue, across pages, and undoes in one step", () => fixture(async service => {
+  const db = service.db, projectId = db.projects()[0].id;
+  const other = db.createProject("Other", "").id;
+  const saved = Array.from({ length: 65 }, (_, i) => db.upsert(blankWork({ title: `Saved ${i}` })).work.id);
+  db.mutate(projectId, saved, { screening: "included", note: "Keep notes", tags: ["keep"] });
+  db.mutate(other, [saved[0]], { screening: "included" });
+  // A paper saved after an emptied inbox still carries the dismissal flag from its pending days.
+  db.mutate(projectId, [saved[1]], { screening: "pending" });
+  db.clearPending(projectId);
+  db.mutate(projectId, [saved[1]], { screening: "included" });
+  const [pending, excluded, trashed] = ["Pending", "Excluded", "Trashed"].map(title => db.upsert(blankWork({ title })).work.id);
+  db.mutate(projectId, [pending], { screening: "pending" });
+  db.mutate(projectId, [excluded], { screening: "excluded" });
+  db.mutate(projectId, [trashed], { screening: "trash" });
+
+  const result = await service.call("unarchiveWorks", schemas.unarchiveWorks.parse({ projectId, ids: [...saved, saved[2], pending, excluded, trashed] }));
+  assert.deepEqual(result.ids, saved);
+  assert.deepEqual(db.counts(projectId), { archive: 0, pending: 66, starred: 0, reading: 0, trash: 1, excluded: 1 });
+  assert.equal(db.counts(other).archive, 1);
+  assert.equal(db.state(projectId, excluded).screening, "excluded");
+  assert.equal(db.state(projectId, trashed).screening, "trash");
+  assert.equal(db.state(projectId, saved[0]).note, "Keep notes");
+  assert.deepEqual(db.state(projectId, saved[0]).tags, ["keep"]);
+  const queue = db.list(schemas.list.parse({ projectId, scope: "pending", filters: DEFAULT_FILTERS, showHidden: true, limit: 500 }));
+  assert.ok(saved.every(id => queue.ids.includes(id)));
+
+  assert.deepEqual(await service.call("unarchiveWorks", { projectId, ids: [pending, excluded] }), { ids: [] });
+  assert.equal(db.undo(projectId), true);
+  assert.equal(db.counts(projectId).archive, 65);
+  assert.equal(db.counts(projectId).pending, 1);
+}));

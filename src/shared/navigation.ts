@@ -78,6 +78,14 @@ export function deselectWorks(
   ids: string[],
   inTrashViews: boolean,
 ): NavigationHistory {
+  return deselectWhere(history, ids, (view) => (view.scope === "trash") === inTrashViews);
+}
+/** Drops `ids` from the remembered selections of the views that `where` picks. */
+export function deselectWhere(
+  history: NavigationHistory,
+  ids: string[],
+  where: (view: WorkspaceView) => boolean,
+): NavigationHistory {
   const removed = new Set(ids);
   if (!removed.size) return history;
   return {
@@ -85,7 +93,7 @@ export function deselectWorks(
     views: Object.fromEntries(
       Object.entries(history.views).map(([key, view]) => [
         key,
-        (view.scope === "trash") === inTrashViews
+        where(view)
           ? { ...view, selected: view.selected.filter((id) => !removed.has(id)) }
           : view,
       ]),
