@@ -21,6 +21,7 @@ import {
   type PdfExportTarget,
   type Work,
 } from "../../shared/types";
+import { fitShelfTitle } from "../../shared/shelf";
 import { hashFile, verifyPdf } from "./pdf";
 
 type Selection = z.output<typeof schemas.pdfExportPreview>;
@@ -37,11 +38,16 @@ type Plan = {
   entries: Entry[];
 };
 
+const unsafe = /[\\/:<>"?*|]|\p{Cc}/gu;
+const reserved = (name: string) =>
+  /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)
+    ? "_" + name
+    : name;
 function component(value: string, fallback: string) {
   const clean =
     value
       .normalize("NFC")
-      .replace(/[\\/:<>"?*|]|\p{Cc}/gu, " - ")
+      .replace(unsafe, " - ")
       .replace(/\s+/g, " ")
       .replace(/^[. ]+|[. ]+$/g, "") || fallback;
   let result = "";
@@ -49,9 +55,22 @@ function component(value: string, fallback: string) {
     if (Buffer.byteLength(result + character) > 170) break;
     result += character;
   }
-  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(result)
-    ? "_" + result
-    : result;
+  return reserved(result);
+}
+/** PDF names follow the shelf: `연도 - 제목`, cut at a word with " ..." to fit 240 bytes. */
+function pdfName(year: number | null, stem: string) {
+  const clean = stem
+    .normalize("NFC")
+    .replace(unsafe, " - ")
+    .replace(/\s+/g, " ")
+    .replace(/^[. ]+|\s+$/g, "");
+  // Keep the shelf's " ..." cut marker; drop other trailing dots.
+  const title =
+    (clean.endsWith(" ...") ? clean : clean.replace(/[. ]+$/, "")) || "문헌";
+  // Shelf PDFs are already named `연도 - 저자 - 제목`; don't add the year twice.
+  const head =
+    year && !/^(?:\d{4}|n\.d\.)\s+-\s/i.test(title) ? `${year} - ` : "";
+  return reserved(head + fitShelfTitle(head, title));
 }
 function names() {
   const used = new Set<string>();
@@ -275,10 +294,7 @@ export async function exportPdfFolders(
         const file = join(
           entry.folder,
           fileNames.get(entry.folder)!(
-            component(
-              `${entry.work.year ? entry.work.year + " - " : ""}${title}`,
-              "문헌",
-            ),
+            pdfName(entry.work.year, title),
             ".pdf",
           ),
         );

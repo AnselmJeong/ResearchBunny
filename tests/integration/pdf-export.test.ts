@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { Library } from "../../src/service/db/database";
 import { Service } from "../../src/service/service";
 import { blankWork } from "../../src/shared/domain";
+import { formatShelfFilename } from "../../src/shared/shelf";
 import {
   AppError,
   type Attachment,
@@ -159,6 +160,36 @@ test("PDF export preserves topic folders, linked and multiple attachments, empty
     assert(!report.includes("private note"));
     assert(!report.includes(root));
     assert(!report.includes("Pending file"));
+  } finally {
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test("PDF names follow the shelf: the year prefix once, long names cut at a word within 240 bytes", async () => {
+  const { root, db, projectId } = await setup();
+  try {
+    const a = work(db, projectId, "Mood dynamics in bipolar disorder");
+    const words = "Confirmatory efficacy and safety trial of magnetic seizure therapy ".repeat(6);
+    const shelfLong = formatShelfFilename({ year: 2024, authors: ["A Nabulsi", "B Two", "C Three"], title: words });
+    await attach(db, a.id, root, "2024 - Moore et al. - Mood dynamics in bipolar disorder");
+    await attach(db, a.id, root, "n.d. - Unknown - Supplement");
+    await attach(db, a.id, root, shelfLong.replace(/\.pdf$/, ""));
+    await attach(db, a.id, root, words);
+    const result = await exportPdfFolders(
+      planPdfExport(db, pdfExportTargets(db, selection(projectId))),
+      root,
+    );
+    const files = await readdir(join(result.path, "미분류"));
+    const plainLong = files.find((f) => f.startsWith("2024 - Confirmatory"))!;
+    assert.deepEqual(files.sort(), [
+      "2024 - Moore et al. - Mood dynamics in bipolar disorder.pdf",
+      shelfLong,
+      plainLong,
+      "n.d. - Unknown - Supplement.pdf",
+    ].sort());
+    assert(shelfLong.endsWith("therapy ....pdf"));
+    assert(plainLong.endsWith(" efficacy ....pdf"));
+    assert(Buffer.byteLength(plainLong) <= 240 && Buffer.byteLength(plainLong) > 200);
   } finally {
     db.close();
     await rm(root, { recursive: true, force: true });

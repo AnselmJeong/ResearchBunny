@@ -281,6 +281,17 @@ export function familyName(name: string): string {
 const MAX_FILENAME_BYTES = 240;
 const encoder = new TextEncoder();
 const bytes = (text: string) => encoder.encode(text).length;
+/** Cut `title` at a word, ending in " ...", so `${head}${title}.pdf` fits the shelf's limit. */
+export function fitShelfTitle(head: string, title: string): string {
+  if (bytes(head + title + ".pdf") <= MAX_FILENAME_BYTES) return title;
+  const room = MAX_FILENAME_BYTES - bytes(head + " ....pdf");
+  let cut = "";
+  for (const char of title) {
+    if (bytes(cut + char) > room) break;
+    cut += char;
+  }
+  return `${cut.replace(/\s+\S*$/, "").trim() || cut.trim()} ...`;
+}
 /**
  * The shelf's `연도 - 저자 - 제목.pdf` name (inverse of parseShelfFilename):
  * one author `Kim`, two `Kim, Lee`, more `Kim et al.`; ':' becomes ';' and
@@ -291,17 +302,7 @@ export function formatShelfFilename(work: { year: number | null; authors: string
   const authors = names.length === 0 ? "Unknown" : names.length === 1 ? names[0] : names.length === 2 ? `${names[0]}, ${names[1]}` : `${names[0]} et al.`;
   const clean = (text: string) => text.normalize("NFC").replace(/<[^>]+>/g, "").replace(/\s*:\s*/g, "; ").replace(/[?*"<>|\\/]|\p{Cc}/gu, "").replace(/\s+/g, " ").trim();
   const head = `${work.year ?? "n.d."} - ${clean(authors)} - `;
-  let title = clean(work.title).replace(/[.\s]+$/, "") || "Untitled";
-  if (bytes(head + title + ".pdf") > MAX_FILENAME_BYTES) {
-    const room = MAX_FILENAME_BYTES - bytes(head + " ....pdf");
-    let cut = "";
-    for (const char of title) {
-      if (bytes(cut + char) > room) break;
-      cut += char;
-    }
-    title = `${cut.replace(/\s+\S*$/, "").trim() || cut.trim()} ...`;
-  }
-  return `${head}${title}.pdf`;
+  return `${head}${fitShelfTitle(head, clean(work.title).replace(/[.\s]+$/, "") || "Untitled")}.pdf`;
 }
 
 /** Accent- and case-insensitive surname token for first-author checks. */
