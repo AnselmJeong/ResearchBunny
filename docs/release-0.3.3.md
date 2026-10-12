@@ -35,3 +35,15 @@ Library schema stays at 3. A proposal saved by 0.3.1 or 0.3.2 is read as before;
   - The intake log and `index.json` record the deletion.
 - The real renderer was run against a scratch library with a synthetic 5-PDF shelf. The two trashed papers left the sidebar counts. `휴지통 비우기` listed the 3 PDFs it would delete, and after confirming, the toast read `2편을 영구 삭제했습니다. 서고 PDF 3개를 지웠습니다.` Only the 2 untouched PDFs were left on disk.
 - The 수신함 정리 dialog was rendered with stubbed states in the dark theme: a used-up 0.3.2 proposal with 90 inbox PDFs, an open proposal with 90 newer PDFs, and an empty inbox.
+- The extracted stable app passed the restricted-PATH packaged runtime test and strict signature verification.
+
+## Installation
+
+- Backed up the previous app and a consistent SQLite snapshot under `~/Library/Application Support/ResearchBunny/app-backups/20261012-210216-shelf-delete-0.3.3` (integrity ok, schema 3, **10,792 works**, **8,411 attachments**, **8,417 shelf files**, matching the live library). The replaced 0.3.2 bundle is kept there as `ResearchBunny-0.3.2-installed.app`.
+- Replaced `/Applications/ResearchBunny.app` with version **0.3.3**; all **441 files** match the package and strict signature verification passed. The installed app started its service on the existing library.
+
+Artifacts: `out/electrobun/stable-macos-arm64-ResearchBunny.dmg` and `out/electrobun/stable-macos-arm64-ResearchBunny.app.tar.zst`. Local validation logs are under `.qa/release-0.3.3/`.
+
+Local ad-hoc signing on macOS Apple Silicon; no Developer ID signing or Apple notarization.
+
+Not merged: the Codex worktree at `~/.codex/worktrees/electrobun-webkit` holds uncommitted changes from the September 26 Electrobun migration prototype, based on 0.1.2. `main` has had the finished migration since then, and merging that work would revert later changes, so it was left as is.
