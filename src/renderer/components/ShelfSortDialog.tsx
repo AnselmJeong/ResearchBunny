@@ -11,23 +11,33 @@ const label = (path: string) => SPECIAL[path] || path.split("/").pop() || path;
 const percent = (share: number) => `${Math.round(share * 100)}%`;
 /** Worth a second look: neighbours and AI disagree, the AI hesitated, or the AI did not answer. */
 const needsReview = (item: ShelfSortItem) => item.source === "embedding" || item.agree === false || item.confidence === "medium";
-const initial = (item: ShelfSortItem): Choice => ({
-  target: item.target ?? "",
-  checked: !!item.target && item.target !== item.folder && item.source !== "embedding",
-});
+/** A paper already where the proposal would put it reads "그대로 두기", not as a move into its own folder. */
+const initial = (item: ShelfSortItem): Choice => {
+  const target = item.target && item.target !== item.folder ? item.target : "";
+  return { target, checked: !!target && item.source !== "embedding" };
+};
 
-export function ShelfSortDialog({ aiEnabled, onClose, onError, onSettings }: {
+export function ShelfSortDialog({ aiEnabled, uncategorized, onClose, onError, onSettings }: {
   aiEnabled: boolean;
+  /** Opened from the 미분류 list: the next proposal re-sorts `_uncategorized` too. */
+  uncategorized: boolean;
   onClose: () => void;
   onError: (error: unknown) => void;
   onSettings: () => void;
 }) {
   const [state, setState] = useState<ShelfSortView | null>(null);
+  // Decided when the window opens: a saved proposal comes back only while it still describes the inbox;
+  // otherwise the window starts from today's inbox. Proposals made or used in this window stay shown.
+  const [resume, setResume] = useState<boolean | null>(null);
+  const [parked, setParked] = useState(uncategorized);
   const [choices, setChoices] = useState<{ createdAt: string | null; map: Record<string, Choice> }>({ createdAt: null, map: {} });
   const [view, setView] = useState<View>("all");
   const [applying, setApplying] = useState(false);
   const [result, setResult] = useState<ShelfSortResult | null>(null);
-  const load = useCallback(() => window.bunny.shelfSortState({}).then(setState), []);
+  const load = useCallback(() => window.bunny.shelfSortState({}).then((next) => {
+    setState(next);
+    setResume((decided) => decided ?? (next.job.status === "running" || next.current));
+  }), []);
   useEffect(() => {
     void load().catch(onError);
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -45,10 +55,11 @@ export function ShelfSortDialog({ aiEnabled, onClose, onError, onSettings }: {
   }, [state, choices.createdAt]);
 
   const running = state?.job.status === "running";
-  const items = useMemo(() => state?.items || [], [state]);
-  // Without items left to review, a saved proposal says nothing about today's inbox.
+  const proposal = state && (resume || running) ? state : null;
+  const items = useMemo(() => proposal?.items || [], [proposal]);
   const open = !!items.length;
-  const settled = !!state && !running && !open && (state.job.status === "idle" || state.job.status === "ready");
+  const settled = !!state && !running && !open && (!proposal || proposal.job.status === "idle" || proposal.job.status === "ready");
+  const pending = (state?.inbox || 0) + (parked ? state?.uncategorized || 0 : 0);
   const choice = (item: ShelfSortItem) => choices.map[item.fileId] || initial(item);
   const setChoice = (item: ShelfSortItem, next: Partial<Choice>) =>
     setChoices((current) => ({ ...current, map: { ...current.map, [item.fileId]: { ...choice(item), ...next } } }));
@@ -64,13 +75,16 @@ export function ShelfSortDialog({ aiEnabled, onClose, onError, onSettings }: {
   const shown = items.filter((item) => view === "all" || (view === "review" ? needsReview(item) : item.source === "duplicate"));
   const domains = useMemo(() => {
     const groups = new Map<string, { path: string; name: string; def: string }[]>();
-    for (const leaf of state?.leaves || []) groups.set(leaf.domain || "서고", [...(groups.get(leaf.domain || "서고") || []), leaf]);
+    for (const leaf of proposal?.leaves || []) groups.set(leaf.domain || "서고", [...(groups.get(leaf.domain || "서고") || []), leaf]);
     return [...groups];
-  }, [state]);
+  }, [proposal]);
 
   const start = async () => {
     setResult(null);
-    try { setState(await window.bunny.shelfSortStart({})); } catch (error) { onError(error); }
+    try {
+      setState(await window.bunny.shelfSortStart({ uncategorized: parked }));
+      setResume(true);
+    } catch (error) { onError(error); }
   };
   const apply = async () => {
     if (!selected.length) return;
@@ -85,36 +99,43 @@ export function ShelfSortDialog({ aiEnabled, onClose, onError, onSettings }: {
   return <Modal title="수신함 정리" wide onClose={onClose}>
     <div className="shelf-sort">
       <p className="subtle">
-        서고 루트와 _uncategorized의 PDF마다 이미 분류된 비슷한 논문이 있는 폴더를 로컬 임베딩으로 찾고, 설정한 AI가
-        {state?.taxonomy === "folders" ? " 서고의 말단 폴더 이름" : " 분류 기준(_system/taxonomy.json)의 포함·배제 규칙"}을 보고 폴더를 고릅니다.
+        수신함(서고 루트)의 PDF마다 이미 분류된 비슷한 논문이 있는 폴더를 로컬 임베딩으로 찾고, 설정한 AI가
+        {proposal?.taxonomy === "folders" ? " 서고의 말단 폴더 이름" : " 분류 기준(_system/taxonomy.json)의 포함·배제 규칙"}을 보고 폴더를 고릅니다.
+        맞는 폴더가 없으면 미분류(_uncategorized)로 제안하고, 미분류로 옮긴 PDF는 수신함에서 빠집니다.
         AI에는 제목과 초록(없으면 PDF 첫 쪽 앞부분)만 보냅니다. 승인한 PDF만 옮기고 파일명은 바꾸지 않습니다.
       </p>
       {!aiEnabled && <p className="warning-text">
         AI 연결이 꺼져 있습니다. <button className="text-button" onClick={onSettings}>설정 열기</button>
       </p>}
       <div className="shelf-sort-status" role="status">
-        <span className={state?.job.status === "failed" ? "danger" : settled && !state.inbox ? "green" : ""}>
+        <span className={proposal?.job.status === "failed" ? "danger" : settled && !state.inbox ? "green" : ""}>
           {running && <LoaderCircle size={13} className="spin" />}
           {!state ? "" : settled
             ? state.inbox ? `수신함에 PDF ${state.inbox.toLocaleString()}편이 있습니다.` : "✓ 수신함에 정리할 PDF가 없습니다."
-            : state.job.message}
+            : proposal?.job.message}
         </span>
         {running
           ? <button className="icon-button" title="제안 만들기 취소" aria-label="제안 만들기 취소" onClick={() => void window.bunny.shelfSortCancel({}).catch(onError)}><Square size={14} /></button>
-          : <button disabled={!aiEnabled || applying} onClick={() => void start()}>
-            <RefreshCw size={14} />{open ? "제안 다시 만들기" : "제안 만들기"}
-          </button>}
+          : <span className="shelf-sort-actions">
+            {!!state?.uncategorized && <label className="check">
+              <input type="checkbox" checked={parked} disabled={applying} onChange={(e) => setParked(e.target.checked)} />
+              미분류 {state.uncategorized.toLocaleString()}편도 다시 판정
+            </label>}
+            <button className={settled && pending ? "primary" : ""} disabled={!aiEnabled || applying} onClick={() => void start()}>
+              <RefreshCw size={14} />{open ? "제안 다시 만들기" : "제안 만들기"}
+            </button>
+          </span>}
       </div>
       {result && <div className="shelf-sort-result" role="status">
         <strong>{(result.moved + result.uncategorized + result.duplicated).toLocaleString()}편을 옮겼습니다.</strong>
         <span className="subtle"> 분류 {result.moved} · 미분류 {result.uncategorized} · 중복 {result.duplicated}{result.ledger ? " · move_log.jsonl·intake 로그·index.json 갱신" : ""}</span>
         {!!result.skipped.length && <ul>{result.skipped.map((s) => <li key={s.relPath + s.reason} className="danger">{s.relPath} · {s.reason}</li>)}</ul>}
       </div>}
-      {!!state?.waiting.length && !running && <p className="subtle">색인 대기 {state.waiting.length}편은 이번 제안에서 빠졌습니다.</p>}
+      {!!proposal?.waiting.length && !running && <p className="subtle">색인 대기 {proposal.waiting.length}편은 이번 제안에서 빠졌습니다.</p>}
       {open && !running && !!state?.fresh && <p className="warning-text">
         이 제안 뒤에 수신함에 들어온 PDF {state.fresh.toLocaleString()}편은 제안에 없습니다. 제안을 다시 만들면 함께 다룹니다.
       </p>}
-      {!!items.length && !running && <>
+      {open && !running && <>
         <div className="shelf-sort-toolbar">
           <div className="view-switch" role="tablist" aria-label="제안 보기">
             {([["all", `전체 ${items.length}`], ["review", `확인 권장 ${counts.review}`], ["duplicates", `중복 ${counts.duplicates}`]] as const).map(([key, text]) =>
@@ -166,10 +187,10 @@ export function ShelfSortDialog({ aiEnabled, onClose, onError, onSettings }: {
     </div>
     <div className="modal-footer">
       <button onClick={onClose}>닫기</button>
-      <button className="primary" disabled={!selected.length || applying || running} onClick={() => void apply()}>
+      {open && <button className="primary" disabled={!selected.length || applying || running} onClick={() => void apply()}>
         {applying ? <LoaderCircle size={14} className="spin" /> : <FolderInput size={14} />}
         {selected.length ? `선택한 ${selected.length}편 옮기기` : "옮길 논문 선택"}
-      </button>
+      </button>}
     </div>
   </Modal>;
 }

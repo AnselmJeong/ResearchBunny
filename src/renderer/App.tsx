@@ -811,6 +811,7 @@ export function App() {
           ? classification?.topics.find(t => t.id === scopeId)?.name || "소주제"
         : scope === "shelf"
           ? scopeId === SHELF_INBOX ? "서고 수신함" : scopeId === SHELF_REVIEW ? "서고 · 확인 필요"
+            : scopeId === snapshot?.shelf.uncategorized?.id ? "서고 · 미분류"
             : snapshot?.shelf.folders.find(f => f.id === scopeId)?.name || "서고"
         : {
             archive: "내 아카이브",
@@ -1269,8 +1270,8 @@ export function App() {
                     {classifying ? <LoaderCircle size={15} className="spin" /> : <Sparkles size={15} />}
                     {classifying ? "분류 중" : classification?.topics.length ? `분류 갱신${classification.unclassified ? ` · 미분류 ${classification.unclassified}편` : ""}` : "분류"}
                   </button>}
-                  {scope === "shelf" && scopeId === SHELF_INBOX && <button className="secondary" disabled={!snapshot.shelf.online}
-                    data-help="비슷한 서고 논문의 폴더(로컬 임베딩)와 AI 판정으로 수신함 PDF가 갈 폴더를 제안합니다. 확인하고 승인한 PDF만 옮깁니다."
+                  {scope === "shelf" && (scopeId === SHELF_INBOX || scopeId === snapshot.shelf.uncategorized?.id) && <button className="secondary" disabled={!snapshot.shelf.online}
+                    data-help="비슷한 서고 논문의 폴더(로컬 임베딩)와 AI 판정으로 수신함 PDF가 갈 폴더를 제안합니다. 미분류 목록에서 열면 미분류 PDF도 다시 판정합니다. 확인하고 승인한 PDF만 옮깁니다."
                     onClick={() => setDialog("shelfSort")}>
                     <FolderInput size={15} /> 수신함 정리
                   </button>}
@@ -2168,6 +2169,7 @@ export function App() {
         />
       )}
       {dialog === "shelfSort" && <ShelfSortDialog aiEnabled={snapshot.settings.aiEnabled}
+        uncategorized={scope === "shelf" && scopeId === snapshot.shelf.uncategorized?.id}
         onClose={() => setDialog(null)} onError={onError} onSettings={() => setDialog("settings")} />}
       {dialog === "download" && <DownloadDialog key={projectId} projectId={projectId} selected={selected} scope={scope} scopeId={scopeId}
         runs={snapshot.runs} busy={busy || !!active || !!classifying}

@@ -662,7 +662,7 @@ export class Library {
       rows = this.db.prepare(`SELECT DISTINCT f.work_id AS id FROM shelf_files f WHERE ${visible} AND f.stage='resolved' AND f.status IN ('review','provisional')`).all() as { id: string }[];
     else if (scopeId === "inbox")
       rows = this.db.prepare(
-        `SELECT DISTINCT f.work_id AS id FROM shelf_files f JOIN shelf_folders fo ON fo.id=f.folder_id WHERE ${visible} AND (fo.rel_path='' OR fo.rel_path='_uncategorized' OR substr(fo.rel_path,1,15)='_uncategorized/')`,
+        `SELECT DISTINCT f.work_id AS id FROM shelf_files f JOIN shelf_folders fo ON fo.id=f.folder_id WHERE ${visible} AND fo.rel_path=''`,
       ).all() as { id: string }[];
     else {
       const folder = this.db.prepare("SELECT root_id,rel_path FROM shelf_folders WHERE id=?").get(scopeId) as { root_id: string; rel_path: string } | undefined;

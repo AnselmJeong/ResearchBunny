@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, CircleAlert, Folder, Inbox, LibraryBig, Plus, WifiOff } from "lucide-react";
+import { ChevronDown, ChevronRight, CircleAlert, Folder, FolderDot, Inbox, LibraryBig, Plus, WifiOff } from "lucide-react";
 import { SHELF_ALL, SHELF_INBOX, SHELF_REVIEW, type ShelfFolderNode, type ShelfSummary } from "../../shared/shelf";
 
 const OPEN_KEY = "researchbunny.shelfOpenFolders";
@@ -69,8 +69,12 @@ export function ShelfTree({ shelf, scope, scopeId, navigate, onSetup }: {
     </div>
     {open && <div className="archive-branches shelf-branches" aria-label="서고 폴더">
       {shelf.inbox > 0 && <button className={active(SHELF_INBOX) ? "active" : ""} aria-current={active(SHELF_INBOX) ? "page" : undefined}
-        data-help="서고 루트와 _uncategorized에 있는, 아직 폴더를 정하지 않은 PDF입니다. 목록 위의 수신함 정리로 폴더를 제안받고 옮길 수 있습니다." onClick={() => navigate("shelf", SHELF_INBOX)}>
+        data-help="서고 루트에 새로 들어온, 아직 정리하지 않은 PDF입니다. 목록 위의 수신함 정리로 폴더를 제안받고 옮길 수 있습니다." onClick={() => navigate("shelf", SHELF_INBOX)}>
         <Inbox size={15} /><span className="topic-name">수신함</span><span className="nav-count">{shelf.inbox.toLocaleString()}</span>
+      </button>}
+      {shelf.uncategorized && <button className={active(shelf.uncategorized.id) ? "active" : ""} aria-current={active(shelf.uncategorized.id) ? "page" : undefined}
+        data-help="서고의 _uncategorized 폴더입니다. 수신함 정리에서 맞는 폴더가 없던 PDF가 모이며 수신함에는 세지 않습니다. 수신함 정리에서 '미분류도 다시 판정'을 켜면 다시 제안받습니다." onClick={() => navigate("shelf", shelf.uncategorized!.id)}>
+        <FolderDot size={15} /><span className="topic-name">미분류</span><span className="nav-count">{shelf.uncategorized.count.toLocaleString()}</span>
       </button>}
       {(children.get(null) || []).map((folder) => branch(folder, 0))}
       {shelf.review > 0 && <button className={active(SHELF_REVIEW) ? "active" : ""} aria-current={active(SHELF_REVIEW) ? "page" : undefined}

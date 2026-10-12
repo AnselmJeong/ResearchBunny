@@ -309,7 +309,7 @@ export const schemas = {
   shelfReveal: z.object({ fileId: id }),
   shelfLink: z.object({ projectId: id, workId: id, fileId: id }),
   shelfSortState: z.object({}),
-  shelfSortStart: z.object({}),
+  shelfSortStart: z.object({ uncategorized: z.boolean().default(false) }),
   shelfSortCancel: z.object({}),
   shelfSortApply: z.object({ items: z.array(z.object({ fileId: id, target: z.string().trim().min(1).max(1000) })).min(1).max(10000) }),
   duplicates: z.object({ workId: id }),

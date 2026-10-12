@@ -20,8 +20,10 @@ import {
   extractAbstractCandidate,
   formatShelfFilename,
   isInboxFolder,
+  isUncategorizedFolder,
   pageLead,
   parseShelfFilename,
+  SHELF_UNCATEGORIZED,
   type EmbedBasis,
   type ShelfAdoptResult,
   type ShelfConfig,
@@ -1312,7 +1314,7 @@ export class Shelf {
   summary(projectId?: string): ShelfSummary {
     const root = this.root();
     const counts = this.counts(root?.id);
-    if (!root) return { configured: false, root: null, online: false, folders: [], inbox: 0, review: 0, total: 0, counts, job: this.job };
+    if (!root) return { configured: false, root: null, online: false, folders: [], inbox: 0, uncategorized: null, review: 0, total: 0, counts, job: this.job };
     const trashed = projectId ? " AND work_id NOT IN (SELECT work_id FROM project_works WHERE project_id=? AND json_extract(state,'$.screening')='trash')" : "";
     const scope = projectId ? [root.id, projectId] : [root.id];
     const folders = this.db.db.prepare("SELECT id,parent_id AS parentId,name,rel_path AS relPath FROM shelf_folders WHERE root_id=? AND present=1 ORDER BY rel_path").all(root.id) as { id: string; parentId: string | null; name: string; relPath: string }[];
@@ -1330,6 +1332,8 @@ export class Shelf {
       }
     }
     const inbox = folders.filter((f) => isInboxFolder(f.relPath)).reduce((sum, f) => sum + (direct.get(f.id) || 0), 0);
+    const parked = folders.filter((f) => isUncategorizedFolder(f.relPath)).reduce((sum, f) => sum + (direct.get(f.id) || 0), 0);
+    const parkedId = folders.find((f) => f.relPath === SHELF_UNCATEGORIZED)?.id;
     const review = (this.db.db.prepare(`SELECT count(DISTINCT work_id) AS n FROM shelf_files WHERE root_id=? AND stage='resolved' AND status IN ('review','provisional') AND work_id IS NOT NULL${trashed}`).get(...scope) as { n: number }).n;
     const total = projectId
       ? (this.db.db.prepare(`SELECT count(DISTINCT work_id) AS n FROM shelf_files WHERE root_id=? AND status!='missing' AND work_id IS NOT NULL${trashed}`).get(...scope) as { n: number }).n
@@ -1338,8 +1342,9 @@ export class Shelf {
       configured: true,
       root: { id: root.id, path: root.path, name: root.name, lastScanAt: root.last_scan_at },
       online: this.online,
-      folders: [...byId.values()].filter((f) => !isInboxFolder(f.relPath)),
+      folders: [...byId.values()].filter((f) => !isInboxFolder(f.relPath) && !isUncategorizedFolder(f.relPath)),
       inbox,
+      uncategorized: parkedId && parked ? { id: parkedId, count: parked } : null,
       review,
       total,
       counts,

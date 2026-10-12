@@ -12,6 +12,7 @@ import {
   SHELF_DUPLICATED,
   SHELF_UNCATEGORIZED,
   isInboxFolder,
+  isUncategorizedFolder,
   titleKey,
   type ShelfFileInfo,
   type ShelfSortItem,
@@ -227,14 +228,25 @@ export class ShelfSorter {
   view(): ShelfSortView {
     const state = this.state();
     const root = this.shelf.root();
-    if (!root) return { ...state, inbox: 0, fresh: 0 };
-    const folders = (this.db.db.prepare("SELECT id,rel_path FROM shelf_folders WHERE root_id=?").all(root.id) as { id: string; rel_path: string }[])
-      .filter((f) => isInboxFolder(f.rel_path)).map((f) => f.id);
-    const ids = folders.length
-      ? (this.db.db.prepare(`SELECT id FROM shelf_files WHERE status!='missing' AND folder_id IN (${folders.map(() => "?").join(",")})`).all(...folders) as { id: string }[])
-      : [];
-    const covered = new Set(state.covered ?? [...state.items, ...state.waiting].map((i) => i.fileId));
-    return { ...state, inbox: ids.length, fresh: ids.filter((r) => !covered.has(r.id)).length };
+    if (!root) return { ...state, inbox: 0, uncategorized: 0, fresh: 0, current: false };
+    const files = this.db.db.prepare(
+      "SELECT f.id,fo.rel_path AS folder FROM shelf_files f JOIN shelf_folders fo ON fo.id=f.folder_id WHERE f.root_id=? AND f.status!='missing'",
+    ).all(root.id) as { id: string; folder: string }[];
+    const inbox = files.filter((f) => isInboxFolder(f.folder));
+    const parked = files.filter((f) => isUncategorizedFolder(f.folder));
+    // A proposal saved before 0.3.3 kept no list of what it saw, so it never describes today's inbox.
+    const covered = new Set(state.covered ?? []);
+    const fresh = inbox.filter((f) => !covered.has(f.id)).length;
+    // Papers intake.py has filed since are no longer moves this proposal can make.
+    const sortable = new Set([...inbox, ...parked].map((f) => f.id));
+    const movable = state.items.some((i) => i.target && i.target !== i.folder && sortable.has(i.fileId));
+    return {
+      ...state,
+      inbox: inbox.length,
+      uncategorized: parked.length,
+      fresh,
+      current: state.job.status === "ready" && !!state.covered && !fresh && movable,
+    };
   }
   private save(state: ShelfSortState) {
     this.db.pref(STATE_KEY, state);
@@ -252,7 +264,8 @@ export class ShelfSorter {
     return (this.db.db.prepare("SELECT rel_path FROM shelf_folders WHERE root_id=? AND present=1").all(rootId) as { rel_path: string }[]).map((r) => r.rel_path);
   }
 
-  start(): ShelfSortView {
+  /** Proposes folders for the inbox; `uncategorized` also re-sorts what earlier runs parked in `_uncategorized`. */
+  start(options: { uncategorized?: boolean } = {}): ShelfSortView {
     if (this.active || this.applying) throw new AppError("BUSY", this.active ? "수신함 정리 제안을 만드는 중입니다." : "파일을 옮기는 중입니다. 끝난 뒤 다시 만드세요.");
     if (!this.shelf.root() || !this.shelf.config()) throw new AppError("SHELF_CONFIG", "서고를 먼저 연결하세요.");
     if (!{ ...DEFAULT_AI, ...this.db.pref<AIConfig>("ai") }.aiEnabled)
@@ -261,7 +274,7 @@ export class ShelfSorter {
     this.active = control;
     const state = { ...emptyState(), job: job("running", "새 PDF를 색인하고 있습니다.") };
     this.save(state);
-    void this.execute(control.signal)
+    void this.execute(control.signal, !!options.uncategorized)
       .catch((error) => this.save({
         ...this.state(),
         job: control.signal.aborted
@@ -278,7 +291,7 @@ export class ShelfSorter {
     this.active?.abort();
   }
 
-  private async execute(signal: AbortSignal) {
+  private async execute(signal: AbortSignal, uncategorized: boolean) {
     // New PDFs are hashed, read and embedded first; a paused shelf sorts what is already indexed.
     await this.shelf.scan("sort");
     signal.throwIfAborted();
@@ -291,8 +304,10 @@ export class ShelfSorter {
     const leafOf = new Map(taxonomy.leaves.map((l) => [l.path.normalize("NFC"), l.path]));
     const rows = this.rows(root.id);
     const byId = new Map(rows.map((r) => [r.id, r]));
-    const library = rows.filter((r) => !isInboxFolder(r.folder));
-    const inbox = rows.filter((r) => isInboxFolder(r.folder));
+    // Papers in `_uncategorized` stay out unless asked for; until then they count as existing copies.
+    const sorting = (row: Row) => isInboxFolder(row.folder) || (uncategorized && isUncategorizedFolder(row.folder));
+    const library = rows.filter((r) => !sorting(r));
+    const inbox = rows.filter(sorting);
 
     // Existing copies, first by path as in the shelf's own duplicate rule.
     const titleOf = (row: Row) => titleKey(parseInfo(row).parsed?.title || "");
@@ -508,7 +523,7 @@ export class ShelfSorter {
         const skip = (reason: string) => result.skipped.push({ relPath: row?.rel_path || fileId, reason });
         if (!row || row.root_id !== root.id || row.status === "missing") { skip("서고에서 찾을 수 없습니다."); continue; }
         const from = parentRel(row.rel_path) ?? "";
-        if (!isInboxFolder(from)) { skip("이미 수신함 밖에 있습니다."); continue; }
+        if (!isInboxFolder(from) && !isUncategorizedFolder(from)) { skip("이미 수신함 밖에 있습니다."); continue; }
         if (!allowed.has(target)) { skip("분류 기준에 없는 폴더입니다."); continue; }
         const dir = onDisk.get(target.normalize("NFC")) ?? target;
         if (dir === from) { done.add(fileId); continue; }
@@ -543,11 +558,11 @@ export class ShelfSorter {
         await writeIndex(root.path);
       }
       // The saved job describes what is left to review, never a past move: that is the caller's result.
-      // A proposal with nothing left is finished, so the next visit starts from today's inbox.
+      // A proposal with nothing left to move is finished, so the next visit starts from today's inbox.
       const state = this.state();
       const items = state.items.filter((i) => !done.has(i.fileId));
       const left = items.filter((i) => i.target && i.target !== i.folder).length;
-      if (!items.length) this.save(emptyState());
+      if (!left) this.save(emptyState());
       else this.save({
         ...state,
         items,
