@@ -145,6 +145,7 @@ export function Inspector({
             className={
               state.screening === "included" ? "saved-button" : "save-inspector"
             }
+            title={state.screening === "included" ? "클릭하면 아카이브에서 빼 검토 대기함으로 돌려보냅니다" : undefined}
             onClick={() =>
               onPatch({
                 screening:

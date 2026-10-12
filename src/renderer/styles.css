@@ -3181,6 +3181,28 @@ html[data-theme="dark"] .selection-bar .primary {
 .page-selection-label:hover {
   color: var(--accent);
 }
+/* A narrow list wraps 모두 선택 under the page checkbox instead of running into the year column. */
+.table-heading:has(.all-selection) {
+  height: auto;
+  min-height: 38px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.selection-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  min-width: 0;
+}
+.selection-scopes > label {
+  white-space: nowrap;
+}
+.all-selection {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 
 .graph-legend > span {
   display: inline-flex;

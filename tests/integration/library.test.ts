@@ -927,3 +927,16 @@ test("remembered selections drop papers that left the list through the trash", a
     assert.deepEqual(settledUi(db, projectId), { navigation: afterTrash });
   });
 });
+
+test("remembered selections drop papers only in the views they left", async () => {
+  const { defaultView, deselectWhere, restoreNavigation, visitView } = await import("../../src/shared/navigation");
+  const archive = defaultView({ scope: "archive", selected: ["a", "b"] });
+  const topic = defaultView({ scope: "topic", scopeId: "t1", selected: ["a"] });
+  const pending = defaultView({ scope: "pending", selected: ["a"] });
+  const history = visitView(visitView(restoreNavigation(archive), archive, topic), topic, pending);
+  const after = deselectWhere(history, ["a"], (view) => ["archive", "topic"].includes(view.scope));
+  assert.deepEqual(after.views["archive:"].selected, ["b"]);
+  assert.deepEqual(after.views["topic:t1"].selected, []);
+  assert.deepEqual(after.views["pending:"].selected, ["a"]);
+  assert.equal(deselectWhere(history, [], () => true), history);
+});

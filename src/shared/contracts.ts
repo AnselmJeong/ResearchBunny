@@ -150,6 +150,7 @@ export const schemas = {
   inspect: z.object({ projectId: id, workId: id, runId: id.optional() }),
   mutateWorks: z.object({ projectId: id, ids, patch: state }),
   restoreWorks: z.object({ projectId: id, ids }),
+  unarchiveWorks: z.object({ projectId: id, ids }),
   clearPending: z.object({ projectId: id }),
   deleteTrashedWorks: trashTarget,
   previewTrashDeletion: trashTarget,
@@ -335,6 +336,7 @@ export interface Outputs {
   inspect: WorkView;
   mutateWorks: void;
   restoreWorks: void;
+  unarchiveWorks: { ids: string[] };
   clearPending: { ids: string[] };
   deleteTrashedWorks: TrashDeletion;
   previewTrashDeletion: { count: number; shelfFiles: string[] };

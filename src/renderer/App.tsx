@@ -11,6 +11,7 @@ import {
   ArrowRight,
   ArrowLeft,
   Bookmark,
+  BookmarkMinus,
   Check,
   ChevronRight,
   Compass,
@@ -64,6 +65,7 @@ import {
   runPath,
   forgetWorks,
   deselectWorks,
+  deselectWhere,
   type WorkspaceView,
 } from "../shared/navigation";
 import { HelpTooltip } from "./components/HelpTooltip";
@@ -116,6 +118,8 @@ const EMPTY: ListResult = {
   edges: [],
 };
 type Scope = Input<"list">["scope"];
+/** Views that list only papers saved to the archive. */
+const ARCHIVE_SCOPES: string[] = ["archive", "topic", "unclassified"];
 type Dialog =
   | "download"
   | "settings"
@@ -476,7 +480,7 @@ export function App() {
   const currentRun = snapshot?.runs.find((r) => r.id === scopeId);
   const classification = snapshot?.classification;
   const classifying = classification?.job?.status === "running";
-  const archiveScope = ["archive", "topic", "unclassified"].includes(scope);
+  const archiveScope = ARCHIVE_SCOPES.includes(scope);
   const active = snapshot?.runs.find(
     (r) => r.status === "running" || r.status === "queued",
   );
@@ -496,10 +500,16 @@ export function App() {
   );
   // A graph scope whose papers are all unlinked still shows the graph and why it is empty.
   const graphScope = graphView && list.total > 0;
+  const selectedIds = useMemo(() => new Set(selected), [selected]);
+  const listedIds = useMemo(() => new Set(list.ids), [list.ids]);
   const allPageSelected = list.works.length > 0 &&
-    list.works.every((work) => selected.includes(work.id));
-  const somePageSelected = list.works.some((work) => selected.includes(work.id));
+    list.works.every((work) => selectedIds.has(work.id));
+  const somePageSelected = list.works.some((work) => selectedIds.has(work.id));
   const pageSelectionLabel = allPageSelected ? "이 페이지 선택 해제" : "이 페이지 전체 선택";
+  // A list shows one page; 모두 선택 reaches every paper the current filters keep, on every page.
+  const morePages = list.total > list.works.length;
+  const allSelected = list.ids.length > 0 && list.ids.every((id) => selectedIds.has(id));
+  const someSelected = list.ids.some((id) => selectedIds.has(id));
   const navigate = (
     next: Scope,
     id = "",
@@ -608,6 +618,23 @@ export function App() {
     deselectElsewhere(ids, true);
     setDialog(null);
     setSelected([]);
+  };
+  const unarchiveSelected = () => {
+    if (busy || !selected.length) return;
+    const ids = [...selected],
+      targetProject = projectId;
+    void task(async () => {
+      const moved = (await window.bunny.unarchiveWorks({ projectId: targetProject, ids })).ids;
+      if (projectRef.current !== targetProject) return;
+      // The papers leave every archive list, so archive views stop remembering them.
+      navigationRef.current = deselectWhere(navigationRef.current, moved, (view) => ARCHIVE_SCOPES.includes(view.scope));
+      setNavigation(navigationRef.current);
+      const left = new Set(moved);
+      setSelected((current) => current.filter((id) => !left.has(id)));
+      flash(moved.length
+        ? `${moved.length}편을 아카이브에서 빼 검토 대기함으로 돌려보냈습니다. 상단 되돌리기로 복원할 수 있습니다.`
+        : "선택한 문헌 중 아카이브에 저장된 문헌이 없습니다.");
+    });
   };
   const saveToCollection = (target: string) => {
     const ids = [...selected],
@@ -819,8 +846,9 @@ export function App() {
             excluded: "제외 문헌",
           }[scope as string] || "문헌";
   const fullPage = dialog === "settings";
+  const contextIds = new Set(list.context?.map((w) => w.id));
   const hiddenSelected = selected.filter(
-    (id) => !list.ids.includes(id) && !list.context?.some((w) => w.id === id),
+    (id) => !listedIds.has(id) && !contextIds.has(id),
   ).length;
   const currentProject = snapshot?.projects.find((p) => p.id === projectId);
   const failedNotes = Object.entries(drafts).filter(([, d]) => d.failed);
@@ -1335,7 +1363,7 @@ export function App() {
                       type="checkbox"
                       checked={
                         list.works.length > 0 &&
-                        list.works.every((w) => selected.includes(w.id))
+                        list.works.every((w) => selectedIds.has(w.id))
                       }
                       onChange={(e) =>
                         setSelected(
@@ -1369,19 +1397,30 @@ export function App() {
                     onBasis={setBasis}
                     shelf={snapshot.shelf.configured}
                   />
-                  <button
-                    disabled={!selected.length}
-                    onClick={() =>
-                      patch(
-                        selected,
-                        { screening: "included" },
-                        `${selected.length}편을 저장했습니다.`,
-                      )
-                    }
-                  >
-                    <Bookmark size={14} />
-                    저장
-                  </button>
+                  {archiveScope ? (
+                    <button
+                      disabled={busy || !selected.length}
+                      data-help="선택한 문헌을 아카이브에서 빼 검토 대기함으로 돌려보냅니다. 논문·PDF·메모는 그대로이고 상단 되돌리기로 복원할 수 있습니다."
+                      onClick={unarchiveSelected}
+                    >
+                      <BookmarkMinus size={14} />
+                      아카이브에서 빼기
+                    </button>
+                  ) : (
+                    <button
+                      disabled={!selected.length}
+                      onClick={() =>
+                        patch(
+                          selected,
+                          { screening: "included" },
+                          `${selected.length}편을 저장했습니다.`,
+                        )
+                      }
+                    >
+                      <Bookmark size={14} />
+                      저장
+                    </button>
+                  )}
                   <button onClick={() => setDialog("seeds")}>
                     <Leaf size={14} />
                     seed
@@ -1590,7 +1629,7 @@ export function App() {
                         <label key={w.id}>
                           <input
                             type="checkbox"
-                            checked={selected.includes(w.id)}
+                            checked={selectedIds.has(w.id)}
                             onChange={(e) =>
                               setSelected((ids) =>
                                 e.target.checked
@@ -1613,7 +1652,7 @@ export function App() {
                     <div>
                       {list.shelf.map((w) => (
                         <div key={w.id} className={`shelf-pinned-row ${inspectorId === w.id ? "inspected" : ""}`}>
-                          <input type="checkbox" aria-label={`${w.title} 선택`} checked={selected.includes(w.id)}
+                          <input type="checkbox" aria-label={`${w.title} 선택`} checked={selectedIds.has(w.id)}
                             onChange={(e) => setSelected((ids) => e.target.checked ? [...new Set([...ids, w.id])] : ids.filter((id) => id !== w.id))} />
                           <button onClick={() => void openArticle(w.id).catch(onError)}>
                             <strong>{w.title}</strong>
@@ -1724,9 +1763,30 @@ export function App() {
                             )
                           }
                         />
-                        <label className="page-selection-label" htmlFor="page-selection">
-                          {pageSelectionLabel}
-                        </label>
+                        <div className="selection-scopes">
+                          <label className="page-selection-label" htmlFor="page-selection">
+                            {pageSelectionLabel}
+                          </label>
+                          {morePages && (
+                            <label className="page-selection-label all-selection">
+                              <input
+                                type="checkbox"
+                                checked={allSelected}
+                                ref={input => {
+                                  if (input) input.indeterminate = someSelected && !allSelected;
+                                }}
+                                onChange={(e) =>
+                                  setSelected(
+                                    e.target.checked
+                                      ? [...new Set([...selected, ...list.ids])]
+                                      : selected.filter((id) => !listedIds.has(id)),
+                                  )
+                                }
+                              />
+                              {allSelected ? "모두 선택 해제" : `모두 선택 · ${list.total.toLocaleString()}편`}
+                            </label>
+                          )}
+                        </div>
                         <span>연도</span>
                         <span>{scope === "run" ? "인용" : "읽기 상태"}</span>
                         <span />
@@ -1737,7 +1797,7 @@ export function App() {
                             key={w.id}
                             className={
                               "paper-row " +
-                              (selected.includes(w.id) ? "selected " : "") +
+                              (selectedIds.has(w.id) ? "selected " : "") +
                               (inspectorId === w.id ? "inspected " : "") +
                               (w.evidence?.hidden.length ? "filtered" : "")
                             }
@@ -1745,7 +1805,7 @@ export function App() {
                             <input
                               type="checkbox"
                               aria-label={`${w.title} 선택`}
-                              checked={selected.includes(w.id)}
+                              checked={selectedIds.has(w.id)}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 toggle(w.id, index, e.shiftKey);
@@ -1887,7 +1947,8 @@ export function App() {
                       : ""}
                   </span>
                   <div>
-                    {list.total > 0 && (
+                    {/* The list heading has its own 모두 선택; a graph has no heading. */}
+                    {graphView && list.total > 0 && (
                       <button
                         className="text-button"
                         onClick={() =>
