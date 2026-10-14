@@ -940,3 +940,32 @@ test("remembered selections drop papers only in the views they left", async () =
   assert.deepEqual(after.views["pending:"].selected, ["a"]);
   assert.equal(deselectWhere(history, [], () => true), history);
 });
+
+test("the inspector drops a paper that left its list but keeps one a search only hides", async () => {
+  const { anchorInspector, defaultView, listKey, listMembers } = await import("../../src/shared/navigation");
+  const archive = defaultView({ scope: "archive", inspectorId: "a" });
+  const key = listKey({ ...archive, graph: false });
+  const list = (ids: string[], extra: { context?: string[]; shelf?: string[] } = {}) => listMembers({
+    ids,
+    context: extra.context?.map((id) => ({ id }) as never),
+    shelf: extra.shelf?.map((id) => ({ id }) as never),
+  });
+  // A remembered paper that left the archive while the view was away; the user's case: an empty archive.
+  const restored = { id: "a", listed: true, key };
+  assert.deepEqual(anchorInspector(restored, list([]), key), { anchor: { id: null, listed: false, key }, drop: true });
+  assert.equal(anchorInspector(restored, list(["a", "b"]), key).drop, false);
+  // The same list reloads without it: taken out of the archive, trashed or undone.
+  const shown = anchorInspector(restored, list(["a", "b"]), key).anchor;
+  assert.equal(anchorInspector(shown, list(["b"]), key).drop, true);
+  // A new search hides it: it stays, and a reload of that search keeps it too.
+  const searched = listKey({ ...archive, localQuery: "b", graph: false });
+  const hidden = anchorInspector(shown, list(["b"]), searched);
+  assert.deepEqual(hidden, { anchor: { id: "a", listed: false, key: searched }, drop: false });
+  assert.equal(anchorInspector(hidden.anchor, list(["b"]), searched).drop, false);
+  // A paper opened from outside the list (a related paper, an AI source) stays.
+  assert.equal(anchorInspector({ id: "z", listed: false, key }, list(["b"]), key).drop, false);
+  // Graph context and shelf matches count as listed.
+  assert.equal(anchorInspector(shown, list(["b"], { context: ["a"] }), key).drop, false);
+  assert.equal(anchorInspector(shown, list(["b"], { shelf: ["a"] }), key).drop, false);
+  assert.equal(anchorInspector({ id: null, listed: true, key }, list([]), key).drop, false);
+});

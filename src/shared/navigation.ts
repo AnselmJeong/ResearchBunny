@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { filtersSchema } from "./contracts";
-import { DEFAULT_FILTERS, type Run } from "./types";
+import { DEFAULT_FILTERS, type ListResult, type Run } from "./types";
 
 const viewSchema = z.object({
   scope: z
@@ -102,6 +102,39 @@ export function deselectWhere(
 }
 export const viewKey = (view: Pick<WorkspaceView, "scope" | "scopeId">) =>
   `${view.scope}:${view.scopeId}`;
+/** Names the papers a view lists, whatever page or order it shows them in. */
+export const listKey = (
+  view: Pick<WorkspaceView, "scope" | "scopeId" | "localQuery" | "filters"> & { graph: boolean },
+) => JSON.stringify([view.scope, view.scopeId, view.localQuery, view.filters, view.graph]);
+/** Papers a list shows: its results on every page, its shelf matches and its graph context. */
+export const listMembers = (list: Pick<ListResult, "ids" | "context" | "shelf">) =>
+  new Set([
+    ...list.ids,
+    ...(list.context || []).map((work) => work.id),
+    ...(list.shelf || []).map((work) => work.id),
+  ]);
+/** The inspector's paper and whether it must stay in its list. */
+export interface InspectorAnchor {
+  id: string | null;
+  /** Opened from the list or remembered with the view, not from outside it (a related paper, an AI source). */
+  listed: boolean;
+  /** `listKey` of the list it was last checked against. */
+  key: string;
+}
+/**
+ * Checks the inspector's paper against a list that just loaded. When the same list no longer holds a listed paper,
+ * the paper was trashed, taken out of the view or undone, or left a remembered view while it was away: the inspector
+ * drops it. A paper that a new search or filter only hides, or one opened from outside the list, stays.
+ */
+export function anchorInspector(
+  anchor: InspectorAnchor,
+  members: ReadonlySet<string>,
+  key: string,
+): { anchor: InspectorAnchor; drop: boolean } {
+  const present = !!anchor.id && members.has(anchor.id);
+  const drop = !!anchor.id && !present && anchor.listed && anchor.key === key;
+  return { anchor: { id: drop ? null : anchor.id, listed: present, key }, drop };
+}
 export const defaultView = (
   value: Partial<WorkspaceView> = {},
 ): WorkspaceView => viewSchema.parse(value);

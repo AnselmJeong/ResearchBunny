@@ -66,6 +66,10 @@ import {
   forgetWorks,
   deselectWorks,
   deselectWhere,
+  listKey,
+  listMembers,
+  anchorInspector,
+  type InspectorAnchor,
   type WorkspaceView,
 } from "../shared/navigation";
 import { HelpTooltip } from "./components/HelpTooltip";
@@ -211,6 +215,8 @@ export function App() {
     searchInput = useRef<HTMLInputElement>(null),
     discoveryStarting = useRef(false),
     toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // The inspector follows its list; see anchorInspector.
+  const inspectorAnchor = useRef<InspectorAnchor>({ id: null, listed: false, key: "" });
   const [navigation, setNavigation] = useState(() => restoreNavigation({}));
   const [hydratedProject, setHydratedProject] = useState("");
   const navigationRef = useRef(navigation);
@@ -248,6 +254,8 @@ export function App() {
     setScopeId(v.scopeId);
     setSelected(v.selected);
     setInspectorId(v.inspectorId);
+    // A remembered paper may have left the view while it was away; the first list checks it.
+    inspectorAnchor.current = { id: v.inspectorId, listed: true, key: listKey({ ...v, graph: v.view !== "list" }) };
     setInspectorOpen(v.inspectorOpen);
     setView(v.view);
     setFilters(v.filters);
@@ -346,9 +354,17 @@ export function App() {
     if (!projectId || initialized.current !== projectId) return;
     let valid = true;
     setLoading(true);
+    const key = listKey({ scope, scopeId, localQuery, filters, graph: graphView });
+    const show = (result: ListResult) => {
+      setList(result);
+      const stale = inspectorAnchor.current.id;
+      const { anchor, drop } = anchorInspector(inspectorAnchor.current, listMembers(result), key);
+      inspectorAnchor.current = anchor;
+      if (drop) setInspectorId((id) => (id === stale ? null : id));
+    };
     const timer = setTimeout(() => {
       if ((scope === "run" || scope === "collection" || scope === "topic") && !scopeId) {
-        setList(EMPTY);
+        show(EMPTY);
         setLoading(false);
         return;
       }
@@ -364,7 +380,7 @@ export function App() {
           sort,
         })
         .then((result) => {
-          if (valid) setList(result);
+          if (valid) show(result);
         })
         .catch((error) => {
           // A list for a project or view left since is not this view's error.
@@ -506,6 +522,7 @@ export function App() {
   const graphScope = graphView && list.total > 0;
   const selectedIds = useMemo(() => new Set(selected), [selected]);
   const listedIds = useMemo(() => new Set(list.ids), [list.ids]);
+  const listedPapers = useMemo(() => listMembers(list), [list]);
   const allPageSelected = list.works.length > 0 &&
     list.works.every((work) => selectedIds.has(work.id));
   const somePageSelected = list.works.some((work) => selectedIds.has(work.id));
@@ -560,6 +577,7 @@ export function App() {
   const inspect = (id: string) => {
     readerRequest.current++;
     setReaderVisible(false);
+    inspectorAnchor.current = { ...inspectorAnchor.current, id, listed: listedPapers.has(id) };
     setInspectorId(id);
     setInspectorOpen(true);
   };
