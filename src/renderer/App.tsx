@@ -81,6 +81,7 @@ import { RightPane } from "./components/RightPane";
 import { ResizableInspector } from "./components/ResizableInspector";
 import { Modal } from "./components/Modal";
 import { DiscoveryMenu } from "./components/DiscoveryMenu";
+import { GroupSelection } from "./components/GroupSelection";
 import { ImportResults } from "./components/ImportResults";
 import { DownloadDialog } from "./components/DownloadDialog";
 import { ShelfSortDialog } from "./components/ShelfSortDialog";
@@ -850,9 +851,9 @@ export function App() {
             excluded: "제외 문헌",
           }[scope as string] || "문헌";
   const fullPage = dialog === "settings";
-  const contextIds = new Set(list.context?.map((w) => w.id));
+  const pinnedIds = new Set([...(list.context || []), ...(list.shelf || [])].map((w) => w.id));
   const hiddenSelected = selected.filter(
-    (id) => !listedIds.has(id) && !contextIds.has(id),
+    (id) => !listedIds.has(id) && !pinnedIds.has(id),
   ).length;
   const currentProject = snapshot?.projects.find((p) => p.id === projectId);
   const failedNotes = Object.entries(drafts).filter(([, d]) => d.failed);
@@ -1598,7 +1599,8 @@ export function App() {
                     value={sort}
                     onChange={(e) => setSort(e.target.value as typeof sort)}
                   >
-                    <option value="rank">{shelfSearch ? "관련도순" : "기본 순서"}</option>
+                    {/* A run's own order is its relevance rank, so it says so. */}
+                    <option value="rank">{shelfSearch || scope === "run" ? "관련도순" : "기본 순서"}</option>
                     <option value="year">최신순</option>
                     <option value="citations">피인용수순</option>
                     <option value="title">제목순</option>
@@ -1657,6 +1659,7 @@ export function App() {
                       출발·초기 기준 문헌 {list.context.length}편 · 후보 집계와
                       별도 표시
                     </summary>
+                    <GroupSelection ids={list.context.map((w) => w.id)} selected={selectedIds} setSelected={setSelected} />
                     <div>
                       {list.context.map((w) => (
                         <label key={w.id}>
@@ -1682,6 +1685,7 @@ export function App() {
                 {scope === "run" && !!list.shelf?.length && (
                   <details className="shelf-pinned" open>
                     <summary><LibraryBig size={15} />내 서고에서 찾음 {list.shelf.length}편 <span className="subtle">· 이미 가진 PDF · 다운로드 불필요</span></summary>
+                    <GroupSelection ids={list.shelf.map((w) => w.id)} selected={selectedIds} setSelected={setSelected} />
                     <div>
                       {list.shelf.map((w) => (
                         <div key={w.id} className={`shelf-pinned-row ${inspectorId === w.id ? "inspected" : ""}`}>

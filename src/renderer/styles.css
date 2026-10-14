@@ -3215,6 +3215,24 @@ html[data-theme="dark"] .selection-bar .primary {
   align-items: center;
   gap: 6px;
 }
+/* Sits above a pinned group's scrolling list, so it stays put while the titles scroll. */
+.group-selection {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  margin-top: 8px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+}
+.group-selection:hover {
+  color: var(--accent);
+}
+.shelf-pinned > .group-selection {
+  padding: 0 4px;
+}
 
 .graph-legend > span {
   display: inline-flex;
