@@ -3591,6 +3591,10 @@ html[data-theme="dark"] .selection-bar .primary {
 .shelf-sort-status > .shelf-sort-actions { flex-shrink: 0; gap: 14px; }
 .shelf-sort-result { margin: 0 0 14px; font-size: 12px; }
 .shelf-sort-result ul { margin: 6px 0 0; padding-left: 18px; overflow-wrap: anywhere; }
+.trash-pdf-choice { margin: 4px 0 14px; gap: 12px; }
+.trash-pdf-choice > label { align-items: flex-start; }
+.trash-pdf-choice input { margin-top: 2px; }
+.trash-pdf-choice small { color: var(--muted); }
 .trash-shelf-files { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--soft); font-size: 12px; }
 .trash-shelf-files p { margin: 0; }
 .trash-shelf-files ul { margin: 6px 0 0; padding-left: 18px; overflow-wrap: anywhere; }

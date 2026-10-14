@@ -230,7 +230,7 @@ export class ShelfSorter {
     const root = this.shelf.root();
     if (!root) return { ...state, inbox: 0, uncategorized: 0, fresh: 0, current: false };
     const files = this.db.db.prepare(
-      "SELECT f.id,fo.rel_path AS folder FROM shelf_files f JOIN shelf_folders fo ON fo.id=f.folder_id WHERE f.root_id=? AND f.status!='missing'",
+      "SELECT f.id,fo.rel_path AS folder FROM shelf_files f JOIN shelf_folders fo ON fo.id=f.folder_id WHERE f.root_id=? AND f.status NOT IN ('missing','hidden')",
     ).all(root.id) as { id: string; folder: string }[];
     const inbox = files.filter((f) => isInboxFolder(f.folder));
     const parked = files.filter((f) => isUncategorizedFolder(f.folder));
@@ -257,7 +257,8 @@ export class ShelfSorter {
   }
   private rows(rootId: string): Row[] {
     return this.db.db.prepare(
-      "SELECT f.*,fo.rel_path AS folder FROM shelf_files f JOIN shelf_folders fo ON fo.id=f.folder_id WHERE f.root_id=? AND f.status!='missing' ORDER BY f.rel_path",
+      // PDFs hidden by a permanent deletion stay where they are: never counted, proposed or used as existing copies.
+      "SELECT f.*,fo.rel_path AS folder FROM shelf_files f JOIN shelf_folders fo ON fo.id=f.folder_id WHERE f.root_id=? AND f.status NOT IN ('missing','hidden') ORDER BY f.rel_path",
     ).all(rootId) as Row[];
   }
   private folders(rootId: string) {

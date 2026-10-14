@@ -111,26 +111,33 @@ export class Service {
   }
   /** Downloads and imports are stored in the shelf inbox: refuse to start while a configured shelf is offline. */
   /**
-   * Permanent deletion also deletes the papers' PDFs from the shelf, in every
-   * folder, so the shelf never lists them again. Files go first: a paper whose
-   * PDF cannot be deleted stays in the trash.
+   * Permanent deletion takes the papers' shelf PDFs out of the app, in every
+   * folder, so the shelf never lists them again. By default (`keep`) the PDFs
+   * stay on disk and are only hidden; `delete` deletes them from disk. Files go
+   * first there: a paper whose PDF cannot be deleted stays in the trash.
    */
-  private async deleteTrash(projectId: string, selected?: string[]): Promise<TrashDeletion> {
+  private async deleteTrash(projectId: string, selected: string[] | undefined, pdfs: "keep" | "delete"): Promise<TrashDeletion> {
     const ids = trashTargets(this.db, projectId, selected);
     const files = this.shelf.filesOf(ids);
-    if (!files.length) return { ...deleteTrashedWorks(this.db, projectId, ids), shelf: { deleted: [], failed: [] } };
+    if (!files.length) return { ...deleteTrashedWorks(this.db, projectId, ids), shelf: { deleted: [], hidden: [], failed: [] } };
+    // Hiding never touches the disk, so an offline shelf does not stop it.
+    if (pdfs === "keep")
+      return this.shelf.hold(async () => this.db.transaction(() => {
+        const result = deleteTrashedWorks(this.db, projectId, ids);
+        return { ...result, shelf: { deleted: [], hidden: this.shelf.hide(files), failed: [] } };
+      }));
     const root = this.shelf.root()!;
     if (!(await rootOnline(root.path)))
       throw new AppError("SHELF_OFFLINE", `서고(${root.path})가 연결되지 않아 서고 PDF를 지울 수 없습니다. NAS를 연결한 뒤 영구 삭제하세요.`);
     return this.shelf.hold(async () => {
       const { deleted, failed } = await this.shelf.unlinkFiles(files);
-      const kept = new Set(failed.map((f) => f.row.work_id));
+      const kept = new Set(failed.flatMap((f) => this.shelf.owners(f.row, ids)));
       const result = deleteTrashedWorks(this.db, projectId, ids.filter((id) => !kept.has(id)));
       this.shelf.drop(deleted.map((f) => f.id));
       await logDeletion(root.path, deleted.filter((f) => f.status !== "missing").map((f) => f.rel_path)).catch(() => false);
       return {
         ...result,
-        shelf: { deleted: deleted.map((f) => f.rel_path), failed: failed.map((f) => ({ relPath: f.row.rel_path, reason: f.reason })) },
+        shelf: { deleted: deleted.map((f) => f.rel_path), hidden: [], failed: failed.map((f) => ({ relPath: f.row.rel_path, reason: f.reason })) },
       };
     });
   }
@@ -304,6 +311,8 @@ export class Service {
         return this.deleteTrash(
           args.projectId,
           args.target.kind === "selected" ? args.target.ids : undefined,
+          // The safe choice also when a caller skips the schema default.
+          args.pdfs === "delete" ? "delete" : "keep",
         );
       case "previewTrashDeletion": {
         const ids = trashTargets(this.db, args.projectId, args.target.kind === "selected" ? args.target.ids : undefined);

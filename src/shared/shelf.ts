@@ -1,7 +1,8 @@
 // Shelf ("서고"): the app-wide PDF library kept outside projects. Indexing is
 // read-only; the app's own downloads and imports are added to the root (inbox),
-// only an approved inbox sort (수신함 정리) moves PDFs, and only a confirmed
-// permanent deletion from the trash deletes them.
+// only an approved inbox sort (수신함 정리) moves PDFs, and only a permanent
+// deletion from the trash that was confirmed with "delete the PDFs" deletes them.
+// By default that deletion hides the PDFs from the app and leaves them on disk.
 export const DEFAULT_SHELF_EXCLUDE = ["_system", "_news", "_to_delete", "_duplicated", "_summaries"];
 export const DEFAULT_EMBED_MODEL = "embeddinggemma-2:latest";
 export const DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434";
@@ -105,7 +106,8 @@ export const EMBED_PROMPTS = {
 };
 
 export type ShelfStage = "found" | "hashed" | "extracted" | "resolved";
-export type ShelfStatus = "ok" | "review" | "provisional" | "auxiliary" | "failed" | "missing";
+/** `hidden`: still on disk, but removed from the app by a permanent deletion; the row has no work and is never listed. */
+export type ShelfStatus = "ok" | "review" | "provisional" | "auxiliary" | "failed" | "missing" | "hidden";
 export type EmbedBasis = "abstract" | "pdf-abstract" | "page1" | "title";
 
 export interface ShelfCandidate {
@@ -136,6 +138,8 @@ export interface ShelfFileInfo {
   candidates?: ShelfCandidate[];
   duplicateOf?: string;
   error?: string;
+  /** Set while the file is hidden: the work and status it had. */
+  hidden?: { workId: string; status: ShelfStatus; at: string };
 }
 export interface ShelfFolderNode {
   id: string;

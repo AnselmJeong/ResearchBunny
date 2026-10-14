@@ -192,8 +192,9 @@ export function App() {
   const [trashDeletion, setTrashDeletion] = useState<{
     request: Input<"deleteTrashedWorks">;
     count: number;
-    /** Shelf PDFs that the deletion removes from disk. */
+    /** Shelf PDFs of the papers: hidden from the app by default, deleted from disk on request. */
     shelfFiles: string[];
+    pdfs: "keep" | "delete";
   } | null>(null);
   const [name, setName] = useState(""),
     [bulkReason, setBulkReason] = useState(""),
@@ -666,10 +667,10 @@ export function App() {
       projectId,
       target: all ? { kind: "all" } : { kind: "selected", ids: [...selected] },
     };
-    // The dialog names the shelf PDFs first: they leave the disk, not just this project.
+    // The dialog names the shelf PDFs first and asks whether they leave the disk too; keeping them is the default.
     void task(async () => {
       const { count, shelfFiles } = await window.bunny.previewTrashDeletion(request);
-      setTrashDeletion({ request, count, shelfFiles });
+      setTrashDeletion({ request, count, shelfFiles, pdfs: "keep" });
       setDialog("deleteTrash");
     });
   };
@@ -688,9 +689,10 @@ export function App() {
   const deleteTrash = () => {
     if (!trashDeletion || busy) return;
     void task(async () => {
-      const { ids, shelf } = await window.bunny.deleteTrashedWorks(
-        trashDeletion.request,
-      );
+      const { ids, shelf } = await window.bunny.deleteTrashedWorks({
+        ...trashDeletion.request,
+        pdfs: trashDeletion.pdfs,
+      });
       for (const id of ids) {
         clearTimeout(noteTimers.current[id]);
         delete noteTimers.current[id];
@@ -705,7 +707,11 @@ export function App() {
       );
       setDialog(null);
       setTrashDeletion(null);
-      const files = shelf.deleted.length ? ` 서고 PDF ${shelf.deleted.length}개를 지웠습니다.` : "";
+      const files = shelf.deleted.length
+        ? ` 서고 PDF ${shelf.deleted.length}개를 지웠습니다.`
+        : shelf.hidden.length
+          ? ` 서고 PDF ${shelf.hidden.length}개는 디스크에 남기고 앱에서만 뺐습니다.`
+          : "";
       if (shelf.failed.length)
         flash(`${ids.length}편을 영구 삭제했습니다.${files} 서고 PDF ${shelf.failed.length}개는 지우지 못해 그 문헌은 휴지통에 남겼습니다: ${shelf.failed[0].relPath} · ${shelf.failed[0].reason}`, true);
       else flash(`${ids.length}편을 영구 삭제했습니다.${files}`);
@@ -2338,11 +2344,48 @@ export function App() {
             없습니다. 다른 프로젝트의 문헌은 유지됩니다.
           </p>
           {trashDeletion.shelfFiles.length > 0 && (
-            <div className="trash-shelf-files" role="alert">
-              <p className="danger">
-                서고 PDF {trashDeletion.shelfFiles.length}개도 디스크에서 바로
-                지웁니다. 휴지통을 거치지 않으며, 모든 프로젝트의 서고에서
-                사라집니다.
+            <div className="radio-list trash-pdf-choice">
+              {(
+                [
+                  [
+                    "keep",
+                    "앱에서만 지우기",
+                    `서고 PDF ${trashDeletion.shelfFiles.length}개는 폴더에 그대로 두고, 앱의 서고 목록에서만 뺍니다.`,
+                  ],
+                  [
+                    "delete",
+                    "서고 PDF도 삭제",
+                    `PDF ${trashDeletion.shelfFiles.length}개를 디스크에서 바로 지웁니다. macOS 휴지통을 거치지 않으며 되돌릴 수 없습니다.`,
+                  ],
+                ] as const
+              ).map(([value, label, description]) => (
+                <label key={value}>
+                  <input
+                    type="radio"
+                    name="trash-pdfs"
+                    checked={trashDeletion.pdfs === value}
+                    disabled={busy}
+                    onChange={() =>
+                      setTrashDeletion({ ...trashDeletion, pdfs: value })
+                    }
+                  />
+                  <span>
+                    <strong>{label}</strong>
+                    <small>{description}</small>
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
+          {trashDeletion.shelfFiles.length > 0 && (
+            <div
+              className="trash-shelf-files"
+              role={trashDeletion.pdfs === "delete" ? "alert" : undefined}
+            >
+              <p className={trashDeletion.pdfs === "delete" ? "danger" : "subtle"}>
+                {trashDeletion.pdfs === "delete"
+                  ? `디스크에서 지울 서고 PDF ${trashDeletion.shelfFiles.length}개 · 모든 프로젝트의 서고에서 사라집니다.`
+                  : `디스크에 남길 서고 PDF ${trashDeletion.shelfFiles.length}개`}
               </p>
               <ul>
                 {trashDeletion.shelfFiles.slice(0, 5).map((path) => (
@@ -2369,7 +2412,11 @@ export function App() {
               disabled={busy || !trashDeletion.count}
               onClick={deleteTrash}
             >
-              {busy ? "삭제 중…" : `${trashDeletion.count}편 영구 삭제`}
+              {busy
+                ? "삭제 중…"
+                : trashDeletion.pdfs === "delete" && trashDeletion.shelfFiles.length
+                  ? `${trashDeletion.count}편과 PDF ${trashDeletion.shelfFiles.length}개 삭제`
+                  : `${trashDeletion.count}편 영구 삭제`}
             </button>
           </footer>
         </Modal>
