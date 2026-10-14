@@ -1838,6 +1838,10 @@ small {
 .pdf-drop-hint p {
   font-size: 12px;
 }
+/* The query actions belong to the field above, apart from the seed change below. */
+.seed-query-actions {
+  margin: -7px 0 22px;
+}
 .seed-list {
   max-height: 260px;
   overflow: auto;

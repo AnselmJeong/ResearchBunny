@@ -477,7 +477,7 @@ export function SeedDialog({
           onChange={(e) => setTerms(e.target.value)}
         />
       </label>
-      <div className="inline-actions">
+      <div className="inline-actions seed-query-actions">
         <button
           disabled={!aiEnabled || !q.trim() || writing || busy}
           aria-busy={writing}
