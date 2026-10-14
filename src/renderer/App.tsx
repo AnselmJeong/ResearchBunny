@@ -66,6 +66,10 @@ import {
   forgetWorks,
   deselectWorks,
   deselectWhere,
+  listKey,
+  listMembers,
+  anchorInspector,
+  type InspectorAnchor,
   type WorkspaceView,
 } from "../shared/navigation";
 import { HelpTooltip } from "./components/HelpTooltip";
@@ -81,6 +85,7 @@ import { RightPane } from "./components/RightPane";
 import { ResizableInspector } from "./components/ResizableInspector";
 import { Modal } from "./components/Modal";
 import { DiscoveryMenu } from "./components/DiscoveryMenu";
+import { GroupSelection } from "./components/GroupSelection";
 import { ImportResults } from "./components/ImportResults";
 import { DownloadDialog } from "./components/DownloadDialog";
 import { ShelfSortDialog } from "./components/ShelfSortDialog";
@@ -211,6 +216,8 @@ export function App() {
     searchInput = useRef<HTMLInputElement>(null),
     discoveryStarting = useRef(false),
     toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // The inspector follows its list; see anchorInspector.
+  const inspectorAnchor = useRef<InspectorAnchor>({ id: null, listed: false, key: "" });
   const [navigation, setNavigation] = useState(() => restoreNavigation({}));
   const [hydratedProject, setHydratedProject] = useState("");
   const navigationRef = useRef(navigation);
@@ -248,6 +255,8 @@ export function App() {
     setScopeId(v.scopeId);
     setSelected(v.selected);
     setInspectorId(v.inspectorId);
+    // A remembered paper may have left the view while it was away; the first list checks it.
+    inspectorAnchor.current = { id: v.inspectorId, listed: true, key: listKey({ ...v, graph: v.view !== "list" }) };
     setInspectorOpen(v.inspectorOpen);
     setView(v.view);
     setFilters(v.filters);
@@ -346,9 +355,17 @@ export function App() {
     if (!projectId || initialized.current !== projectId) return;
     let valid = true;
     setLoading(true);
+    const key = listKey({ scope, scopeId, localQuery, filters, graph: graphView });
+    const show = (result: ListResult) => {
+      setList(result);
+      const stale = inspectorAnchor.current.id;
+      const { anchor, drop } = anchorInspector(inspectorAnchor.current, listMembers(result), key);
+      inspectorAnchor.current = anchor;
+      if (drop) setInspectorId((id) => (id === stale ? null : id));
+    };
     const timer = setTimeout(() => {
       if ((scope === "run" || scope === "collection" || scope === "topic") && !scopeId) {
-        setList(EMPTY);
+        show(EMPTY);
         setLoading(false);
         return;
       }
@@ -364,7 +381,7 @@ export function App() {
           sort,
         })
         .then((result) => {
-          if (valid) setList(result);
+          if (valid) show(result);
         })
         .catch((error) => {
           // A list for a project or view left since is not this view's error.
@@ -506,6 +523,7 @@ export function App() {
   const graphScope = graphView && list.total > 0;
   const selectedIds = useMemo(() => new Set(selected), [selected]);
   const listedIds = useMemo(() => new Set(list.ids), [list.ids]);
+  const listedPapers = useMemo(() => listMembers(list), [list]);
   const allPageSelected = list.works.length > 0 &&
     list.works.every((work) => selectedIds.has(work.id));
   const somePageSelected = list.works.some((work) => selectedIds.has(work.id));
@@ -560,6 +578,7 @@ export function App() {
   const inspect = (id: string) => {
     readerRequest.current++;
     setReaderVisible(false);
+    inspectorAnchor.current = { ...inspectorAnchor.current, id, listed: listedPapers.has(id) };
     setInspectorId(id);
     setInspectorOpen(true);
   };
@@ -856,9 +875,9 @@ export function App() {
             excluded: "제외 문헌",
           }[scope as string] || "문헌";
   const fullPage = dialog === "settings";
-  const contextIds = new Set(list.context?.map((w) => w.id));
+  const pinnedIds = new Set([...(list.context || []), ...(list.shelf || [])].map((w) => w.id));
   const hiddenSelected = selected.filter(
-    (id) => !listedIds.has(id) && !contextIds.has(id),
+    (id) => !listedIds.has(id) && !pinnedIds.has(id),
   ).length;
   const currentProject = snapshot?.projects.find((p) => p.id === projectId);
   const failedNotes = Object.entries(drafts).filter(([, d]) => d.failed);
@@ -1604,7 +1623,8 @@ export function App() {
                     value={sort}
                     onChange={(e) => setSort(e.target.value as typeof sort)}
                   >
-                    <option value="rank">{shelfSearch ? "관련도순" : "기본 순서"}</option>
+                    {/* A run's own order is its relevance rank, so it says so. */}
+                    <option value="rank">{shelfSearch || scope === "run" ? "관련도순" : "기본 순서"}</option>
                     <option value="year">최신순</option>
                     <option value="citations">피인용수순</option>
                     <option value="title">제목순</option>
@@ -1663,6 +1683,7 @@ export function App() {
                       출발·초기 기준 문헌 {list.context.length}편 · 후보 집계와
                       별도 표시
                     </summary>
+                    <GroupSelection ids={list.context.map((w) => w.id)} selected={selectedIds} setSelected={setSelected} />
                     <div>
                       {list.context.map((w) => (
                         <label key={w.id}>
@@ -1688,6 +1709,7 @@ export function App() {
                 {scope === "run" && !!list.shelf?.length && (
                   <details className="shelf-pinned" open>
                     <summary><LibraryBig size={15} />내 서고에서 찾음 {list.shelf.length}편 <span className="subtle">· 이미 가진 PDF · 다운로드 불필요</span></summary>
+                    <GroupSelection ids={list.shelf.map((w) => w.id)} selected={selectedIds} setSelected={setSelected} />
                     <div>
                       {list.shelf.map((w) => (
                         <div key={w.id} className={`shelf-pinned-row ${inspectorId === w.id ? "inspected" : ""}`}>
