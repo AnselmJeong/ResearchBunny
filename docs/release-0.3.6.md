@@ -28,3 +28,13 @@ Library schema stays at 3. Queries are an optional field in the seed profile, an
   - `질문에서 만들기` filled in the 3 queries.
   - Saving showed `검색어 만드는 중…` and stored the queries, which the dialog showed when reopened.
   - Editing the question cleared them.
+- Packaged app: strict signature verification passed, and the packaged smoke test passed (PDF reader, threads, extraction, folder matching, archive, BibTeX and PDF folder export, backup, restore and permanent deletion with a restricted PATH).
+
+## Installation
+
+- Backed up the previous app and a consistent SQLite snapshot under `~/Library/Application Support/ResearchBunny/app-backups/20261014-211733-seed-queries-0.3.6` (integrity ok, schema 3, **12,296 works**, **8,556 attachments**, **8,562 shelf files**, 6 projects, matching the live library). The replaced 0.3.4 bundle is kept there as `ResearchBunny-0.3.4-installed.app`.
+- Replaced `/Applications/ResearchBunny.app` with version **0.3.6**; all **441 files** match the package and strict signature verification passed. 0.3.5 was never installed, so this is also its first install.
+
+Artifacts: `out/electrobun/stable-macos-arm64-ResearchBunny.dmg` and `out/electrobun/stable-macos-arm64-ResearchBunny.app.tar.zst`. Local validation logs are under `.qa/release-0.3.6/`.
+
+Local ad-hoc signing on macOS Apple Silicon; no Developer ID signing or Apple notarization.
