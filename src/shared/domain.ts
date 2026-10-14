@@ -85,6 +85,18 @@ export function tokens(text: string): string[] {
       .match(/[\p{L}\p{N}]{2,}/gu) || []
   ).filter((t) => !STOP.has(t));
 }
+/** Seed search queries, trimmed, de-duplicated and capped whether the model or the user wrote them. */
+export function cleanQueries(queries: string[]): string[] {
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const raw of queries) {
+    const query = raw.replace(/\s+/g, " ").trim();
+    if (!query || seen.has(query.toLowerCase())) continue;
+    seen.add(query.toLowerCase());
+    kept.push(query);
+  }
+  return kept.slice(0, 5);
+}
 export function titleSimilarity(a: string, b: string): number {
   const x = new Set(tokens(a)),
     y = new Set(tokens(b));

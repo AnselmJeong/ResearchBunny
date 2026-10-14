@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { FileText, FolderOpen, Upload, Plus, Download } from "lucide-react";
+import { FileText, FolderOpen, Upload, Plus, Download, LoaderCircle } from "lucide-react";
 import type {
   Collection,
   ImportPreview,
@@ -410,6 +410,7 @@ export function SeedDialog({
   profile,
   history,
   question,
+  aiEnabled,
   onSaved,
   ...common
 }: Common & {
@@ -418,13 +419,20 @@ export function SeedDialog({
   profile: SeedProfile | null;
   history: SeedProfile[];
   question: string;
-  onSaved: () => void;
+  aiEnabled: boolean;
+  onSaved: (profile: SeedProfile) => void;
 }) {
   const [mode, setMode] = useState(selected.length ? "replace" : "keep"),
     [q, setQ] = useState(profile?.question || question),
+    // null until edited: the saved queries belong to the saved question only.
+    [terms, setTerms] = useState<string | null>(null),
+    [writing, setWriting] = useState(false),
     [group, setGroup] = useState(""),
     [busy, setBusy] = useState(false),
     [labels, setLabels] = useState<Record<string, string>>({});
+  const shownTerms =
+    terms ?? (q === profile?.question ? (profile?.queries || []).join("\n") : "");
+  const writesOnSave = aiEnabled && !!q.trim() && !shownTerms.trim();
   const ids =
     mode === "replace"
       ? selected
@@ -454,6 +462,41 @@ export function SeedDialog({
         연구 질문
         <textarea rows={3} value={q} onChange={(e) => setQ(e.target.value)} />
       </label>
+      <label className="field">
+        OpenAlex 검색어 (영어 · 한 줄에 하나)
+        <textarea
+          rows={3}
+          value={shownTerms}
+          placeholder={
+            !q.trim()
+              ? "연구 질문이 없으면 seed 논문 제목으로 검색합니다."
+              : aiEnabled
+                ? "저장할 때 연구 질문에서 만듭니다."
+                : "AI가 꺼져 있어 직접 입력하지 않으면 seed 논문 제목으로 검색합니다."
+          }
+          onChange={(e) => setTerms(e.target.value)}
+        />
+      </label>
+      <div className="inline-actions">
+        <button
+          disabled={!aiEnabled || !q.trim() || writing || busy}
+          aria-busy={writing}
+          onClick={() => {
+            setWriting(true);
+            void window.bunny
+              .seedQueries({ projectId, question: q })
+              .then((r) => setTerms(r.queries.join("\n")))
+              .catch(common.onError)
+              .finally(() => setWriting(false));
+          }}
+        >
+          {writing && <LoaderCircle size={15} className="spin" aria-hidden="true" />}
+          {writing ? "만드는 중…" : "질문에서 만들기"}
+        </button>
+        <span className="subtle">
+          관련 논문 탐색은 앞의 검색어 3개로 OpenAlex를 검색하고, 후보 순위에도 이 검색어를 씁니다.
+        </span>
+      </div>
       <div className="inline-actions">
         <select
           aria-label="seed 변경 방법"
@@ -504,7 +547,7 @@ export function SeedDialog({
         <button onClick={common.onClose}>취소</button>
         <button
           className="primary"
-          disabled={busy}
+          disabled={busy || writing}
           onClick={() => {
             setBusy(true);
             const groups = { ...profile?.groups };
@@ -513,16 +556,22 @@ export function SeedDialog({
             if (group.trim())
               groups[group.trim()] = selected.filter((id) => ids.includes(id));
             void window.bunny
-              .setSeeds({ projectId, ids, question: q, groups })
-              .then(() => {
-                onSaved();
+              .setSeeds({
+                projectId,
+                ids,
+                question: q,
+                ...(terms === null ? {} : { queries: terms.split("\n") }),
+                groups,
+              })
+              .then((saved) => {
+                onSaved(saved);
                 common.onClose();
               })
               .catch(common.onError)
               .finally(() => setBusy(false));
           }}
         >
-          관심 기준 저장
+          {busy && writesOnSave ? "검색어 만드는 중…" : "관심 기준 저장"}
         </button>
       </footer>
     </Modal>

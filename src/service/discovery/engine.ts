@@ -34,6 +34,8 @@ const chunks = <T>(items: T[], size: number): T[][] =>
     items.slice(i * size, (i + 1) * size),
   );
 const LINKED_ORIGIN = "PubMed 의미 이웃";
+/** Each keyword search costs 10 OpenAlex credits and one of the 40 calls the citation tasks also need. */
+const INITIAL_QUERIES = 3;
 const LINKED_SIZES: LinkedSize[] = [20, 50, 100, 200];
 export const linkedBoost = (score: number, seeds: number) =>
   Math.min(0.20, Math.max(0, score - 0.60) * 1.5) + Math.min(0.05, Math.max(0, seeds - 1) * 0.025);
@@ -229,14 +231,16 @@ export class Discovery {
       }
     if (run.mode === "related") {
       const anchor = this.library.seedById(run.seedProfileId);
-      const query = anchor?.question || run.query || seeds[0]?.title;
-      if (query)
-        tasks.unshift({
-          kind: "search",
-          query: query.slice(0, 2000),
-          origin: "초기 관심 검색",
-          cursor: "*",
-        });
+      // A research question is prose, often Korean, and finds nothing as an OpenAlex keyword search.
+      const queries = anchor?.queries?.length
+        ? anchor.queries.slice(0, INITIAL_QUERIES)
+        : [(anchor?.question ? "" : run.query) || seeds[0]?.title].filter(Boolean);
+      tasks.unshift(...queries.map((query): Task => ({
+        kind: "search",
+        query: query.slice(0, 2000),
+        origin: "초기 관심 검색",
+        cursor: "*",
+      })));
     }
     // Resolve semantic neighbors first, before citation/search tasks spend the budget.
     return [...tasks.filter((t) => t.kind === "linked"), ...tasks.filter((t) => t.kind !== "linked")];
@@ -348,6 +352,7 @@ export class Discovery {
             continue;
           }
           if (run.phase === "hydrate") {
+            await this.fillSeedQueries(run, signal);
             run.tasks.push(...this.makeTasks(run));
             run.phase = "collect";
             this.library.saveRun(run);
@@ -475,7 +480,7 @@ export class Discovery {
         (id) => !this.library.get(id).openalex,
       ).length;
       run.status = "completed";
-      run.message = `${run.count}편 확인${run.tasks.some((t) => t.cursor || (this.library.pref<boolean>("linkedDiscoveries") === true && t.kind === "linked" && (t.size || 20) < 200)) ? " · 추가 조회할 결과가 있습니다." : ""}${run.ai?.partial ? " · 후보 상한 내 부분 결과" : ""}${unresolved ? ` · 식별자 없는 출발 문헌 ${unresolved}편은 미조회` : ""}${run.ai?.identityConflicts ? ` · 식별자 충돌 ${run.ai.identityConflicts}건 제외` : ""}${Object.keys(run.linkedFailures || {}).length ? ` · PubMed 의미 이웃 미조회 ${Object.keys(run.linkedFailures!).length}편` : ""}`;
+      run.message = `${run.count}편 확인${run.tasks.some((t) => t.cursor || (this.library.pref<boolean>("linkedDiscoveries") === true && t.kind === "linked" && (t.size || 20) < 200)) ? " · 추가 조회할 결과가 있습니다." : ""}${run.ai?.partial ? " · 후보 상한 내 부분 결과" : ""}${unresolved ? ` · 식별자 없는 출발 문헌 ${unresolved}편은 미조회` : ""}${run.ai?.identityConflicts ? ` · 식별자 충돌 ${run.ai.identityConflicts}건 제외` : ""}${Object.keys(run.linkedFailures || {}).length ? ` · PubMed 의미 이웃 미조회 ${Object.keys(run.linkedFailures!).length}편` : ""}${run.ai?.seedQueryError ? " · 연구 질문을 검색어로 바꾸지 못해 seed 제목으로 검색" : ""}`;
     } catch (error) {
       const e = error instanceof AppError ? error : null;
       run.status = signal.aborted
@@ -494,6 +499,23 @@ export class Discovery {
       this.library.saveRun(run);
       this.active.delete(id);
       this.emit({ type: "changed", runId: id });
+    }
+  }
+  /** Seeds saved before queries existed, or while the model was unavailable, get them on their first related search. */
+  private async fillSeedQueries(run: Run, signal: AbortSignal) {
+    const profile = this.library.seedById(run.seedProfileId);
+    if (run.mode !== "related" || !this.ai || !profile?.question.trim() || profile.queries?.length) return;
+    run.message = "연구 질문을 영어 검색어로 바꾸고 있습니다.";
+    this.library.saveRun(run);
+    this.emit({ type: "progress", runId: run.id });
+    try {
+      const queries = await this.ai.seedQueries(profile.question, run, AbortSignal.any([signal, AbortSignal.timeout(120000)]));
+      this.library.setSeedQueries(profile.id, queries);
+    } catch (error) {
+      if (signal.aborted) throw error;
+      // The seed titles stand in for the question; a model left off in settings is not a failure.
+      if (!(error instanceof AppError && error.code === "AI_DISABLED"))
+        run.ai = { ...run.ai, seedQueryError: error instanceof Error ? error.message : "검색어를 만들지 못했습니다." };
     }
   }
   private async collectShelf(run: Run, task: Task, signal: AbortSignal) {
@@ -541,7 +563,7 @@ export class Discovery {
     const related = relatedness(
       entries.map((e) => e.work),
       anchors,
-      profile?.question || run.query,
+      profile?.queries?.join(" ") || profile?.question || run.query,
     );
     const citing = new Map<string, Work[]>();
     for (const entry of entries)

@@ -550,16 +550,18 @@ export class Library {
     ids: string[],
     question: string,
     groups: Record<string, string[]>,
+    queries: string[] = [],
   ): SeedProfile {
     return this.transaction(() => {
       this.project(projectId);
       for (const id of ids) this.get(id);
       const latest = this.seedHistory(projectId)[0];
-      const seed = {
+      const seed: SeedProfile = {
         id: randomUUID(),
         projectId,
         version: (latest?.version || 0) + 1,
         question,
+        ...(queries.length ? { queries } : {}),
         ids: [...new Set(ids)],
         groups,
         createdAt: now(),
@@ -589,6 +591,15 @@ export class Library {
       .prepare("SELECT data FROM seed_profiles WHERE id=?")
       .get(id) as { data: string } | undefined;
     return r ? JSON.parse(r.data) : null;
+  }
+  /** Queries derive from the question, so filling them in later keeps the version. */
+  setSeedQueries(id: string, queries: string[]) {
+    const seed = this.seedById(id);
+    if (!seed) return;
+    this.db
+      .prepare("UPDATE seed_profiles SET data=? WHERE id=?")
+      .run(JSON.stringify({ ...seed, queries }), id);
+    this.touch();
   }
   saveRun(run: Run) {
     run.updatedAt = now();

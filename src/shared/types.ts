@@ -138,6 +138,8 @@ export interface SeedProfile {
   projectId: string;
   version: number;
   question: string;
+  /** English OpenAlex keyword queries for the question, which is prose and often Korean. */
+  queries?: string[];
   ids: string[];
   groups: Record<string, string[]>;
   createdAt: string;

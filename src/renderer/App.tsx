@@ -2255,11 +2255,16 @@ export function App() {
           profile={snapshot.seeds}
           history={snapshot.seedHistory}
           question={query || currentProject?.question || ""}
+          aiEnabled={snapshot.settings.aiEnabled}
           onClose={() => setDialog(null)}
           onError={onError}
-          onSaved={() => {
+          onSaved={(saved) => {
             refresh();
-            flash("초기 관심 기준을 저장했습니다.");
+            flash(
+              snapshot.settings.aiEnabled && saved.question.trim() && !saved.queries?.length
+                ? "초기 관심 기준을 저장했습니다. 영어 검색어는 만들지 못해 다음 관련 논문 탐색에서 다시 만듭니다."
+                : "초기 관심 기준을 저장했습니다.",
+            );
           }}
         />
       )}

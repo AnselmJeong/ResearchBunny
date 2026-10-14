@@ -13,10 +13,11 @@ import type {
   AppEvent,
   ImportPreview,
   ImportResult,
+  Run,
   Settings,
 } from "../shared/types";
-import { AppError, type Attachment } from "../shared/types";
-import { blankWork, titleSimilarity, safeWebUrl, pmidOf } from "../shared/domain";
+import { AppError, DEFAULT_FILTERS, now, type Attachment } from "../shared/types";
+import { blankWork, cleanQueries, titleSimilarity, safeWebUrl, pmidOf } from "../shared/domain";
 import { Library } from "./db/database";
 import { LinkedDiscoveries } from "./providers/linked-discoveries";
 import { OpenAlex } from "./providers/openalex";
@@ -168,6 +169,16 @@ export class Service {
       .sort((a, b) => b[1].score - a[1].score)
       .slice(0, limit)
       .map(([workId, v]) => ({ workId, score: v.score, folder: v.folder, folderId: memberships.get(workId)?.folderId || "", lexicalRank: null, semanticRank: null }));
+  }
+  /** A throwaway run carries the AI call limits; nothing is saved for it. */
+  private seedQueries(projectId: string, question: string) {
+    const run: Run = {
+      id: randomUUID(), projectId, mode: "ai", query: question, seedProfileId: null,
+      inputIds: [], filters: DEFAULT_FILTERS, status: "running", createdAt: now(), updatedAt: now(),
+      calls: 0, maxCalls: 0, maxCandidates: 0, total: null, count: 0,
+      message: "", tasks: [], rankingVersion: "seed-queries-1",
+    };
+    return this.ai.seedQueries(question, run, AbortSignal.timeout(120000), false);
   }
   busy() {
     return this.chat.active.size > 0 || this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0 || !!this.sorter.active;
@@ -323,13 +334,24 @@ export class Service {
         this.db.mutate(args.projectId, [work.id], { screening: "included" });
         return work;
       }
-      case "setSeeds":
+      case "setSeeds": {
+        const latest = this.db.seedHistory(args.projectId)[0];
+        let queries = cleanQueries(
+          args.queries ?? (latest?.question === args.question ? latest.queries || [] : []),
+        );
+        // Write the English queries with the question; a failure leaves them to the next exploration.
+        if (!queries.length && args.question.trim())
+          queries = await this.seedQueries(args.projectId, args.question).catch(() => []);
         return this.db.setSeeds(
           args.projectId,
           args.ids,
           args.question,
           args.groups,
+          queries,
         );
+      }
+      case "seedQueries":
+        return { queries: await this.seedQueries(args.projectId, args.question) };
       case "startRun":
         if (this.pdf.active.size || this.downloads.active.size)
           throw new AppError("BUSY", "PDF 가져오기 완료 후 탐색하세요.");

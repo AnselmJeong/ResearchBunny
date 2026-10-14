@@ -164,8 +164,11 @@ export const schemas = {
     projectId: id,
     ids: ids.max(100),
     question: text,
+    /** Left out, the queries carry over while the question is unchanged and are written again when it changes. */
+    queries: z.array(z.string().trim().max(300)).max(50).optional(),
     groups: z.record(z.string().max(100), ids).default({}),
   }),
+  seedQueries: z.object({ projectId: id, question: text }),
   startRun: z.object({
     projectId: id,
     mode: z.enum([
@@ -349,6 +352,7 @@ export interface Outputs {
   editWork: Work;
   manualWork: Work;
   setSeeds: SeedProfile;
+  seedQueries: { queries: string[] };
   startRun: Run;
   controlRun: void;
   previewBib: ImportPreview;

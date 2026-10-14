@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { CodexClient } from "../codex/client";
 import type { OllamaCloud } from "./ollama";
-import { filterReasons } from "../../shared/domain";
+import { cleanQueries, filterReasons } from "../../shared/domain";
 import type { Library } from "../db/database";
 import {
   AppError,
@@ -13,6 +13,9 @@ const planSchema = z.object({
   scope: z.string().max(2000),
   queries: z.array(z.string().min(1).max(500)).min(1).max(8),
   subtopics: z.array(z.string().max(200)).max(10),
+});
+const seedQueriesSchema = z.object({
+  queries: z.array(z.string().max(300)).min(1).max(5),
 });
 const recommendationSchema = z.object({
   recommendations: z
@@ -269,6 +272,27 @@ export class AIProvider {
         signal,
       ),
     );
+  }
+  /** OpenAlex matches English keywords, not a research question written as prose, often in Korean. */
+  async seedQueries(question: string, run: Run, signal: AbortSignal, persistRun = true) {
+    const schema = {
+      type: "object",
+      properties: {
+        queries: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 5 },
+      },
+      required: ["queries"],
+      additionalProperties: false,
+    };
+    const raw = await this.structured(
+      run,
+      "seed_queries",
+      schema,
+      "Rewrite the research question as at most 5 English scholarly keyword queries for OpenAlex keyword search, the most central first. Each query is 2 to 6 key terms with no question marks, wildcards, quotes or boolean operators. Do not name papers.",
+      { question },
+      signal,
+      persistRun,
+    );
+    return cleanQueries(seedQueriesSchema.parse(raw).queries);
   }
   async evaluate(run: Run, signal: AbortSignal) {
     const config = this.config();
