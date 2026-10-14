@@ -402,6 +402,20 @@ test("OpenAlex budgets/429 are surfaced without zero-filled metadata and secrets
     );
     assert.equal(calls, 1);
   }));
+test("keyword searches drop the wildcards OpenAlex rejects in stemmed search", () =>
+  fixture(async (db) => {
+    const sent: URL[] = [];
+    const fetcher: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch> = async (url) => {
+      sent.push(new URL(String(url)));
+      return new Response(JSON.stringify({ results: [], meta: { count: 0, next_cursor: null } }));
+    };
+    const oa = new OpenAlex(db, () => undefined, fetcher);
+    await oa.page({ search: "어떻게 재해석되고 있는가?", cursor: "*" }, new AbortController().signal, () => {});
+    await oa.page({ "search.semantic": "why?" }, new AbortController().signal, () => {});
+    assert.equal(sent[0].searchParams.get("search"), "어떻게 재해석되고 있는가");
+    assert.equal(sent[0].searchParams.get("cursor"), "*");
+    assert.equal(sent[1].searchParams.get("search.semantic"), "why?");
+  }));
 test("AI rejects invented IDs, unavailable quotations, injected numbers and duplicate IDs", () => {
   const w = blankWork({
     title: "Interoception study",

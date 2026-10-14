@@ -100,6 +100,12 @@ export interface RateLimit {
   remaining: number;
   resetAt: number;
 }
+/**
+ * OpenAlex reads `*` and `?` as wildcards and answers 400 when they reach the stemmed `search`,
+ * so a research question ending in "?" would fail the whole run.
+ */
+export const plainSearch = (query: string) =>
+  query.replace(/[*?]/g, " ").replace(/\s+/g, " ").trim();
 export class OpenAlex {
   lastRequest = 0;
   rateLimit: RateLimit | null = null;
@@ -115,7 +121,8 @@ export class OpenAlex {
     onCall: () => void,
   ): Promise<{ data: any; cached: boolean; fetchedAt: string }> {
     const url = new URL(`https://api.openalex.org/${path}`);
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+    for (const [k, v] of Object.entries(params))
+      url.searchParams.set(k, k === "search" ? plainSearch(v) : v);
     const cacheKey =
       "oa:v1:" + createHash("sha256").update(url.href).digest("hex");
     const cache = this.library.cacheGet(cacheKey) as
