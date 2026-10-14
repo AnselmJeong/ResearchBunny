@@ -3215,6 +3215,24 @@ html[data-theme="dark"] .selection-bar .primary {
   align-items: center;
   gap: 6px;
 }
+/* Sits above a pinned group's scrolling list, so it stays put while the titles scroll. */
+.group-selection {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  margin-top: 8px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+}
+.group-selection:hover {
+  color: var(--accent);
+}
+.shelf-pinned > .group-selection {
+  padding: 0 4px;
+}
 
 .graph-legend > span {
   display: inline-flex;
@@ -3591,6 +3609,10 @@ html[data-theme="dark"] .selection-bar .primary {
 .shelf-sort-status > .shelf-sort-actions { flex-shrink: 0; gap: 14px; }
 .shelf-sort-result { margin: 0 0 14px; font-size: 12px; }
 .shelf-sort-result ul { margin: 6px 0 0; padding-left: 18px; overflow-wrap: anywhere; }
+.trash-pdf-choice { margin: 4px 0 14px; gap: 12px; }
+.trash-pdf-choice > label { align-items: flex-start; }
+.trash-pdf-choice input { margin-top: 2px; }
+.trash-pdf-choice small { color: var(--muted); }
 .trash-shelf-files { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--soft); font-size: 12px; }
 .trash-shelf-files p { margin: 0; }
 .trash-shelf-files ul { margin: 6px 0 0; padding-left: 18px; overflow-wrap: anywhere; }

@@ -4,7 +4,7 @@ import { DEFAULT_EMBED_MODEL, DEFAULT_OLLAMA_URL, DEFAULT_SHELF_EXCLUDE, isLoopb
 import type { Input } from "../../shared/contracts";
 
 const STATUS_LABELS: [keyof ShelfStatusResult["summary"]["counts"]["statuses"], string][] = [
-  ["ok", "확인됨"], ["review", "확인 필요"], ["provisional", "파일명 서지"], ["auxiliary", "보충자료"], ["failed", "실패"], ["missing", "사라짐"],
+  ["ok", "확인됨"], ["review", "확인 필요"], ["provisional", "파일명 서지"], ["auxiliary", "보충자료"], ["failed", "실패"], ["missing", "사라짐"], ["hidden", "앱에서 뺌"],
 ];
 
 /** What a confirmed folder change does, in the user's terms. */

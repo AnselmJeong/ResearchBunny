@@ -156,7 +156,8 @@ export const schemas = {
   restoreWorks: z.object({ projectId: id, ids }),
   unarchiveWorks: z.object({ projectId: id, ids }),
   clearPending: z.object({ projectId: id }),
-  deleteTrashedWorks: trashTarget,
+  /** `keep` (the default) leaves shelf PDFs on disk and hides them from the app; `delete` deletes them. */
+  deleteTrashedWorks: trashTarget.extend({ pdfs: z.enum(["keep", "delete"]).default("keep") }),
   previewTrashDeletion: trashTarget,
   editWork: z.object({ workId: id, patch: metadata }),
   manualWork: z.object({ projectId: id, metadata }),
@@ -419,11 +420,13 @@ export type API = {
   onEvent: (callback: (event: AppEvent) => void) => () => void;
 };
 export type PayloadPatch = Partial<LibraryState>;
-/** Permanently deleted works, and the shelf PDFs deleted with them (paths relative to the shelf). */
+/** Permanently deleted works, and what happened to their shelf PDFs (paths relative to the shelf). */
 export interface TrashDeletion {
   ids: string[];
   shelf: {
     deleted: string[];
+    /** PDFs left on disk and hidden from the app. */
+    hidden: string[];
     /** PDFs that could not be deleted; their papers stay in the trash. */
     failed: { relPath: string; reason: string }[];
   };

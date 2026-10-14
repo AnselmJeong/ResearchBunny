@@ -447,7 +447,7 @@ export class Shelf {
     return `서고 색인 중${this.resolverPausedUntil > Date.now() ? ` · 서지 확인 대기: ${this.resolverReason}` : ""}${this.embeddingPaused ? ` · ${this.embeddingPaused}` : ""}`;
   }
   private progress(rootId: string) {
-    const row = this.db.db.prepare("SELECT count(*) AS total,sum(stage='resolved' OR status IN ('failed','missing') OR (stage='extracted' AND ?)) AS done FROM shelf_files WHERE root_id=?")
+    const row = this.db.db.prepare("SELECT count(*) AS total,sum(stage='resolved' OR status IN ('failed','missing','hidden') OR (stage='extracted' AND ?)) AS done FROM shelf_files WHERE root_id=?")
       .get(this.resolverActive() ? 0 : 1, rootId) as { total: number; done: number | null };
     return { total: row.total, done: row.done || 0 };
   }
@@ -456,7 +456,7 @@ export class Shelf {
   }
   private nextChunk(rootId: string): FileRow[] {
     return this.db.db.prepare(
-      "SELECT * FROM shelf_files WHERE root_id=? AND status NOT IN ('missing','failed') AND (stage IN ('found','hashed') OR (stage='extracted' AND ?)) ORDER BY rel_path LIMIT ?",
+      "SELECT * FROM shelf_files WHERE root_id=? AND status NOT IN ('missing','failed','hidden') AND (stage IN ('found','hashed') OR (stage='extracted' AND ?)) ORDER BY rel_path LIMIT ?",
     ).all(rootId, this.resolverActive() ? 1 : 0, CHUNK) as FileRow[];
   }
 
@@ -749,6 +749,8 @@ export class Shelf {
     const hash = options.hash || (await hashFile(source, signal));
     const work = this.db.get(workId);
     let fileId = (this.db.db.prepare("SELECT id FROM shelf_files WHERE root_id=? AND hash=? AND status!='missing' ORDER BY json_extract(info,'$.duplicateOf') IS NOT NULL, rel_path LIMIT 1").get(root.id, hash) as { id: string } | undefined)?.id;
+    // Identical bytes the user hid are on disk already: show them again instead of storing a second copy.
+    if (fileId) this.db.transaction(() => this.unhide(hash, workId));
     if (!fileId) {
       const temp = join(root.path, `${TEMP_PREFIX}${randomUUID()}.part`);
       let name: string;
@@ -1138,12 +1140,66 @@ export class Shelf {
   }
 
   // ---- permanent deletion ----
-  /** The current root's files of these works, missing ones included. */
+  /**
+   * The current root's files of these works, missing ones included. Hidden
+   * files have no work; they count when they were hidden from one of these
+   * works, or one of them still links to them.
+   */
   filesOf(workIds: string[]): FileRow[] {
     const root = this.root();
     if (!root || !workIds.length) return [];
-    return this.db.db.prepare("SELECT * FROM shelf_files WHERE root_id=? AND work_id IN (SELECT value FROM json_each(?)) ORDER BY rel_path")
-      .all(root.id, JSON.stringify(workIds)) as FileRow[];
+    const list = JSON.stringify(workIds), each = "(SELECT value FROM json_each(?))";
+    return this.db.db.prepare(
+      `SELECT * FROM shelf_files WHERE root_id=? AND (work_id IN ${each} OR (status='hidden' AND (json_extract(info,'$.hidden.workId') IN ${each} OR id IN (SELECT json_extract(data,'$.shelfFileId') FROM attachments WHERE work_id IN ${each})))) ORDER BY rel_path`,
+    ).all(root.id, list, list, list) as FileRow[];
+  }
+  /** The works among `workIds` a file belongs to, as `filesOf` found it. */
+  owners(row: FileRow, workIds: string[]): string[] {
+    if (row.work_id) return [row.work_id];
+    const from = parseInfo(row).hidden?.workId;
+    return workIds.filter((id) => id === from || this.db.attachments(id).some((a) => a.shelfFileId === row.id));
+  }
+  /**
+   * Take files out of the app without touching the disk. Each row stays, so
+   * scans still recognise the PDF, but it loses its work and is never listed
+   * again. Attachments that other papers keep still open the PDF; works nothing
+   * else uses leave the library. Returns the hidden files still on disk.
+   */
+  hide(rows: FileRow[]): string[] {
+    const works = new Set<string>(), hidden: string[] = [];
+    this.db.transaction(() => {
+      for (const row of rows) {
+        if (row.status === "hidden" || !row.work_id) continue;
+        const { error: _, ...info } = parseInfo(row) as ShelfFileInfo & { statusBeforeMissing?: ShelfStatus };
+        const missing = row.status === "missing";
+        const was = missing ? info.statusBeforeMissing || "provisional" : row.status;
+        // A missing file stays missing, and comes back hidden if it reappears.
+        const next = { ...info, hidden: { workId: row.work_id, status: was, at: now() }, ...(missing ? { statusBeforeMissing: "hidden" as const } : {}) };
+        this.db.db.prepare("UPDATE shelf_files SET work_id=NULL,status=?,info=? WHERE id=?").run(missing ? "missing" : "hidden", JSON.stringify(next), row.id);
+        works.add(row.work_id);
+        if (!missing) hidden.push(row.rel_path);
+      }
+      for (const work of works) this.dropWorkIfOrphan(work);
+      this.db.touch();
+    });
+    this.revision++;
+    return hidden;
+  }
+  /** The app obtained a hidden PDF again: its files (copies included) return as this work's. */
+  private unhide(hash: string, workId: string) {
+    const root = this.root();
+    if (!root) return;
+    const rows = this.db.db.prepare("SELECT * FROM shelf_files WHERE root_id=? AND hash=? AND status='hidden'").all(root.id, hash) as FileRow[];
+    if (!rows.length) return;
+    for (const row of rows) {
+      const { hidden: _, ...info } = parseInfo(row);
+      // The attachment another paper kept stays with that paper.
+      const own = row.attachment_id ? this.attachmentOrNull(row.attachment_id) : null;
+      this.db.db.prepare("UPDATE shelf_files SET work_id=?,status='ok',attachment_id=?,info=? WHERE id=?")
+        .run(workId, own?.workId === workId ? own.id : null, JSON.stringify({ ...info, resolution: { method: "app", at: now() } } satisfies ShelfFileInfo), row.id);
+    }
+    this.ftsRefresh(workId);
+    this.revision++;
   }
   /** Delete these PDFs from disk; run inside `hold`. A file that is already gone counts as deleted. */
   async unlinkFiles(rows: FileRow[]) {
@@ -1292,7 +1348,7 @@ export class Shelf {
     const where = rootId ? "WHERE root_id=?" : "";
     const args = rootId ? [rootId] : [];
     const stages = { found: 0, hashed: 0, extracted: 0, resolved: 0 } as Record<ShelfStage, number>;
-    const statuses = { ok: 0, review: 0, provisional: 0, auxiliary: 0, failed: 0, missing: 0 } as Record<ShelfStatus, number>;
+    const statuses = { ok: 0, review: 0, provisional: 0, auxiliary: 0, failed: 0, missing: 0, hidden: 0 } as Record<ShelfStatus, number>;
     let files = 0;
     for (const r of this.db.db.prepare(`SELECT stage,status,count(*) AS n FROM shelf_files ${where} GROUP BY stage,status`).all(...args) as { stage: ShelfStage; status: ShelfStatus; n: number }[]) {
       files += r.n;
