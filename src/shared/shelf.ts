@@ -159,7 +159,8 @@ export interface ShelfIndexCounts {
 export interface ShelfJob {
   state: "idle" | "scanning" | "indexing" | "paused" | "offline" | "confirm";
   message: string;
-  phase?: string;
+  /** `embed`: done/total count papers being embedded, not files being indexed. */
+  phase?: "embed";
   done?: number;
   total?: number;
   resolverPausedUntil?: string;

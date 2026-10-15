@@ -15,6 +15,7 @@ import { slimRaw } from "../../src/service/shelf/resolver";
 import { VectorIndex } from "../../src/service/shelf/vectors";
 import { normalize } from "../../src/service/providers/ollama-local";
 import type { Page } from "../../src/service/providers/openalex";
+import { shelfJobLabel } from "../../src/renderer/components/ShelfTree";
 import { chunksOf, fakeOllama, pdf } from "./shelf-helpers";
 
 const worker = resolve("dist/runtime/pdf-worker.cjs");
@@ -656,6 +657,46 @@ test("permanent deletion keeps shelf PDFs on disk by default and hides them from
     expect(fileOf(service, filed)).toBeUndefined();
     expect(fileOf(service, COPY)).toBeUndefined();
     expect(await stat(join(dir, filed)).then(() => true, () => false)).toBe(false);
+  });
+});
+
+test("a PDF the app stores is indexed and embedded within seconds, shown as waiting until then", async () => {
+  await fixture(async ({ service, dir, ollama, root }) => {
+    await configure(service, dir, ollama.url);
+    const label = () => shelfJobLabel(service.shelf.summary());
+    expect(label()).toBe("");
+    // The running app's timers, without its startup scan, so only the stored-file pass can run.
+    service.shelf.start();
+    clearTimeout(service.shelf["startTimer"]);
+    const paper = service.db.upsert(structuredClone(OA.external)).work;
+    const download = join(root, "download.pdf");
+    await pdf(download, [OA.external.title, `doi: ${OA.external.doi}`]);
+    // A PDF dropped into the folder by hand waits for the next full scan: the pass does not walk.
+    const manual = "2019 - Hand - Dropped into the shelf by hand.pdf";
+    await pdf(join(dir, manual), ["Dropped into the shelf by hand"]);
+    await service.shelf.deposit(download, paper.id);
+    expect(label()).toBe("임베딩 대기 1");
+
+    const deadline = Date.now() + 15000;
+    while (!service.db.db.prepare("SELECT 1 FROM work_embeddings WHERE work_id=?").get(paper.id)) {
+      if (Date.now() > deadline) throw new Error("the stored PDF was not embedded");
+      await Bun.sleep(50);
+    }
+    await service.shelf.wait();
+    expect(service.db.db.prepare("SELECT basis FROM work_embeddings WHERE work_id=?").get(paper.id)).toEqual({ basis: "abstract" });
+    expect(service.shelf.job).toMatchObject({ state: "idle", message: expect.stringContaining("새로 임베딩 1편") });
+    expect(label()).toBe("");
+    expect(fileOf(service, manual)).toBeUndefined();
+
+    // With Ollama off the paper keeps waiting, and the stored vectors still count as embedded.
+    ollama.setUp(false);
+    const second = service.db.upsert(blankWork({ title: "Sleep spindles and overnight memory consolidation", year: 2019, citekey: "" })).work;
+    await pdf(download, [second.title, "A second download"]);
+    await service.shelf.deposit(download, second.id);
+    await service.shelf.scan("stored", "stored");
+    expect(service.shelf.summary().counts).toMatchObject({ embedded: 5 });
+    expect(label()).toBe("임베딩 대기 1");
+    expect(service.shelf.job.message).toContain("Ollama");
   });
 });
 

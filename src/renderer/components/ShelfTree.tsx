@@ -11,9 +11,14 @@ export function shelfJobLabel(shelf: ShelfSummary) {
   if (!shelf.online || job.state === "offline") return "오프라인";
   if (job.state === "paused") return "일시정지";
   if (job.state === "confirm") return "확인 필요";
+  if (job.state === "indexing" && job.phase === "embed" && job.total)
+    return `임베딩 ${(job.done || 0).toLocaleString()}/${job.total.toLocaleString()}`;
   if ((job.state === "indexing" || job.state === "scanning") && job.total)
     return `색인 ${Math.floor(((job.done || 0) / job.total) * 100)}%`;
   if (job.state === "scanning") return "스캔 중";
+  // New downloads wait a few seconds; with Ollama off they wait until it runs.
+  const waiting = shelf.counts.embeddable - shelf.counts.embedded;
+  if (waiting > 0) return `임베딩 대기 ${waiting.toLocaleString()}`;
   return "";
 }
 
@@ -63,7 +68,7 @@ export function ShelfTree({ shelf, scope, scopeId, navigate, onSetup }: {
       <button aria-current={active(SHELF_ALL) ? "page" : undefined} title={shelf.root?.path}
         data-help="앱 밖에서 정리한 서고 PDF입니다. 프로젝트에 저장하지 않아도 열람·추천·검색에 쓰입니다." onClick={() => navigate("shelf", SHELF_ALL)}>
         <LibraryBig size={17} /><span>서고</span>
-        {status ? <span className={`shelf-status ${!shelf.online ? "offline" : ""}`}>{!shelf.online && <WifiOff size={11} />}{status}</span>
+        {status ? <span className={`shelf-status ${!shelf.online ? "offline" : shelf.job.state === "idle" ? "waiting" : ""}`} title={shelf.job.message || undefined}>{!shelf.online && <WifiOff size={11} />}{status}</span>
           : <span className="nav-count">{shelf.total.toLocaleString()}</span>}
       </button>
     </div>

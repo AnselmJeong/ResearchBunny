@@ -67,6 +67,10 @@ export interface RootRow {
 const CHUNK = 48;
 const RESCAN_MS = 30 * 60 * 1000;
 const OFFLINE_RETRY_MS = 2 * 60 * 1000;
+/** Wait after the app stores a PDF, so a burst of downloads is indexed in one pass. */
+const STORED_DELAY_MS = 3000;
+/** Files the chunk loop still has to process; the second parameter is whether the resolver may run. */
+const WAITING = "root_id=? AND status NOT IN ('missing','failed','hidden') AND (stage IN ('found','hashed') OR (stage='extracted' AND ?))";
 /** Hidden while being written: neither the scanner nor intake.py picks up dot files. */
 const TEMP_PREFIX = ".researchbunny-";
 const TEMP_MAX_AGE_MS = 60 * 60 * 1000;
@@ -121,6 +125,10 @@ export class Shelf {
   private timer?: ReturnType<typeof setInterval>;
   private startTimer?: ReturnType<typeof setTimeout>;
   private followUp?: ReturnType<typeof setTimeout>;
+  private storedTimer?: ReturnType<typeof setTimeout>;
+  private storedQueued = false;
+  /** Papers embedded by the current pass, reported when it ends. */
+  private embeddedNow = 0;
   private confirmMissing = false;
   private held = false;
   private resolverPausedUntil = 0;
@@ -321,6 +329,7 @@ export class Shelf {
     clearInterval(this.timer);
     clearTimeout(this.startTimer);
     clearTimeout(this.followUp);
+    clearTimeout(this.storedTimer);
     this.timer = undefined;
     this.control?.abort();
   }
@@ -357,8 +366,13 @@ export class Shelf {
   }
 
   // ---- the indexing cycle ----
-  scan(_reason: string): Promise<void> {
-    if (this.running) return this.running;
+  /** `stored` indexes only files already in the index (the app's own downloads and imports) without walking the shelf. */
+  scan(_reason: string, mode: "walk" | "stored" = "walk"): Promise<void> {
+    if (this.running) {
+      // A file stored during a cycle can land after its last chunk; look again when it ends.
+      if (mode === "stored") this.storedQueued = true;
+      return this.running;
+    }
     const root = this.root(), config = this.config();
     if (!root || !config || this.held) return Promise.resolve();
     if (this.paused()) {
@@ -367,7 +381,8 @@ export class Shelf {
     }
     const control = new AbortController();
     this.control = control;
-    this.running = this.cycle(root, config, control.signal)
+    this.embeddedNow = 0;
+    this.running = (mode === "walk" ? this.cycle(root, config, control.signal) : this.catchUp(root, control.signal))
       .catch((error) => {
         if (control.signal.aborted) {
           if (!this.paused() && !this.held) this.setJob({ state: "idle", message: "서고 색인을 중단했습니다. 처리한 파일은 보존되며 다음 스캔에서 이어집니다." });
@@ -383,8 +398,19 @@ export class Shelf {
         this.managed = null;
         this.revision++;
         this.emit({ type: "changed" });
+        if (this.storedQueued) {
+          this.storedQueued = false;
+          this.indexStoredSoon();
+        }
       });
     return this.running;
+  }
+  /** Index a PDF the app stored within seconds instead of at the next 30-minute scan. */
+  private indexStoredSoon() {
+    if (!this.timer) return;
+    clearTimeout(this.storedTimer);
+    this.storedTimer = setTimeout(() => void this.scan("stored", "stored"), STORED_DELAY_MS);
+    this.storedTimer.unref?.();
   }
 
   private async cycle(root: RootRow, config: ShelfConfig, signal: AbortSignal) {
@@ -407,18 +433,37 @@ export class Shelf {
     }
     const confirm = await this.applyScan(root, walked, signal);
     this.modelKey = null; // re-check the model digest once per cycle
-    const processed = new Set<string>();
     this.setJob({ state: "indexing", message: "서고 색인 중", ...this.progress(root.id) });
+    await this.indexWaiting(root, signal, () => this.setJob({ state: "indexing", message: this.indexMessage(), ...this.progress(root.id) }, true));
+    await this.embed(signal);
+    this.db.db.prepare("UPDATE shelf_roots SET last_scan_at=? WHERE id=?").run(now(), root.id);
+    this.finish(root, confirm);
+  }
+  /** The app's own downloads and imports: extract and embed just the files waiting in the index, without a walk. */
+  private async catchUp(root: RootRow, signal: AbortSignal) {
+    const total = this.waiting(root.id);
+    if (!total) return;
+    // An unmounted shelf is reported by the next full scan.
+    if (!(await rootOnline(root.path))) return;
+    const job = (done: number) => ({ state: "indexing" as const, phase: "embed" as const, message: `새 PDF ${total.toLocaleString()}편 색인·임베딩 중`, done, total });
+    this.setJob(job(0));
+    await this.indexWaiting(root, signal, () => this.setJob(job(Math.min(total, Math.max(0, total - this.waiting(root.id))))));
+    await this.embed(signal);
+    this.finish(root, null);
+  }
+  /** Hash, extract, resolve and embed the waiting files chunk by chunk. */
+  private async indexWaiting(root: RootRow, signal: AbortSignal, report: () => void) {
+    const processed = new Set<string>();
     while (true) {
       signal.throwIfAborted();
       const rows = this.nextChunk(root.id).filter((row) => !processed.has(row.id));
       if (!rows.length) break;
       for (const row of rows) processed.add(row.id);
       await this.processChunk(root, rows, signal);
-      this.setJob({ state: "indexing", message: this.indexMessage(), ...this.progress(root.id) }, true);
+      report();
     }
-    await this.embed(signal);
-    this.db.db.prepare("UPDATE shelf_roots SET last_scan_at=? WHERE id=?").run(now(), root.id);
+  }
+  private finish(root: RootRow, confirm: { missing: number; total: number } | null) {
     if (!this.resolverActive() && this.timer) {
       // Resume bibliographic checks when the OpenAlex pause ends rather than at the next 30-minute scan.
       clearTimeout(this.followUp);
@@ -428,7 +473,7 @@ export class Shelf {
     const counts = this.counts(root.id);
     this.setJob(confirm
       ? { state: "confirm", message: `서고 파일 ${confirm.missing}개가 한 번에 사라졌습니다. 마운트를 확인한 뒤 '사라진 파일 반영'을 누르세요.`, confirm }
-      : { state: "idle", message: `서고 ${counts.works.toLocaleString()}편 · 확인 필요 ${this.reviewCount(root.id).toLocaleString()}편${counts.stages.extracted ? ` · 서지 확인 대기 ${counts.stages.extracted.toLocaleString()}편` : ""}${this.resolverPausedUntil > Date.now() ? ` · ${this.resolverReason}` : ""}${this.embeddingPaused ? ` · ${this.embeddingPaused}` : ""}` });
+      : { state: "idle", message: `서고 ${counts.works.toLocaleString()}편 · 확인 필요 ${this.reviewCount(root.id).toLocaleString()}편${counts.stages.extracted ? ` · 서지 확인 대기 ${counts.stages.extracted.toLocaleString()}편` : ""}${this.embeddedNow ? ` · 새로 임베딩 ${this.embeddedNow.toLocaleString()}편` : ""}${this.resolverPausedUntil > Date.now() ? ` · ${this.resolverReason}` : ""}${this.embeddingPaused ? ` · ${this.embeddingPaused}` : ""}` });
   }
 
   /** A share that is not readable yet (just mounted, permission pending) is retried within minutes. */
@@ -455,9 +500,11 @@ export class Shelf {
     return this.resolverPausedUntil <= Date.now();
   }
   private nextChunk(rootId: string): FileRow[] {
-    return this.db.db.prepare(
-      "SELECT * FROM shelf_files WHERE root_id=? AND status NOT IN ('missing','failed','hidden') AND (stage IN ('found','hashed') OR (stage='extracted' AND ?)) ORDER BY rel_path LIMIT ?",
-    ).all(rootId, this.resolverActive() ? 1 : 0, CHUNK) as FileRow[];
+    return this.db.db.prepare(`SELECT * FROM shelf_files WHERE ${WAITING} ORDER BY rel_path LIMIT ?`)
+      .all(rootId, this.resolverActive() ? 1 : 0, CHUNK) as FileRow[];
+  }
+  private waiting(rootId: string) {
+    return (this.db.db.prepare(`SELECT count(*) AS n FROM shelf_files WHERE ${WAITING}`).get(rootId, this.resolverActive() ? 1 : 0) as { n: number }).n;
   }
 
   /** Apply a walk: folders, moves, new files with filename-based provisional works, missing marks. */
@@ -751,6 +798,7 @@ export class Shelf {
     let fileId = (this.db.db.prepare("SELECT id FROM shelf_files WHERE root_id=? AND hash=? AND status!='missing' ORDER BY json_extract(info,'$.duplicateOf') IS NOT NULL, rel_path LIMIT 1").get(root.id, hash) as { id: string } | undefined)?.id;
     // Identical bytes the user hid are on disk already: show them again instead of storing a second copy.
     if (fileId) this.db.transaction(() => this.unhide(hash, workId));
+    const fresh = !fileId;
     if (!fileId) {
       const temp = join(root.path, `${TEMP_PREFIX}${randomUUID()}.part`);
       let name: string;
@@ -801,6 +849,7 @@ export class Shelf {
         await rm(path, { force: true });
     this.managed = null;
     this.revision++;
+    if (fresh) this.indexStoredSoon();
     return attachment;
   }
   /** Distinct PDFs still kept in the app's own folder (from before the shelf stored downloads). */
@@ -1299,10 +1348,12 @@ export class Shelf {
       }
       this.db.transaction(() => {
         batch.forEach((t, n) => {
-          if (this.exists(t.workId)) this.vectors.save(t.workId, model, EMBED_PROMPTS.version, t.basis, t.textHash, vectors[n]);
+          if (!this.exists(t.workId)) return;
+          this.vectors.save(t.workId, model, EMBED_PROMPTS.version, t.basis, t.textHash, vectors[n]);
+          this.embeddedNow++;
         });
       });
-      if (!workIds) this.setJob({ state: "indexing", message: `임베딩 ${Math.min(i + 32, todo.length).toLocaleString()}/${todo.length.toLocaleString()}편`, done: Math.min(i + 32, todo.length), total: todo.length }, true);
+      if (!workIds) this.setJob({ state: "indexing", phase: "embed", message: `임베딩 ${Math.min(i + 32, todo.length).toLocaleString()}/${todo.length.toLocaleString()}편`, done: Math.min(i + 32, todo.length), total: todo.length }, true);
     }
   }
   /** Vector for any text (queries, papers outside the shelf), cached locally (LRU 5,000). */
@@ -1357,9 +1408,13 @@ export class Shelf {
       if (r.status !== "provisional" || r.stage === "resolved") statuses[r.status] = (statuses[r.status] || 0) + r.n;
     }
     const works = (this.db.db.prepare(`SELECT count(DISTINCT work_id) AS n FROM shelf_files ${where ? where + " AND" : "WHERE"} status!='missing' AND work_id IS NOT NULL`).get(...args) as { n: number }).n;
-    const embeddable = (this.db.db.prepare(`SELECT count(DISTINCT work_id) AS n FROM shelf_files ${where ? where + " AND" : "WHERE"} status NOT IN ('auxiliary','missing','failed') AND work_id IS NOT NULL AND stage IN ('extracted','resolved')`).get(...args) as { n: number }).n;
-    const embedded = this.modelKey
-      ? (this.db.db.prepare("SELECT count(*) AS n FROM work_embeddings WHERE model=? AND prompt=? AND work_id IN (SELECT work_id FROM shelf_files WHERE status!='missing')").get(this.modelKey, EMBED_PROMPTS.version) as { n: number }).n
+    // Papers `embed` will cover, counted from the moment a file is found so new downloads show as waiting.
+    const eligible = `SELECT work_id FROM shelf_files ${where ? where + " AND" : "WHERE"} status NOT IN ('auxiliary','missing','failed') AND work_id IS NOT NULL AND json_extract(info,'$.duplicateOf') IS NULL`;
+    const embeddable = (this.db.db.prepare(`SELECT count(DISTINCT work_id) AS n FROM (${eligible})`).get(...args) as { n: number }).n;
+    // Stored vectors stay usable while Ollama is off, so count them by the last verified model.
+    const key = this.currentModelKey();
+    const embedded = key
+      ? (this.db.db.prepare(`SELECT count(*) AS n FROM work_embeddings WHERE model=? AND prompt=? AND work_id IN (${eligible})`).get(key, EMBED_PROMPTS.version, ...args) as { n: number }).n
       : 0;
     return { files, works, stages, statuses, embedded, embeddable };
   }

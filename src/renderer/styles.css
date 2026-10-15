@@ -3416,6 +3416,7 @@ html[data-theme="dark"] .selection-bar .primary {
   white-space: nowrap;
 }
 .shelf-status.offline { color: var(--danger); }
+.shelf-status.waiting { color: var(--muted); }
 .shelf-branch { margin-left: calc(var(--depth, 0) * 12px); }
 .shelf-folder {
   display: grid;
