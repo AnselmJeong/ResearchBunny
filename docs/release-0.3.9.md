@@ -22,8 +22,18 @@ Library schema stays at 3. Nothing stored changes, and an older app reads the li
   - `two-column-paper.pdf`: dragging over the left column selected only that column. ⌘C put its four lines, in order, on the clipboard.
   - `korean-paper.pdf` rendered its Korean text.
   - Arrow keys and End typed into an input outside the reader did not move the reader.
-- Not yet checked: the native WebKit window and the packaged app.
+- Packaged app: strict signature verification passed, and the packaged smoke test passed (PDF reader chunks, threads, extraction, folder matching, archive, BibTeX and PDF folder export, backup, restore and permanent deletion with a restricted PATH). The package has `pdfium.wasm` in its renderer assets.
+- Not yet checked: the reader in the native WebKit window.
 
 ## Known issue
 
 - A "ResearchBunny quit unexpectedly" dialog was reported on quitting 0.3.7. Its cause is not known yet, and this release does not change the quit path.
+
+## Installation
+
+- Backed up the previous app and a consistent SQLite snapshot under `~/Library/Application Support/ResearchBunny/app-backups/20261018-181740-embedpdf-reader-0.3.9` (integrity ok, schema 3, **11,870 works**, **8,764 attachments**, **8,800 shelf files**, 6 projects, matching the live library). The replaced 0.3.8 bundle is kept there as `ResearchBunny-0.3.8-installed.app`.
+- Replaced `/Applications/ResearchBunny.app` with version **0.3.9**; all **242 files** match the package and strict signature verification passed. 0.3.8 had 441 files; 200 of them were pdf.js's renderer fonts, CMaps and wasm, which this release drops.
+
+Artifacts: `out/electrobun/stable-macos-arm64-ResearchBunny.dmg` and `out/electrobun/stable-macos-arm64-ResearchBunny.app.tar.zst`. Local validation logs are under `.qa/release-0.3.9/`.
+
+Local ad-hoc signing on macOS Apple Silicon; no Developer ID signing or Apple notarization.
