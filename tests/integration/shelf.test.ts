@@ -451,27 +451,27 @@ test("the shelf list query is a ranked search scoped to the folder, and filters 
   });
 });
 
-test("searches look in the shelf first, pin shelf hits, badge identity matches and spend no API budget offline", async () => {
+test("searches ask OpenAlex only and badge shelf papers; shelf-only runs spend no API budget", async () => {
   await fixture(async ({ service, dir, projectId, ollama, calls }) => {
     await configure(service, dir, ollama.url);
     const smith = fileOf(service, SMITH)!;
+    // The shelf has its own search box; a search run no longer looks there first.
     const run: Run = await service.call("startRun", { projectId, mode: "search", query: "interoception heartbeat anxiety", ids: [], filters: DEFAULT_FILTERS });
-    expect(run.tasks[0]).toMatchObject({ kind: "shelf", origin: "내 서고" });
+    expect(run.tasks.map((t) => t.kind)).toEqual(["search"]);
     while (service.discovery.active.size) await Bun.sleep(10);
     const done = service.db.run(run.id);
     expect(done.status).toBe("completed");
     expect(done.calls).toBe(1);
     const result = list(service, projectId, "run", run.id);
-    expect(result.shelf!.map((w) => w.id)).toContain(smith.work_id);
-    expect(result.works.map((w) => w.id)).not.toContain(smith.work_id);
-    const pinned = result.shelf!.find((w) => w.id === smith.work_id)!;
-    expect(pinned.evidence!.origins).toEqual(expect.arrayContaining(["내 서고", "키워드 검색"]));
-    expect(pinned.evidence!.reasons[0]).toBe("내 서고 · 01 Domain A/Leaf X");
+    expect(result.shelf).toEqual([]);
+    // The OpenAlex hit the shelf already holds is an ordinary result with its shelf badge.
+    const held = result.works.find((w) => w.id === smith.work_id)!;
+    expect(held.shelf).toMatchObject({ fileId: smith.id, folder: "01 Domain A/Leaf X" });
+    expect(held.evidence!.origins).toEqual(["키워드 검색"]);
     const external = result.works.find((w) => w.doi === "10.4000/other")!;
     expect(external.shelf).toBeUndefined();
-    expect(list(service, projectId, "run", run.id, { ...DEFAULT_FILTERS, shelf: "only" }).total).toBe(0);
-    expect(list(service, projectId, "run", run.id, { ...DEFAULT_FILTERS, shelf: "hide" }).total).toBe(1);
-    // Shelf results are ordinary review candidates in the project.
+    expect(list(service, projectId, "run", run.id, { ...DEFAULT_FILTERS, shelf: "only" }).works.map((w) => w.id)).toEqual([smith.work_id]);
+    expect(list(service, projectId, "run", run.id, { ...DEFAULT_FILTERS, shelf: "hide" }).works.map((w) => w.id)).toEqual([external.id]);
     expect(service.db.state(projectId, smith.work_id).screening).toBe("pending");
 
     const before = { ...calls };

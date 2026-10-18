@@ -129,8 +129,7 @@ export class Discovery {
                     : undefined,
             },
       ];
-      // Look in the user's own shelf before spending the OpenAlex budget.
-      if (shelfReady) run.tasks.unshift({ kind: "shelf", query: input.query, origin: SHELF_ORIGIN });
+      // A search asks OpenAlex only; the shelf has its own search box, and shelf papers are badged in the results.
       run.phase = "collect";
     } else if (input.mode === "ai") run.phase = "ai-plan";
     else

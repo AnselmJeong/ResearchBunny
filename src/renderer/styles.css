@@ -3604,8 +3604,6 @@ html[data-theme="dark"] .selection-bar .primary {
   overflow-wrap: anywhere;
 }
 .shelf-search-actions { display: flex; gap: 12px; flex-shrink: 0; }
-.list-toolbar .shelf-search-submit { color: var(--accent); font-weight: 600; }
-.shelf-search-icon { display: inline-flex; }
 /* Only the proposal list scrolls, so the move button stays in view. */
 .modal.wide[open]:has(.shelf-sort) { width: 1000px; display: flex; flex-direction: column; overflow: hidden; }
 .shelf-sort { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -3641,3 +3639,49 @@ html[data-theme="dark"] .selection-bar .primary {
   .shelf-sort-items li { grid-template-columns: auto minmax(0, 1fr); }
   .shelf-sort-items select { grid-column: 2; }
 }
+
+/* What the top search box searches: OpenAlex in 문헌 탐색, the shelf or a folder in 서고. */
+.search-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  max-width: 220px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--soft);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.search-scope.shelf { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+.search-scope > span { overflow: hidden; text-overflow: ellipsis; }
+.search-form .search-clear { min-height: 0; padding: 4px; }
+
+/* 문헌 탐색 start screen */
+.empty-state:has(.recent-runs) { max-width: 600px; }
+.recent-runs { margin-top: 28px; text-align: left; }
+.recent-runs h3 { margin: 0 0 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.recent-runs ul { margin: 0; padding: 0; list-style: none; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--panel); }
+.recent-runs li + li { border-top: 1px solid var(--border); }
+.empty-state .recent-runs li button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 0;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+.recent-runs li button:hover { background: var(--soft); }
+.recent-runs li button > svg { flex-shrink: 0; color: var(--muted); }
+.recent-run-kind { flex-shrink: 0; font-weight: 600; }
+.recent-run-subject { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-run-meta { flex-shrink: 0; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.recent-runs > .text-button { margin-top: 8px; }

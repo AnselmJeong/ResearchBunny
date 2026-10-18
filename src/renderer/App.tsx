@@ -75,6 +75,7 @@ import {
 import { HelpTooltip } from "./components/HelpTooltip";
 import { ArchiveTree } from "./components/ArchiveTree";
 import { ShelfTree, shelfJobLabel } from "./components/ShelfTree";
+import { RecentRuns } from "./components/RecentRuns";
 import { SHELF_ALL, SHELF_INBOX, SHELF_REVIEW } from "../shared/shelf";
 import { ResizableSidebar } from "./components/ResizableSidebar";
 import { ProjectSwitcher } from "./components/ProjectSwitcher";
@@ -499,6 +500,8 @@ export function App() {
     };
   }, [drafts, onError]);
   const currentRun = snapshot?.runs.find((r) => r.id === scopeId);
+  // 문헌 탐색 without a run: a new search, with recent runs to reopen.
+  const startScreen = scope === "run" && !currentRun;
   const classification = snapshot?.classification;
   const classifying = classification?.job?.status === "running";
   const archiveScope = ARCHIVE_SCOPES.includes(scope);
@@ -824,7 +827,8 @@ export function App() {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         setDialog(null);
-        if (scope !== "run") navigate("run", snapshot?.runs[0]?.id || "");
+        // The shelf has its own search box; elsewhere ⌘K starts a new OpenAlex search.
+        if (scope !== "run" && scope !== "shelf") navigate("run");
         requestAnimationFrame(() => searchInput.current?.focus());
       }
       if (editable || dialog) return;
@@ -930,7 +934,7 @@ export function App() {
         <nav>
           <button
             className={!fullPage && scope === "run" ? "active" : ""}
-            onClick={() => navigate("run", explorationRuns[0]?.id || "")}
+            onClick={() => navigate("run")}
           >
             <Compass size={17} />
             문헌 탐색
@@ -1078,9 +1082,10 @@ export function App() {
                 }}
               >
                 <Search size={20} />
+                <span className="search-scope" data-help="OpenAlex에서 찾습니다. 서고에 이미 있는 논문에는 결과에 서고 배지가 붙습니다. 서고 안에서 찾으려면 사이드바에서 서고를 고르세요.">OpenAlex</span>
                 <input
                   ref={searchInput}
-                  aria-label="논문 검색"
+                  aria-label="OpenAlex에서 논문 검색"
                   placeholder="연구 주제, 제목, DOI, PMID로 논문 찾기"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
@@ -1122,18 +1127,8 @@ export function App() {
                     />
                     의미 검색
                   </label>
-                  {snapshot.shelf.configured && (
-                    <button
-                      disabled={busy || !!active || !query.trim()}
-                      data-help="네트워크 없이 서고에서만 찾습니다. 한국어 질의도 됩니다."
-                      onClick={() => void discover("search", undefined, true).catch(onError)}
-                    >
-                      <LibraryBig size={15} />
-                      서고만 검색
-                    </button>
-                  )}
                   <span className="search-provider">
-                    {snapshot.shelf.configured ? "내 서고 → " : ""}OpenAlex
+                    OpenAlex
                     {!snapshot.settings.openalexConfigured && (
                       <button
                         className="text-button"
@@ -1163,6 +1158,53 @@ export function App() {
                   </button>
                 </div>
               </details>
+            </div>
+          ) : !fullPage && scope === "shelf" && snapshot.shelf.configured ? (
+            <div className="search-section">
+              <form
+                className="search-form"
+                role="search"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  // Read the field itself: Enter can commit a Hangul syllable in the same keystroke.
+                  const field = e.currentTarget.elements.namedItem("q") as HTMLInputElement;
+                  setLocalQuery(field.value.trim());
+                  setOffset(0);
+                }}
+              >
+                {loading && shelfSearch ? <LoaderCircle size={20} className="spin" aria-hidden="true" /> : <Search size={20} aria-hidden="true" />}
+                <span className="search-scope shelf" title={title}
+                  data-help="서고 안에서만 찾습니다. 제목·초록의 의미가 가까운 논문을 관련도순으로 보여 주며 한국어 질의도 됩니다. 단어가 들어 있는지로 거르려면 필터의 포함어를 쓰세요.">
+                  <LibraryBig size={13} aria-hidden="true" />
+                  <span>{shelfScopeAll ? "내 서고" : title}</span>
+                </span>
+                <input
+                  ref={searchInput}
+                  name="q"
+                  aria-label={shelfScopeAll ? "서고에서 의미로 검색" : `${title}에서 의미로 검색`}
+                  placeholder={shelfScopeAll ? "서고 전체에서 주제·질문으로 검색" : "이 폴더에서 주제·질문으로 검색"}
+                  value={searchDraft}
+                  onChange={(e) => setSearchDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape" && (searchDraft || localQuery)) {
+                      e.preventDefault();
+                      setLocalQuery("");
+                      setSearchDraft("");
+                    }
+                  }}
+                />
+                {(searchDraft || localQuery) && (
+                  <button type="button" className="icon-button search-clear" title="검색 지우기" aria-label="검색 지우기"
+                    onClick={() => { setLocalQuery(""); setSearchDraft(""); }}>
+                    <X size={14} />
+                  </button>
+                )}
+                <kbd>⌘ K</kbd>
+                <button className="primary" type="submit">
+                  검색
+                  <ArrowRight size={15} aria-hidden="true" />
+                </button>
+              </form>
             </div>
           ) : (
             <div className="breadcrumb">
@@ -1304,7 +1346,7 @@ export function App() {
                     ) : <div className="eyebrow">{scope === "run" ? "DISCOVER" : scope === "shelf" ? "SHELF" : "LIBRARY"}</div>}
                     <h1>
                       {title}
-                      <span>{(list.total + (list.shelf?.length || 0)).toLocaleString()}</span>
+                      {!startScreen && <span>{(list.total + (list.shelf?.length || 0)).toLocaleString()}</span>}
                     </h1>
                   </div>
                   <div className="workspace-actions">
@@ -1530,47 +1572,8 @@ export function App() {
                     </>
                   )}
                 </div>
-                <div className="list-toolbar">
-                  {scope === "shelf" ? (
-                    <form
-                      className="local-search shelf-search"
-                      role="search"
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        // Read the field itself: Enter can commit a Hangul syllable in the same keystroke.
-                        const field = e.currentTarget.elements.namedItem("q") as HTMLInputElement;
-                        setLocalQuery(field.value.trim());
-                        setOffset(0);
-                      }}
-                    >
-                      <span className="shelf-search-icon" data-help="제목·초록의 의미가 가까운 논문을 관련도순으로 보여 줍니다. 한국어 질의도 됩니다. 단어가 들어 있는지로 거르려면 필터의 포함어를 쓰세요.">
-                        {loading && shelfSearch ? <LoaderCircle size={14} className="spin" aria-hidden="true" /> : <Search size={14} aria-hidden="true" />}
-                      </span>
-                      <input
-                        name="q"
-                        aria-label="서고에서 의미로 검색"
-                        placeholder={shelfScopeAll ? "서고 전체에서 주제·질문으로 검색" : "이 폴더에서 주제·질문으로 검색"}
-                        value={searchDraft}
-                        onChange={(e) => setSearchDraft(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Escape" && (searchDraft || localQuery)) {
-                            e.preventDefault();
-                            setLocalQuery("");
-                            setSearchDraft("");
-                          }
-                        }}
-                      />
-                      {searchDraft.trim() && searchDraft.trim() !== localQuery.trim() && (
-                        <button type="submit" className="shelf-search-submit" aria-label="서고 검색 실행">검색</button>
-                      )}
-                      {(searchDraft || localQuery) && (
-                        <button type="button" className="icon-button" title="검색 지우기" aria-label="검색 지우기"
-                          onClick={() => { setLocalQuery(""); setSearchDraft(""); }}>
-                          <X size={13} />
-                        </button>
-                      )}
-                    </form>
-                  ) : (
+                <div className="list-toolbar" hidden={startScreen}>
+                  {scope !== "shelf" && (
                     <div className="local-search">
                       <Search size={14} />
                       <input
@@ -1780,7 +1783,7 @@ export function App() {
                         <button
                           className="primary"
                           onClick={() => {
-                            navigate("run", explorationRuns[0]?.id || "");
+                            navigate("run");
                             requestAnimationFrame(() =>
                               searchInput.current?.focus(),
                             );
@@ -1801,6 +1804,9 @@ export function App() {
                         문헌 직접 등록
                         <ArrowUpRight size={12} />
                       </button>
+                      {startScreen && <RecentRuns runs={explorationRuns}
+                        label={(run) => run.import ? "PDF 가져오기" : MODES[run.mode]}
+                        onOpen={(run) => openRun(run)} />}
                     </div>
                   ) : view === "list" ? (
                     <>
@@ -2013,7 +2019,7 @@ export function App() {
                     />
                   )}
                 </div>
-                <div className="results-footer">
+                <div className="results-footer" hidden={startScreen}>
                   <span>
                     {graphView
                       ? `연결된 ${list.works.length.toLocaleString()}편 / ${list.total.toLocaleString()}편`
