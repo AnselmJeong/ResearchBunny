@@ -2206,7 +2206,7 @@ export function App() {
                   onDiscover={(m, ids) => void discover(m, ids).catch(onError)}
                   onError={onError}
                   onInspect={inspect}
-                  shelfConfigured={snapshot.shelf.configured}
+                  onNotice={(text) => flash(text)}
                   seed={!!inspected && seeds.includes(inspected.id)}
                 />
                 </ResizableInspector>

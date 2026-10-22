@@ -24,6 +24,7 @@ import type {
   Result,
   Work,
   LibraryState,
+  WorkLinks,
 } from "./types";
 const id = z.string().min(1).max(160);
 const chatContext = z.discriminatedUnion("kind", [z.object({ kind: z.literal("abstract") }).strict(), z.object({ kind: z.literal("pdf-fulltext"), attachmentId: id }).strict()]);
@@ -309,6 +310,17 @@ export const schemas = {
   shelfAdopt: z.object({}),
   shelfRelated: z.object({ projectId: id, workId: id, limit: z.number().int().min(1).max(50).default(10), otherFoldersOnly: z.boolean().default(false) }),
   shelfSearch: z.object({ projectId: id, query: z.string().trim().min(1).max(2000), limit: z.number().int().min(1).max(200).default(30) }),
+  /** One paper's references, citing papers or related papers, listed in the inspector. Nothing joins the project until it is saved. */
+  workLinks: z.object({
+    projectId: id,
+    workId: id,
+    mode: z.enum(["related", "references", "citedBy"]),
+    sort: z.enum(["citations", "year"]).default("citations"),
+    /** The next OpenAlex page of citing papers. */
+    cursor: z.string().min(1).max(2000).optional(),
+    /** Related shelf papers from folders other than this paper's own. */
+    otherFolders: z.boolean().default(false),
+  }),
   shelfFile: z.object({ fileId: id }),
   shelfResolve: z.object({ fileId: id, action: z.enum(["candidate", "doi", "keep"]), value: z.string().trim().max(1000).optional() }),
   shelfReveal: z.object({ fileId: id }),
@@ -402,6 +414,7 @@ export interface Outputs {
   shelfAdopt: ShelfAdoptResult;
   shelfRelated: ShelfRelated;
   shelfSearch: ShelfSearchResult;
+  workLinks: WorkLinks;
   shelfFile: ShelfFileDetails;
   shelfResolve: ShelfFileDetails;
   shelfReveal: void;

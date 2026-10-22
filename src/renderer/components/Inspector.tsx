@@ -1,12 +1,13 @@
 import { isDoiLink, pmidOf } from "../../shared/domain";
-import { useEffect, useState } from "react";
-import { RelatedShelf } from "./RelatedShelf";
+import { useEffect, useRef, useState } from "react";
+import { LinkPanel, LINK_LABELS, type LinkStash } from "./LinkPanel";
 import type { ShelfFileDetails } from "../../shared/contracts";
 import {
   ArrowUpRight,
   BookOpen,
   Bookmark,
   Check,
+  ChevronLeft,
   ChevronRight,
   Edit3,
   FileText,
@@ -22,6 +23,7 @@ import type {
   Attachment,
   Collection,
   DiscoveryMode,
+  LinkMode,
   ReadState,
 } from "../../shared/types";
 const READING_MARKS: [Exclude<ReadState, "unread">, string][] = [
@@ -29,6 +31,19 @@ const READING_MARKS: [Exclude<ReadState, "unread">, string][] = [
   ["reading", "읽는 중"],
   ["read", "읽음"],
 ];
+const LINK_HELP: Record<LinkMode, string> = {
+  related: "이 논문과 비슷한 논문을 여기에 나열합니다: 내 서고, PubMed 의미 이웃, OpenAlex 관련 논문. 다시 누르면 상세로 돌아갑니다.",
+  references: "이 논문이 인용한 연구를 여기에 나열합니다. 다시 누르면 상세로 돌아갑니다.",
+  citedBy: "이 논문을 인용한 연구를 여기에 나열합니다. 내 아카이브·서고의 논문이 먼저 나옵니다. 다시 누르면 상세로 돌아갑니다.",
+};
+/** A paper opened from another paper's list, so 뒤로 can show that list again. */
+interface TrailStep {
+  id: string;
+  title: string;
+  mode: LinkMode;
+  stash: LinkStash;
+  child: string;
+}
 export function Inspector({
   work,
   projectId,
@@ -43,7 +58,7 @@ export function Inspector({
   onInspect,
   seed,
   onReadPdf,
-  shelfConfigured = false,
+  onNotice,
 }: {
   work: WorkView | null;
   projectId: string;
@@ -58,9 +73,49 @@ export function Inspector({
   onInspect: (id: string) => void;
   seed: boolean;
   onReadPdf: (attachmentId?: string) => void;
-  shelfConfigured?: boolean;
+  onNotice: (text: string) => void;
 }) {
-  const [tab, setTab] = useState<"abstract" | "related" | "evidence" | "notes">("abstract");
+  const [tab, setTab] = useState<"abstract" | "evidence" | "notes">("abstract");
+  // The footer's lists replace the details; papers opened from a list leave a trail back to it.
+  const [links, setLinks] = useState<LinkMode | null>(null);
+  const [trail, setTrail] = useState<TrailStep[]>([]);
+  const [restoring, setRestoring] = useState<{ stash: LinkStash; visited: string } | null>(null);
+  const expected = useRef<string | null>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!work) return;
+    if (expected.current === work.id) {
+      expected.current = null;
+      return;
+    }
+    // Any other way of choosing a paper starts over at its details.
+    expected.current = null;
+    setTrail([]);
+    setLinks(null);
+    setRestoring(null);
+  }, [work?.id]);
+  const showLinks = (mode: LinkMode | null) => {
+    setRestoring(null);
+    setLinks(mode);
+    if (scroller.current) scroller.current.scrollTop = 0;
+  };
+  const openLinked = (id: string, stash: LinkStash) => {
+    if (!work || !links) return;
+    setTrail((t) => [...t, { id: work.id, title: work.title, mode: links, stash, child: id }]);
+    setRestoring(null);
+    setLinks(null);
+    expected.current = id;
+    onInspect(id);
+  };
+  const back = () => {
+    const last = trail.at(-1);
+    if (!last) return;
+    setTrail((t) => t.slice(0, -1));
+    setRestoring({ stash: last.stash, visited: last.child });
+    setLinks(last.mode);
+    expected.current = last.id;
+    onInspect(last.id);
+  };
   const [shelfFile, setShelfFile] = useState<ShelfFileDetails | null>(null);
   const [doiInput, setDoiInput] = useState("");
   const [resolving, setResolving] = useState(false);
@@ -130,9 +185,33 @@ export function Inspector({
       </aside>
     );
   const state = work.state;
+  const last = trail.at(-1);
   return (
     <aside className="inspector">
-      <div className="inspector-scroll">
+      <div className="inspector-scroll" ref={scroller}>
+        {last && (
+          <button className="link-trail" onClick={back} title="이 논문을 연 목록으로 돌아갑니다">
+            <ChevronLeft size={14} />
+            <span>{LINK_LABELS[last.mode]}</span>
+            <span className="link-trail-title">{last.title}</span>
+          </button>
+        )}
+        {links ? (
+          <LinkPanel
+            key={`${work.id}:${links}`}
+            projectId={projectId}
+            work={work}
+            mode={links}
+            collections={collections}
+            restore={restoring?.stash}
+            visited={restoring?.visited}
+            onClose={() => showLinks(null)}
+            onOpen={openLinked}
+            onDiscover={() => onDiscover(links, [work.id])}
+            onNotice={onNotice}
+            onError={onError}
+          />
+        ) : (<>
         <div className="paper-kicker">
           <span>{work.type}</span>
           <span>{work.year || "연도 미상"}</span>
@@ -284,7 +363,6 @@ export function Inspector({
           {(
             [
               ["abstract", "초록"],
-              ["related", "관련 문헌"],
               ["evidence", "발견 근거"],
               ["notes", "노트"],
             ] as const
@@ -296,7 +374,7 @@ export function Inspector({
               aria-selected={tab === key}
               tabIndex={tab === key ? 0 : -1}
               onKeyDown={(event) => {
-                const keys = ["abstract", "related", "evidence", "notes"] as const;
+                const keys = ["abstract", "evidence", "notes"] as const;
                 const direction =
                   event.key === "ArrowRight"
                     ? 1
@@ -345,14 +423,6 @@ export function Inspector({
               </p>
             )}
           </section>
-        </div>
-        <div
-          role="tabpanel"
-          id="inspector-panel-related"
-          aria-labelledby="inspector-tab-related"
-          hidden={tab !== "related"}
-        >
-          <RelatedShelf projectId={projectId} work={work} active={tab === "related"} configured={shelfConfigured} onInspect={onInspect} onError={onError} />
         </div>
         <div
           role="tabpanel"
@@ -696,17 +766,19 @@ export function Inspector({
             )}
           </section>
         </details>
+        </>)}
       </div>
-      <div className="inspector-footer">
-        <button onClick={() => onDiscover("related", [work.id])}>
-          관련 논문
-        </button>
-        <button onClick={() => onDiscover("references", [work.id])}>
-          참고문헌
-        </button>
-        <button onClick={() => onDiscover("citedBy", [work.id])}>
-          후속 인용
-        </button>
+      <div className="inspector-footer" role="group" aria-label="이 논문과 이어진 문헌">
+        {(["related", "references", "citedBy"] as const).map((mode) => (
+          <button
+            key={mode}
+            aria-pressed={links === mode}
+            data-help={LINK_HELP[mode]}
+            onClick={() => showLinks(links === mode ? null : mode)}
+          >
+            {LINK_LABELS[mode]}
+          </button>
+        ))}
       </div>
     </aside>
   );

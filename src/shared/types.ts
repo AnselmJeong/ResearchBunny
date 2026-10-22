@@ -395,6 +395,39 @@ export interface ListResult {
   /** Shelf graphs: each drawn work's subfolder path directly below the listed folder. */
   subfolders?: Record<string, string>;
 }
+/** The inspector's own lists for one paper: what it cites, what cites it and what is like it. */
+export type LinkMode = "related" | "references" | "citedBy";
+export interface LinkedWork {
+  id: string;
+  title: string;
+  /** The first three authors; `authorCount` says how many there are. */
+  authors: string[];
+  authorCount: number;
+  year: number | null;
+  venue: string;
+  citations: number | null;
+  doi: string | null;
+  /** "pending" also stands for a paper this project has never seen. */
+  screening: Screening;
+  /** The shelf folder holding the paper's PDF. */
+  shelf: string | null;
+  /** Similarity, for shelf and PubMed neighbours. */
+  score: number | null;
+}
+export interface LinkGroup {
+  key: "references" | "local" | "citing" | "shelf" | "pubmed" | "openalex";
+  label: string;
+  items: LinkedWork[];
+  /** How many the source holds; more than `items` when it pages or some were not found. */
+  total: number | null;
+  /** The next OpenAlex page. */
+  cursor: string | null;
+  note?: string;
+}
+export interface WorkLinks {
+  groups: LinkGroup[];
+  notices: string[];
+}
 export interface ImportPreview {
   token: string;
   items: {

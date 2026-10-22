@@ -261,6 +261,7 @@ const hostRpc = BrowserView.defineRPC<BunnyRPC>({
               "shelfMovePreview",
               "shelfRelated",
               "shelfSearch",
+              "workLinks",
               "shelfFile",
               "shelfReveal",
               "chooseShelfRoot",

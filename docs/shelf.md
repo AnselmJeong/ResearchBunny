@@ -10,7 +10,7 @@
 | Phase 1 · `views()` 묶음 조회, `edges()` SQL 필터, `duplicates` 제목 전용 비교, `hasValidPdf` fast path | 완료 | `database.ts`, `service.ts`, `interchange/pdf.ts` |
 | Phase 1 · 사이드바 서고 트리, `scope: "shelf"` 목록, Inspector 서고 동작·판정 근거, 오프라인 표시, 설정 | 완료 | `ShelfTree.tsx`, `Inspector.tsx`, `ShelfSettings.tsx`, `App.tsx` |
 | Phase 2 · `OllamaLocal`, 임베딩 단계, 메모리 행렬, 재임베딩 정책 | 완료 | `providers/ollama-local.ts`, `shelf/vectors.ts` |
-| Phase 2 · Inspector `관련 문헌` 탭(유사 논문, 인용 연결, 서고 밖 논문 즉석 임베딩) | 완료 | `RelatedShelf.tsx`, `shelf/search.ts` |
+| Phase 2 · Inspector `관련 문헌` 탭(유사 논문, 인용 연결, 서고 밖 논문 즉석 임베딩). 0.3.13부터 상세 패널 아래 `관련 논문` 목록의 서고 묶음 | 완료 | `LinkPanel.tsx`, `discovery/links.ts`, `shelf/search.ts` |
 | Phase 3 · 하이브리드 검색, 검색 실행의 `shelf` 작업, 고정 묶음, 배지, 필터, `서고만 검색` | 완료 | `discovery/engine.ts`, `shelf/search.ts`, `App.tsx`, `Filters.tsx` |
 | Phase 3 · 원문 확보의 서고 확인, `서고에서 연결` | 완료 | `fulltext/jobs.ts`, `MissingPdfList.tsx`, `DownloadDialog.tsx` |
 | Phase 3 · AI 대화의 서고 근거 | 완료 | `service.ts`(`evidence`), `AISidebar.tsx` |

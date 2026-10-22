@@ -23,6 +23,7 @@ import { LinkedDiscoveries } from "./providers/linked-discoveries";
 import { OpenAlex } from "./providers/openalex";
 import { AIProvider, DEFAULT_AI, type AIConfig } from "./providers/openai";
 import { Discovery } from "./discovery/engine";
+import { Links } from "./discovery/links";
 import { parseBib, exportBib, type BibEntry } from "./interchange/bibtex";
 import { PdfImports, hashFile, verifyPdf } from "./interchange/pdf";
 import { createBackup, restoreBackup } from "./interchange/backup";
@@ -49,6 +50,7 @@ export class Service {
   chat: ArticleChat;
   reader: PdfReader;
   discovery: Discovery;
+  links: Links;
   pdf: PdfImports;
   downloads: PdfDownloads;
   classifier: ArchiveClassifier;
@@ -93,6 +95,16 @@ export class Service {
       enabled: () => !!this.shelf.root(),
       search: async (query, limit, signal) => (await this.shelfQueries.search(query, { limit, signal })).hits,
       similar: (ids, limit, signal) => this.similarInShelf(ids, limit, signal),
+    });
+    this.links = new Links(this.db, this.oa, new LinkedDiscoveries(this.db), {
+      enabled: () => !!this.shelf.root(),
+      similar: async (workId, limit, otherFolders, signal) => {
+        const related = await this.shelfQueries.related(workId, { limit, otherFoldersOnly: otherFolders, signal });
+        return {
+          hits: related.similar.map((item) => ({ workId: item.workId, score: item.score })),
+          notice: related.semantic ? related.notice : "Ollama 임베딩을 쓸 수 없어 서고에서 비슷한 논문은 찾지 못했습니다.",
+        };
+      },
     });
     this.pdf = new PdfImports(this.db, this.oa, workerPath, emit);
     this.downloads = new PdfDownloads(this.db, workerPath, emit);
@@ -659,6 +671,11 @@ export class Service {
         const p = schemas.shelfSearch.parse(args);
         this.db.project(p.projectId);
         return this.shelfQueries.search(p.query, { limit: p.limit });
+      }
+      case "workLinks": {
+        const p = schemas.workLinks.parse(args);
+        this.db.project(p.projectId);
+        return this.links.load(p);
       }
       case "shelfFile":
         return this.shelf.fileDetails(schemas.shelfFile.parse(args).fileId);
