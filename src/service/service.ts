@@ -370,7 +370,7 @@ export class Service {
         if (run.download) {
           if (!["cancel", "skip"].includes(args.action) && this.busy()) throw new AppError("BUSY", "진행 중인 작업을 완료하거나 취소하세요.");
           if (args.action === "resume") await this.shelfWritable();
-          return this.downloads.control(args.runId, args.action, args.useBrowser, args.downloadDirectory);
+          return this.downloads.control(args.runId, args.action, args.useBrowser, args.downloadDirectory, args.useSciHub);
         }
         if (args.action === "skip") throw new AppError("INVALID", "문헌 건너뛰기는 원문 확보 작업에서 사용하세요.");
         if (args.action !== "cancel" && this.downloads.active.size) throw new AppError("BUSY", "원문 확보 작업을 완료하거나 취소하세요.");
