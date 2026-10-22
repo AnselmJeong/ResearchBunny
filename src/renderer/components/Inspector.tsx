@@ -24,6 +24,11 @@ import type {
   DiscoveryMode,
   ReadState,
 } from "../../shared/types";
+const READING_MARKS: [Exclude<ReadState, "unread">, string][] = [
+  ["planned", "읽을 예정"],
+  ["reading", "읽는 중"],
+  ["read", "읽음"],
+];
 export function Inspector({
   work,
   projectId,
@@ -176,6 +181,24 @@ export function Inspector({
           >
             <Edit3 size={16} />
           </button>
+        </div>
+        {/* One click marks a state; clicking the marked one returns to 미열람. */}
+        <div className="reading-marks" role="group" aria-label="읽기 상태">
+          {READING_MARKS.map(([key, label]) => (
+            <button
+              key={key}
+              aria-pressed={state.reading === key}
+              title={state.reading === key ? "다시 누르면 미열람으로 돌립니다" : `${label}으로 표시`}
+              onClick={() =>
+                onPatch({ reading: state.reading === key ? "unread" : key })
+              }
+            >
+              <span className="mark-box" aria-hidden="true">
+                {state.reading === key && <Check size={11} strokeWidth={3} />}
+              </span>
+              {label}
+            </button>
+          ))}
         </div>
         {work.shelf && (
           <div className={`shelf-strip ${work.shelf.match === "title" ? "hint" : ""}`}>
@@ -449,20 +472,6 @@ export function Inspector({
         >
           <section>
             <h3>라이브러리</h3>
-            <label className="field">
-              읽기 상태
-              <select
-                value={state.reading}
-                onChange={(e) =>
-                  onPatch({ reading: e.target.value as ReadState })
-                }
-              >
-                <option value="unread">미열람</option>
-                <option value="planned">읽을 예정</option>
-                <option value="reading">읽는 중</option>
-                <option value="read">읽음</option>
-              </select>
-            </label>
             <label className="field">
               컬렉션
               <select

@@ -15,6 +15,8 @@
   --soft: #f4f6f1;
   --accent: #2d6550;
   --accent-soft: #e5eee5;
+  --row-selected: #dcebdd;
+  --row-selected-hover: #d3e5d5;
   --danger: #aa5745;
   --graph-saved: #41856a;
   --graph-candidate: #648ab7;
@@ -1214,6 +1216,45 @@ small {
   background: var(--accent-soft);
   border-color: var(--accent-soft);
 }
+.reading-marks {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.reading-marks button {
+  flex: 1;
+  font-size: 12px;
+  padding: 6px 8px;
+  color: var(--muted);
+}
+.reading-marks .mark-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border: 1.5px solid var(--muted);
+  border-radius: 3px;
+}
+.reading-marks button[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-soft);
+  font-weight: 600;
+}
+.reading-marks button[aria-pressed="true"] .mark-box {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--panel);
+}
+.reading-bulk {
+  display: flex;
+  gap: 6px;
+}
+.reading-bulk button {
+  flex: 1;
+  color: var(--text);
+}
 .paper-stats {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -2036,6 +2077,8 @@ html[data-theme="dark"] {
   --soft: #2b3530;
   --accent: #a0c5b0;
   --accent-soft: #344b40;
+  --row-selected: #2e4739;
+  --row-selected-hover: #33503f;
   --danger: #dc977d;
   --graph-saved: #81b49b;
   --graph-candidate: #85a9d3;
@@ -2059,10 +2102,6 @@ html[data-theme="dark"] .primary {
   background: #386c55;
   color: white;
   border-color: #386c55;
-}
-html[data-theme="dark"] .paper-row:hover,
-html[data-theme="dark"] .paper-row.selected {
-  background: #2d4136;
 }
 html[data-theme="dark"] .paper-main h3 {
   color: var(--text);
@@ -2092,6 +2131,8 @@ html[data-theme="dark"] .graph-wrap {
     --soft: #2b3530;
     --accent: #a0c5b0;
     --accent-soft: #344b40;
+    --row-selected: #2e4739;
+    --row-selected-hover: #33503f;
     --danger: #dc977d;
   --graph-saved: #81b49b;
   --graph-candidate: #85a9d3;
@@ -2113,10 +2154,6 @@ html[data-theme="dark"] .graph-wrap {
     background: #386c55;
     color: white;
     border-color: #386c55;
-  }
-  html[data-theme="system"] .paper-row:hover,
-  html[data-theme="system"] .paper-row.selected {
-    background: #2d4136;
   }
   html[data-theme="system"] .abstract {
     color: #c4cec7;
@@ -2591,9 +2628,15 @@ html[data-theme="dark"] .graph-wrap {
 .paper-meta > span:first-child {
   max-width: 100%;
 }
-.paper-row.selected,
+/* Hover stays faint so a selected row reads as selected, not as the row under the pointer. */
 .paper-row:hover {
-  background: var(--accent-soft);
+  background: var(--soft);
+}
+.paper-row.selected {
+  background: var(--row-selected);
+}
+.paper-row.selected:hover {
+  background: var(--row-selected-hover);
 }
 .paper-row.inspected::before {
   background: var(--accent);
@@ -3505,6 +3548,7 @@ html[data-theme="dark"] .selection-bar .primary {
 }
 .shelf-pinned-row.inspected,
 .shelf-pinned-row:hover { background: var(--panel); }
+.shelf-pinned-row.selected { background: var(--row-selected); }
 .shelf-pinned-row > button:not(.icon-button) {
   display: grid;
   gap: 1px;

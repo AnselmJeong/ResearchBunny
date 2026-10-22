@@ -1777,7 +1777,11 @@ export function App() {
                     <GroupSelection ids={list.shelf.map((w) => w.id)} selected={selectedIds} setSelected={setSelected} />
                     <div>
                       {list.shelf.map((w) => (
-                        <div key={w.id} className={`shelf-pinned-row ${inspectorId === w.id ? "inspected" : ""}`}>
+                        <div key={w.id} className={`shelf-pinned-row ${inspectorId === w.id ? "inspected" : ""} ${selectedIds.has(w.id) ? "selected" : ""}`}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            setSelected((ids) => ids.includes(w.id) ? ids.filter((id) => id !== w.id) : [...ids, w.id]);
+                          }}>
                           <input type="checkbox" aria-label={`${w.title} 선택`} checked={selectedIds.has(w.id)}
                             onChange={(e) => setSelected((ids) => e.target.checked ? [...new Set([...ids, w.id])] : ids.filter((id) => id !== w.id))} />
                           <button onClick={() => inspect(w.id)}>
@@ -1939,6 +1943,11 @@ export function App() {
                               (inspectorId === w.id ? "inspected " : "") +
                               (w.evidence?.hidden.length ? "filtered" : "")
                             }
+                            // Right-click toggles the row's selection, like its checkbox (shift selects a range).
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              toggle(w.id, index, e.shiftKey);
+                            }}
                           >
                             <input
                               type="checkbox"
@@ -1952,7 +1961,7 @@ export function App() {
                             />
                             <button
                               className="paper-main"
-                              title="문헌 선택"
+                              title="클릭하면 자세히 보기 · 오른쪽 클릭하면 선택"
                               // Browsing shows the record only; the PDF loads on 원문 보기.
                               onClick={() => inspect(w.id)}
                             >
@@ -2573,25 +2582,26 @@ export function App() {
               {bulkCreating ? "만들고 저장" : "컬렉션에 저장"}
             </button>
           </form>
-          <label className="field">
+          <div className="field">
             읽기 상태
-            <select
-              defaultValue=""
-              onChange={(e) => {
-                if (e.target.value)
-                  patch(selected, {
-                    reading: e.target.value as LibraryState["reading"],
-                  });
-              }}
-            >
-              <option value="">일괄 변경…</option>
+            <div className="reading-bulk" role="group" aria-label="선택한 문헌의 읽기 상태">
               {Object.entries(READ).map(([key, v]) => (
-                <option value={key} key={key}>
+                <button
+                  key={key}
+                  disabled={busy || !selected.length}
+                  onClick={() =>
+                    patch(
+                      selected,
+                      { reading: key as LibraryState["reading"] },
+                      `${selected.length}편을 ${v}으로 표시했습니다.`,
+                    )
+                  }
+                >
                   {v}
-                </option>
+                </button>
               ))}
-            </select>
-          </label>
+            </div>
+          </div>
           <label className="field">
             태그 (입력한 태그로 교체)
             <input
