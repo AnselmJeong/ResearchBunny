@@ -26,8 +26,18 @@ Library schema stays at 3. Nothing stored changes, and an older app reads the li
   - `문헌 탐색`: the empty search, a search run and the options popover, which opened over the list. `결과 내 검색` stayed in the results toolbar.
   - The shelf: ⌘K focused the `내 서고` box, and `lithium` listed the matching paper by relevance.
   - Light and dark themes, at 1440 and 1024 px wide with the inspector open.
+- Packaged app: strict signature verification passed, and the packaged smoke test passed (PDF reader chunks, threads, extraction, folder matching, archive, BibTeX and PDF folder export, backup, restore and permanent deletion with a restricted PATH). The package's renderer holds the new search text.
 - Not yet checked: the native WebKit window.
 
 ## Known issue
 
 - A "ResearchBunny quit unexpectedly" dialog was reported on quitting 0.3.7. Its cause is not known yet, and this release does not change the quit path.
+
+## Installation
+
+- Backed up the previous app and a consistent SQLite snapshot under `~/Library/Application Support/ResearchBunny/app-backups/20261022-195634-search-box-0.3.10` (integrity ok, schema 3, **12,082 works**, **8,991 attachments**, **9,026 shelf files**, 6 projects, matching the live library). The replaced 0.3.9 bundle is kept there as `ResearchBunny-0.3.9-installed.app`.
+- Replaced `/Applications/ResearchBunny.app` with version **0.3.10**; all **242 files** match the package and strict signature verification passed.
+
+Artifacts: `out/electrobun/stable-macos-arm64-ResearchBunny.dmg` and `out/electrobun/stable-macos-arm64-ResearchBunny.app.tar.zst`. Local validation logs are under `.qa/release-0.3.10/`.
+
+Local ad-hoc signing on macOS Apple Silicon; no Developer ID signing or Apple notarization.
