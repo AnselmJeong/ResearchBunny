@@ -21,9 +21,18 @@ Library schema stays at 3. Nothing stored changes, and an older app reads the li
   - Bulk edit set two right-click-selected papers to 읽는 중.
   - Selected rows were clearly green in the light and dark themes.
 - Not checked in the browser: right-clicking the pinned 내 서고에서 찾음 rows, because the harness search returned no shelf matches. They use the same handler as the list rows.
+- Packaged app: strict signature verification passed, and the packaged smoke test passed (PDF reader chunks, threads, extraction, folder matching, archive, BibTeX and PDF folder export, backup, restore and permanent deletion with a restricted PATH).
+- Not yet checked: right-click selection and the reading buttons in the installed app's own window.
 
 ## Known issue
 
 - A "ResearchBunny quit unexpectedly" dialog was reported on quitting 0.3.7. Its cause is not known yet, and this release does not change the quit path.
+
+## Installation
+
+- Backed up the previous app and a consistent SQLite snapshot under `~/Library/Application Support/ResearchBunny/app-backups/20261022-215942-reading-select-0.3.12` (integrity ok, schema 3, **12,095 works**, **9,022 attachments**, **9,057 shelf files**, 6 projects, matching the live library). The replaced 0.3.11 bundle is kept there as `ResearchBunny-0.3.11-installed.app`.
+- Replaced `/Applications/ResearchBunny.app` with version **0.3.12**; all **242 files** match the package and strict signature verification passed. The app was not running.
+
+Artifacts: `out/electrobun/stable-macos-arm64-ResearchBunny.dmg` and `out/electrobun/stable-macos-arm64-ResearchBunny.app.tar.zst`. Local validation logs are under `.qa/release-0.3.12/`.
 
 Local ad-hoc signing on macOS Apple Silicon; no Developer ID signing or Apple notarization.
