@@ -12,6 +12,7 @@ import {
   ArrowLeft,
   Bookmark,
   BookmarkMinus,
+  BookOpen,
   Check,
   ChevronRight,
   Compass,
@@ -577,6 +578,8 @@ export function App() {
   const trail = scope === "run" ? runPath(snapshot?.runs || [], scopeId) : [];
   // In the shelf the list query is a ranked search, not a word filter.
   const shelfSearch = scope === "shelf" && !!localQuery.trim();
+  // Elsewhere, outside a run's results, it keeps the papers holding every word.
+  const wordSearch = scope !== "shelf" && scope !== "run" && !!localQuery.trim();
   const shelfScopeAll = (scopeId || SHELF_ALL) === SHELF_ALL;
   const inspect = (id: string) => {
     readerRequest.current++;
@@ -827,8 +830,9 @@ export function App() {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         setDialog(null);
-        // The shelf has its own search box; elsewhere ⌘K starts a new OpenAlex search.
-        if (scope !== "run" && scope !== "shelf") navigate("run");
+        setReaderVisible(false);
+        // Every list has its search box under its title; an unlinked shelf has none, so search OpenAlex.
+        if (scope === "shelf" && !snapshot?.shelf.configured) navigate("run");
         requestAnimationFrame(() => searchInput.current?.focus());
       }
       if (editable || dialog) return;
@@ -1072,147 +1076,11 @@ export function App() {
               <ArrowRight size={17} />
             </button>
           </div>
-          {!fullPage && scope === "run" ? (
-            <div className="search-section">
-              <form
-                className="search-form"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void discover("search").catch(onError);
-                }}
-              >
-                <Search size={20} />
-                <span className="search-scope" data-help="OpenAlex에서 찾습니다. 서고에 이미 있는 논문에는 결과에 서고 배지가 붙습니다. 서고 안에서 찾으려면 사이드바에서 서고를 고르세요.">OpenAlex</span>
-                <input
-                  ref={searchInput}
-                  aria-label="OpenAlex에서 논문 검색"
-                  placeholder="연구 주제, 제목, DOI, PMID로 논문 찾기"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                />
-                <kbd>⌘ K</kbd>
-                <button
-                  className="primary"
-                  disabled={busy || startingDiscovery !== null || !!active || searchPending || !query.trim()}
-                  aria-busy={searchPending}
-                  type="submit"
-                >
-                  {searchPending ? "검색 중…" : "검색"}
-                  {searchPending ? <LoaderCircle size={15} className="spin" aria-hidden="true" /> : <ArrowRight size={15} aria-hidden="true" />}
-                </button>
-              </form>
-              <details className="search-options-menu">
-                <summary aria-label="검색 옵션">
-                  <SlidersHorizontal size={16} />
-                </summary>
-                <div className="search-options">
-                  <label>
-                    <select
-                      aria-label="검색 정렬"
-                      value={searchSort}
-                      onChange={(e) =>
-                        setSearchSort(e.target.value as typeof searchSort)
-                      }
-                    >
-                      <option value="relevance">검색 관련순</option>
-                      <option value="citations">피인용수순</option>
-                      <option value="year">최신순</option>
-                    </select>
-                  </label>
-                  <label className="check">
-                    <input
-                      type="checkbox"
-                      checked={semantic}
-                      onChange={(e) => setSemantic(e.target.checked)}
-                    />
-                    의미 검색
-                  </label>
-                  <span className="search-provider">
-                    OpenAlex
-                    {!snapshot.settings.openalexConfigured && (
-                      <button
-                        className="text-button"
-                        onClick={() => setDialog("settings")}
-                      >
-                        API 키 설정
-                      </button>
-                    )}
-                  </span>
-                  <button
-                    className="ai-button"
-                    disabled={busy || !!active || !query.trim()}
-                    onClick={() => {
-                      if (
-                        !snapshot.settings.aiEnabled ||
-                        (snapshot.settings.aiProvider === "openai" && !snapshot.settings.openaiConfigured)
-                      ) {
-                        setDialog("settings");
-                        flash(
-                          "설정에서 AI 연결을 선택하고 AI 추천을 켜 주세요.",
-                        );
-                      } else void discover("ai").catch(onError);
-                    }}
-                  >
-                    <Sparkles size={15} />
-                    핵심 논문 찾기<span className="badge">실험</span>
-                  </button>
-                </div>
-              </details>
-            </div>
-          ) : !fullPage && scope === "shelf" && snapshot.shelf.configured ? (
-            <div className="search-section">
-              <form
-                className="search-form"
-                role="search"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  // Read the field itself: Enter can commit a Hangul syllable in the same keystroke.
-                  const field = e.currentTarget.elements.namedItem("q") as HTMLInputElement;
-                  setLocalQuery(field.value.trim());
-                  setOffset(0);
-                }}
-              >
-                {loading && shelfSearch ? <LoaderCircle size={20} className="spin" aria-hidden="true" /> : <Search size={20} aria-hidden="true" />}
-                <span className="search-scope shelf" title={title}
-                  data-help="서고 안에서만 찾습니다. 제목·초록의 의미가 가까운 논문을 관련도순으로 보여 주며 한국어 질의도 됩니다. 단어가 들어 있는지로 거르려면 필터의 포함어를 쓰세요.">
-                  <LibraryBig size={13} aria-hidden="true" />
-                  <span>{shelfScopeAll ? "내 서고" : title}</span>
-                </span>
-                <input
-                  ref={searchInput}
-                  name="q"
-                  aria-label={shelfScopeAll ? "서고에서 의미로 검색" : `${title}에서 의미로 검색`}
-                  placeholder={shelfScopeAll ? "서고 전체에서 주제·질문으로 검색" : "이 폴더에서 주제·질문으로 검색"}
-                  value={searchDraft}
-                  onChange={(e) => setSearchDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape" && (searchDraft || localQuery)) {
-                      e.preventDefault();
-                      setLocalQuery("");
-                      setSearchDraft("");
-                    }
-                  }}
-                />
-                {(searchDraft || localQuery) && (
-                  <button type="button" className="icon-button search-clear" title="검색 지우기" aria-label="검색 지우기"
-                    onClick={() => { setLocalQuery(""); setSearchDraft(""); }}>
-                    <X size={14} />
-                  </button>
-                )}
-                <kbd>⌘ K</kbd>
-                <button className="primary" type="submit">
-                  검색
-                  <ArrowRight size={15} aria-hidden="true" />
-                </button>
-              </form>
-            </div>
-          ) : (
-            <div className="breadcrumb">
-              <span className="breadcrumb-project" title={currentProject?.name}>{currentProject?.name}</span>
-              <ChevronRight size={13} />
-              <strong>{dialog === "settings" ? "설정" : title}</strong>
-            </div>
-          )}
+          <div className="breadcrumb">
+            <span className="breadcrumb-project" title={currentProject?.name}>{currentProject?.name}</span>
+            <ChevronRight size={13} />
+            <strong>{dialog === "settings" ? "설정" : title}</strong>
+          </div>
           <div className="topbar-actions" hidden={fullPage}>
             {scope !== "run" && (
               <button onClick={() => setDialog("import")}>
@@ -1391,6 +1259,192 @@ export function App() {
                   </div>
                   </div>
                 </div>
+                {/* The view's main search, under its title: OpenAlex in 문헌 탐색, the shelf's ranked search, or a word filter elsewhere. */}
+                {scope === "run" ? (
+                  <div className="search-section">
+                    <form
+                      className="search-form"
+                      role="search"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        void discover("search").catch(onError);
+                      }}
+                    >
+                      <Search size={20} aria-hidden="true" />
+                      <span className="search-scope" data-help="OpenAlex에서 찾습니다. 서고에 이미 있는 논문에는 결과에 서고 배지가 붙습니다. 서고 안에서 찾으려면 사이드바에서 서고를 고르세요.">OpenAlex</span>
+                      <input
+                        ref={searchInput}
+                        aria-label="OpenAlex에서 논문 검색"
+                        placeholder="연구 주제, 제목, DOI, PMID로 논문 찾기"
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                      />
+                      <kbd>⌘ K</kbd>
+                      <button
+                        className="primary"
+                        disabled={busy || startingDiscovery !== null || !!active || searchPending || !query.trim()}
+                        aria-busy={searchPending}
+                        type="submit"
+                      >
+                        {searchPending ? "검색 중…" : "검색"}
+                        {searchPending ? <LoaderCircle size={15} className="spin" aria-hidden="true" /> : <ArrowRight size={15} aria-hidden="true" />}
+                      </button>
+                    </form>
+                    <details className="search-options-menu">
+                      <summary aria-label="검색 옵션">
+                        <SlidersHorizontal size={16} />
+                      </summary>
+                      <div className="search-options">
+                        <label>
+                          <select
+                            aria-label="검색 정렬"
+                            value={searchSort}
+                            onChange={(e) =>
+                              setSearchSort(e.target.value as typeof searchSort)
+                            }
+                          >
+                            <option value="relevance">검색 관련순</option>
+                            <option value="citations">피인용수순</option>
+                            <option value="year">최신순</option>
+                          </select>
+                        </label>
+                        <label className="check">
+                          <input
+                            type="checkbox"
+                            checked={semantic}
+                            onChange={(e) => setSemantic(e.target.checked)}
+                          />
+                          의미 검색
+                        </label>
+                        <span className="search-provider">
+                          OpenAlex
+                          {!snapshot.settings.openalexConfigured && (
+                            <button
+                              className="text-button"
+                              onClick={() => setDialog("settings")}
+                            >
+                              API 키 설정
+                            </button>
+                          )}
+                        </span>
+                        <button
+                          className="ai-button"
+                          disabled={busy || !!active || !query.trim()}
+                          onClick={() => {
+                            if (
+                              !snapshot.settings.aiEnabled ||
+                              (snapshot.settings.aiProvider === "openai" && !snapshot.settings.openaiConfigured)
+                            ) {
+                              setDialog("settings");
+                              flash(
+                                "설정에서 AI 연결을 선택하고 AI 추천을 켜 주세요.",
+                              );
+                            } else void discover("ai").catch(onError);
+                          }}
+                        >
+                          <Sparkles size={15} />
+                          핵심 논문 찾기<span className="badge">실험</span>
+                        </button>
+                      </div>
+                    </details>
+                  </div>
+                ) : scope === "shelf" ? (
+                  snapshot.shelf.configured && <div className="search-section">
+                    <form
+                      className="search-form"
+                      role="search"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        // Read the field itself: Enter can commit a Hangul syllable in the same keystroke.
+                        const field = e.currentTarget.elements.namedItem("q") as HTMLInputElement;
+                        setLocalQuery(field.value.trim());
+                        setOffset(0);
+                      }}
+                    >
+                      {loading && shelfSearch ? <LoaderCircle size={20} className="spin" aria-hidden="true" /> : <Search size={20} aria-hidden="true" />}
+                      <span className="search-scope local" title={title}
+                        data-help="서고 안에서만 찾습니다. 제목·초록의 의미가 가까운 논문을 관련도순으로 보여 주며 한국어 질의도 됩니다. 단어가 들어 있는지로 거르려면 필터의 포함어를 쓰세요.">
+                        <LibraryBig size={13} aria-hidden="true" />
+                        <span>{shelfScopeAll ? "내 서고" : title}</span>
+                      </span>
+                      <input
+                        ref={searchInput}
+                        name="q"
+                        aria-label={shelfScopeAll ? "서고에서 의미로 검색" : `${title}에서 의미로 검색`}
+                        placeholder={shelfScopeAll ? "서고 전체에서 주제·질문으로 검색" : "이 폴더에서 주제·질문으로 검색"}
+                        value={searchDraft}
+                        onChange={(e) => setSearchDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape" && (searchDraft || localQuery)) {
+                            e.preventDefault();
+                            setLocalQuery("");
+                            setSearchDraft("");
+                          }
+                        }}
+                      />
+                      {(searchDraft || localQuery) && (
+                        <button type="button" className="icon-button search-clear" title="검색 지우기" aria-label="검색 지우기"
+                          onClick={() => { setLocalQuery(""); setSearchDraft(""); }}>
+                          <X size={14} />
+                        </button>
+                      )}
+                      <kbd>⌘ K</kbd>
+                      <button className="primary" type="submit" data-help="입력한 주제·질문과 뜻이 가까운 서고 논문을 관련도순으로 찾습니다.">
+                        검색
+                        <ArrowRight size={15} aria-hidden="true" />
+                      </button>
+                    </form>
+                  </div>
+                ) : (
+                  <div className="search-section">
+                    <form
+                      className="search-form"
+                      role="search"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        // Read the field itself: Enter can commit a Hangul syllable in the same keystroke.
+                        const field = e.currentTarget.elements.namedItem("q") as HTMLInputElement;
+                        setLocalQuery(field.value.trim());
+                        setOffset(0);
+                      }}
+                    >
+                      <Search size={20} aria-hidden="true" />
+                      <span className="search-scope local" title={title}
+                        data-help="이 목록 안에서 찾습니다. 제목·저자·초록·인용키·메모·태그에 입력한 단어가 모두 들어 있는 문헌만 남기며, 단어의 순서와 위치는 상관없습니다.">
+                        <BookOpen size={13} aria-hidden="true" />
+                        <span>{title}</span>
+                      </span>
+                      <input
+                        ref={searchInput}
+                        name="q"
+                        aria-label={`${title}에서 찾기`}
+                        placeholder="제목·저자·초록·메모의 단어로 찾기"
+                        value={localQuery}
+                        onChange={(e) => {
+                          setLocalQuery(e.target.value);
+                          setOffset(0);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape" && localQuery) {
+                            e.preventDefault();
+                            setLocalQuery("");
+                          }
+                        }}
+                      />
+                      {localQuery && (
+                        <button type="button" className="icon-button search-clear" title="검색 지우기" aria-label="검색 지우기"
+                          onClick={() => setLocalQuery("")}>
+                          <X size={14} />
+                        </button>
+                      )}
+                      <kbd>⌘ K</kbd>
+                      <button className="primary" type="submit" data-help="입력한 단어가 모두 들어 있는 문헌만 목록에 남깁니다. 입력하는 동안에도 바로 걸러집니다.">
+                        검색
+                        <ArrowRight size={15} aria-hidden="true" />
+                      </button>
+                    </form>
+                  </div>
+                )}
                 {scope === "shelf" && (!snapshot.shelf.online || snapshot.shelf.job.state !== "idle" || snapshot.shelf.job.message) && <div className={`classification-status shelf-job ${!snapshot.shelf.online ? "failed" : ""}`} role="status">
                   <span>{!snapshot.shelf.online && <WifiOff size={13} />} {snapshot.shelf.job.message || shelfJobLabel(snapshot.shelf)}{!snapshot.shelf.online ? " · PDF 열기만 NAS 연결이 필요합니다." : ""}</span>
                   {snapshot.shelf.job.state === "confirm" && <button className="text-button" onClick={() => void task(() => window.bunny.shelfControl({ action: "confirmMissing" }))}>사라진 파일 반영</button>}
@@ -1573,20 +1627,18 @@ export function App() {
                   )}
                 </div>
                 <div className="list-toolbar" hidden={startScreen}>
-                  {scope !== "shelf" && (
+                  {/* Elsewhere the search box under the title does this; here it searches OpenAlex. */}
+                  {scope === "run" && (
                     <div className="local-search">
                       <Search size={14} />
                       <input
-                        aria-label="현재 문헌에서 찾기"
-                        placeholder={
-                          scope === "run"
-                            ? "결과 내 검색"
-                            : scope === "collection"
-                              ? "컬렉션에서 찾기"
-                              : "아카이브에서 찾기"
-                        }
+                        aria-label="현재 결과에서 찾기"
+                        placeholder="결과 내 검색"
                         value={localQuery}
-                        onChange={(e) => setLocalQuery(e.target.value)}
+                        onChange={(e) => {
+                          setLocalQuery(e.target.value);
+                          setOffset(0);
+                        }}
                       />
                     </div>
                   )}
@@ -1641,8 +1693,18 @@ export function App() {
                     <Plus size={16} />
                   </button>
                 </div>
+                {wordSearch && (
+                  <div className="search-status" role="status">
+                    <span>{loading ? "찾는 중…" : `‘${localQuery.trim()}’의 단어가 모두 들어 있는 문헌 ${list.total.toLocaleString()}편`}</span>
+                    <span className="search-status-actions">
+                      <button className="text-button" onClick={() => setLocalQuery("")}>
+                        검색 지우기
+                      </button>
+                    </span>
+                  </div>
+                )}
                 {shelfSearch && (
-                  <div className="shelf-search-status" role="status">
+                  <div className="search-status" role="status">
                     <span>
                       {loading
                         ? "서고에서 찾는 중…"
@@ -1650,7 +1712,7 @@ export function App() {
                       {!loading && list.search && !list.search.semantic && !list.search.identifier &&
                         " · Ollama를 쓸 수 없어 검색어가 들어 있는 논문만 찾았습니다."}
                     </span>
-                    <span className="shelf-search-actions">
+                    <span className="search-status-actions">
                       {!shelfScopeAll && (
                         <button className="text-button" onClick={() => {
                           const q = localQuery;
@@ -1762,6 +1824,8 @@ export function App() {
                           ? "조건에 맞는 문헌이 없습니다."
                           : shelfSearch
                             ? `‘${localQuery.trim()}’ 관련 논문을 찾지 못했습니다.`
+                          : wordSearch
+                            ? `‘${localQuery.trim()}’의 단어가 모두 들어 있는 문헌이 없습니다.`
                           : scope === "archive"
                             ? "첫 문헌부터 시작하세요."
                             : scope === "shelf"
@@ -1777,6 +1841,8 @@ export function App() {
                           ? "필터 조건을 완화하거나 초기화해 주세요."
                           : shelfSearch
                             ? "다른 표현으로 찾거나 서고 전체에서 검색해 보세요."
+                          : wordSearch
+                            ? "철자를 확인하거나 단어를 줄여 보세요. 저자는 성만 적어도 됩니다."
                           : "주제나 DOI로 검색하고 관심 논문을 골라보세요. 기존 BibTeX와 PDF로도 시작할 수 있습니다."}
                       </p>
                       <div className="inline-actions">

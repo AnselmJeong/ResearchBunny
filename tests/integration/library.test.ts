@@ -843,6 +843,24 @@ test("archive graph draws only linked papers from all 76 and keeps the list wind
   assert.equal(page.graph, undefined);
 }));
 
+test("archive find matches every word in any order, not one phrase", () => fixture((db) => {
+  const projectId = db.projects()[0].id;
+  const authored = (n: number, title: string, authors: string[]) =>
+    db.upsert(fromOpenAlex({ ...raw(n, title), authorships: authors.map((display_name) => ({ author: { display_name } })) })).work;
+  const both = authored(801, "Dopamine and choice", ["Lodge, Daniel J", "Ménard, Caroline", "Vinter, Anna"]);
+  const lodge = authored(802, "Hippocampal drive", ["Lodge, Daniel J"]);
+  const other = authored(803, "Sleep spindles", ["Lee, A"]);
+  db.mutate(projectId, [both.id, lodge.id, other.id], { screening: "included" });
+  const find = (query: string) =>
+    db.list({ projectId, scope: "archive", query, filters: DEFAULT_FILTERS, showHidden: false, offset: 0, limit: 50, sort: "rank" }).ids;
+  assert.deepEqual(find("vinter lodge"), [both.id]);
+  assert.deepEqual(find("  Lodge,  VINTER "), [both.id]);
+  assert.deepEqual(find("menard"), [both.id]);
+  assert.deepEqual(new Set(find("lodge")), new Set([both.id, lodge.id]));
+  assert.deepEqual(find("lodge spindles"), []);
+  assert.equal(find(" , ").length, 3);
+}));
+
 test("shelf graph colours by the subfolder directly below the listed folder", () => fixture((db) => {
   const projectId = db.projects()[0].id;
   db.db.prepare("INSERT INTO shelf_roots VALUES('r','/shelf','shelf','[]','2026-01-01',NULL)").run();

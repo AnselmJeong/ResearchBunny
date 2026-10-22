@@ -586,45 +586,64 @@ small {
   align-items: center;
   gap: 10px;
 }
+/* Each view's main search sits under its title: wide, tall and outlined in the accent colour. */
 .search-section {
-  padding: 24px 27px 15px;
-  background: var(--panel);
+  position: relative;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 24px 18px;
+  container-type: inline-size;
 }
 .search-form {
   display: flex;
   align-items: center;
-  gap: 12px;
-  max-width: 1080px;
-  border: 1px solid #dbe3d8;
-  background: var(--bg);
-  border-radius: 9px;
-  padding: 7px 8px 7px 15px;
-  box-shadow: 0 1px 3px #203b1f05;
+  flex: 1;
+  min-width: 0;
+  min-height: 54px;
+  gap: 10px;
+  padding: 6px 7px 6px 16px;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 1px 2px #1d2f2410, 0 10px 24px -16px color-mix(in srgb, var(--accent) 80%, transparent);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.search-form:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft), 0 10px 24px -16px color-mix(in srgb, var(--accent) 80%, transparent);
 }
 .search-form > svg {
-  color: var(--muted);
+  flex-shrink: 0;
+  color: var(--accent);
 }
 .search-form input {
   flex: 1;
+  min-width: 0;
   border: 0;
   background: transparent;
-  font-size: 14px;
+  font-size: 15px;
   outline: none;
   padding: 8px 0;
 }
-.search-form button {
-  padding: 8px 15px;
-  min-height: 34px;
-  font-size: 12px;
+.search-form button.primary {
+  flex-shrink: 0;
+  min-height: 40px;
+  padding: 6px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
 }
 .search-form kbd {
+  flex-shrink: 0;
   font-family: inherit;
   background: var(--soft);
   font-size: 12px;
-  color: #a8b0a6;
+  color: var(--muted);
   border: 1px solid var(--border);
-  padding: 2px 5px;
-  border-radius: 3px;
+  padding: 2px 6px;
+  border-radius: 4px;
 }
 .search-options {
   display: flex;
@@ -2051,9 +2070,6 @@ html[data-theme="dark"] .paper-main h3 {
 html[data-theme="dark"] .abstract {
   color: #c4cec7;
 }
-html[data-theme="dark"] .search-form {
-  border-color: var(--border);
-}
 html[data-theme="dark"] .center-bunny,
 html[data-theme="dark"] .orbit-node {
   background: var(--soft);
@@ -2348,7 +2364,7 @@ html[data-theme="dark"] .graph-wrap {
   padding-top: 14px;
 }
 .topbar {
-  height: 62px;
+  height: 52px;
   padding: 0 22px;
   gap: 12px;
   background: var(--panel);
@@ -2362,31 +2378,6 @@ html[data-theme="dark"] .graph-wrap {
 .navigation-buttons {
   margin-right: 0;
 }
-.search-section {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-  padding: 0;
-  -webkit-app-region: no-drag;
-}
-.search-form {
-  flex: 1;
-  min-width: 0;
-  border-radius: 7px;
-  padding: 3px 4px 3px 12px;
-  gap: 9px;
-  box-shadow: none;
-}
-.search-form input {
-  font-size: 14px;
-  padding: 6px 0;
-}
-.search-form button {
-  min-height: 32px;
-  padding: 5px 16px;
-}
 .search-options-menu {
   position: relative;
 }
@@ -2394,16 +2385,18 @@ html[data-theme="dark"] .graph-wrap {
   list-style: none;
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 34px;
-  border-radius: 6px;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--muted);
 }
 .search-options-menu[open] > summary {
   background: var(--accent-soft);
 }
 .search-options {
   position: absolute;
-  top: 32px;
+  top: 46px;
   right: 0;
   z-index: 8;
   width: 285px;
@@ -3592,7 +3585,7 @@ html[data-theme="dark"] .selection-bar .primary {
 .shelf-candidate > button { margin-left: auto; }
 .shelf-found { margin: 6px 0; color: var(--accent); font-size: 12px; font-weight: 600; }
 .shelf-only-note { padding: 18px 24px; }
-.shelf-search-status {
+.search-status {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3604,7 +3597,7 @@ html[data-theme="dark"] .selection-bar .primary {
   border-bottom: 1px solid var(--border);
   overflow-wrap: anywhere;
 }
-.shelf-search-actions { display: flex; gap: 12px; flex-shrink: 0; }
+.search-status-actions { display: flex; gap: 12px; flex-shrink: 0; }
 /* Only the proposal list scrolls, so the move button stays in view. */
 .modal.wide[open]:has(.shelf-sort) { width: 1000px; display: flex; flex-direction: column; overflow: hidden; }
 .shelf-sort { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -3641,25 +3634,29 @@ html[data-theme="dark"] .selection-bar .primary {
   .shelf-sort-items select { grid-column: 2; }
 }
 
-/* What the top search box searches: OpenAlex in 문헌 탐색, the shelf or a folder in 서고. */
+/* What the search box searches: OpenAlex in 문헌 탐색, the shelf or a folder, or the list on screen. */
 .search-scope {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   flex-shrink: 0;
   max-width: 220px;
-  padding: 2px 8px;
+  padding: 4px 10px;
   border-radius: 999px;
   background: var(--soft);
   border: 1px solid var(--border);
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
 }
-.search-scope.shelf { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+.search-scope.local { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
 .search-scope > span { overflow: hidden; text-overflow: ellipsis; }
 .search-form .search-clear { min-height: 0; padding: 4px; }
+@container (max-width: 520px) {
+  .search-form kbd { display: none; }
+  .search-scope { max-width: 110px; }
+}
 
 /* 문헌 탐색 start screen */
 .empty-state:has(.recent-runs) { max-width: 600px; }

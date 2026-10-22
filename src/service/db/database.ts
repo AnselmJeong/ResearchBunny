@@ -25,6 +25,7 @@ import {
   titleSimilarity,
   filterReasons,
   similarityEdges,
+  wordMatcher,
 } from "../../shared/domain";
 import type { ShelfSearchResult } from "../../shared/shelf";
 import { citationWarnings, graphNodeIds } from "../../shared/graph";
@@ -783,14 +784,12 @@ export class Library {
       const hints = this.shelfHints(works.filter((w) => !w.shelf));
       for (const w of works) if (!w.shelf && hints.has(w.id)) w.shelf = hints.get(w.id);
     }
-    if (args.query && !search) {
-      const q = args.query.toLowerCase();
+    // Each word may sit anywhere: "lodge vinter" finds a paper by Lodge and Vinter.
+    const matches = search ? null : wordMatcher(args.query);
+    if (matches)
       works = works.filter((w) =>
-        `${w.title} ${w.authors.join(" ")} ${w.abstract || ""} ${w.citekey} ${w.state.note} ${w.state.tags.join(" ")}`
-          .toLowerCase()
-          .includes(q),
+        matches(`${w.title} ${w.authors.join(" ")} ${w.abstract || ""} ${w.citekey} ${w.state.note} ${w.state.tags.join(" ")}`),
       );
-    }
     let hidden = 0,
       deferred = 0;
     const kept: WorkView[] = [];

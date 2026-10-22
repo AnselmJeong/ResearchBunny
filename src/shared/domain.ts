@@ -85,6 +85,21 @@ export function tokens(text: string): string[] {
       .match(/[\p{L}\p{N}]{2,}/gu) || []
   ).filter((t) => !STOP.has(t));
 }
+/** Lower case without accents, so "menard" finds "Ménard"; NFC puts Hangul syllables back together. */
+const fold = (text: string) =>
+  text.normalize("NFKD").replace(/\p{M}/gu, "").normalize("NFC").toLowerCase();
+/** A test that every word of the query appears in a text, in any order, or null for a blank query. */
+export function wordMatcher(query: string): ((text: string) => boolean) | null {
+  const words = fold(query)
+    .split(/\s+/)
+    .map((word) => word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
+    .filter(Boolean);
+  if (!words.length) return null;
+  return (text) => {
+    const folded = fold(text);
+    return words.every((word) => folded.includes(word));
+  };
+}
 /** Seed search queries, trimmed, de-duplicated and capped whether the model or the user wrote them. */
 export function cleanQueries(queries: string[]): string[] {
   const seen = new Set<string>();
