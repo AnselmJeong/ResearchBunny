@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { Library } from "../../src/service/db/database";
@@ -168,4 +168,17 @@ test("existing SQLite conversations migrate once and new and old threads survive
     expect(loaded.threads(target.projectId, target.workId)).toHaveLength(2);
     expect(loaded.session(target.projectId, target.workId, undefined, legacy.threadId).messages).toEqual(messages);
   } finally { restored.close(); }
+});
+
+test("the renderer's CSP lets the reader draw its pages", async () => {
+  // EmbedPDF runs PDFium (wasm) in a blob: worker and shows every page and tile as a blob: PNG <img>.
+  // Without blob: in img-src, WebKit blocks each image and the reader shows blank pages (0.3.9 and 0.3.10).
+  for (const file of ["index.html", "dist/renderer/index.html"]) {
+    const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(await readFile(resolve(file), "utf8"))?.[1];
+    expect(csp).toBeDefined();
+    const directives = new Map(csp!.split(";").map(part => part.trim().split(/\s+/)).map(([name, ...sources]) => [name, sources]));
+    expect(directives.get("img-src")).toContain("blob:");
+    expect(directives.get("worker-src")).toContain("blob:");
+    expect(directives.get("script-src")).toContain("'wasm-unsafe-eval'");
+  }
 });
