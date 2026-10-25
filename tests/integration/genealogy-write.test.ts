@@ -8,6 +8,7 @@ import { parseSection } from "../../src/service/genealogy/writer";
 import { parseOutline } from "../../src/service/genealogy/outline";
 import { genealogyTools } from "../../src/service/genealogy/tools";
 import { familyFirst } from "../../src/service/genealogy/render";
+import { readingText } from "../../src/service/genealogy/sections";
 import type { GenealogyCard, Outline } from "../../src/shared/genealogy";
 
 const fixtures: Fixture[] = [];
@@ -75,8 +76,11 @@ async function written(f: Fixture) {
     },
   );
   const g = engine.create({ projectId: f.projectId, collectionId: f.collectionId, title: "집필", settings: f.settings() });
-  f.store.saveCard(g.id, a.id, { ...card("엔트로피"), key: a.citekey });
-  f.store.saveCard(g.id, b.id, { ...card("가소성"), key: b.citekey });
+  for (const [w, claim] of [[a, "엔트로피"], [b, "가소성"]] as const) {
+    const reading = readingText("O", null, w.abstract);
+    f.store.savePaper(g.id, { ...f.store.paper(g.id, w.id)!, cardStatus: "done", type: "O", typeSource: "ai", basis: reading.basis, textNote: reading.note, textSize: reading.text.length, pmcChecked: true });
+    f.store.saveCard(g.id, w.id, { ...card(claim), key: w.citekey });
+  }
   const { outline } = parseOutline(
     {
       title: "환각제 기전의 계보",

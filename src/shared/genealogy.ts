@@ -170,6 +170,8 @@ export interface GenealogyPaper {
   /** An open-access PMC article whose structured full text Europe PMC serves. */
   pmcid: string | null;
   pmcChecked: boolean;
+  /** The model was asked which sections should cite this paper, which it does once. */
+  placed?: boolean;
   /** For papers the report added: the project state before, so the addition can be undone (null: not in the project). */
   adoptedFrom?: "pending" | "included" | "excluded" | "trash" | null;
   addedAt: string;
@@ -208,8 +210,8 @@ export interface GapCandidate {
   mentions: { key: string; text: string; role: string }[];
   /** Genealogy papers it cites (forward signal). */
   cites: string[];
-  /** Sections that asked for evidence it may supply. */
-  requests: { section: string; need: string }[];
+  /** Sections that asked for evidence it may supply; uid names the section across renumbering. */
+  requests: { section: string; need: string; uid?: string }[];
   score: number;
   relevance: number | null;
   role: string;
@@ -247,6 +249,8 @@ export interface MissingSource {
   need: string;
   hint: string;
   kind: "primary" | "recent" | "counter";
+  /** The request was looked up; a found paper became a candidate with this request. */
+  resolved?: boolean;
 }
 export interface OutlineSection {
   /** "2.3": the section's number, which changes when the outline is edited. */
@@ -319,6 +323,8 @@ export interface GenealogyView {
   /** 00_contents.md as it is on disk, and whether someone changed it since the app wrote it. */
   contents: string | null;
   contentsEdited: boolean;
+  /** Papers the report added, the most it may add, and the room in the next round. */
+  budget: { added: number; cap: number; room: number };
   /** The connections the report can use, for the settings form. */
   tools: { pandoc: string | null; typst: string | null };
 }

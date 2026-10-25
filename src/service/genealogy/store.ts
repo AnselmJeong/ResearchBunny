@@ -138,6 +138,8 @@ export class GenealogyStore {
       hasPdf: prior?.hasPdf ?? false,
       pmcid: prior?.pmcid ?? null,
       pmcChecked: prior?.pmcChecked ?? false,
+      ...(prior?.placed !== undefined ? { placed: prior.placed } : {}),
+      ...(prior?.adoptedFrom !== undefined ? { adoptedFrom: prior.adoptedFrom } : {}),
       addedAt: prior?.addedAt ?? now(),
       ...extra,
     };

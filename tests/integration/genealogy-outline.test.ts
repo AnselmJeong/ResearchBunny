@@ -124,7 +124,7 @@ test("gaps find shared references, card mentions and recent citers; adoption and
       },
     },
   );
-  const g = engine.create({ projectId: f.projectId, collectionId: f.collectionId, title: "공백", settings: f.settings() });
+  const g = engine.create({ projectId: f.projectId, collectionId: f.collectionId, title: "공백", settings: f.settings({ expansion: "suggest" }) });
   f.store.saveCard(g.id, a.id, { key: a.citekey, foundations: [{ mention: "Tononi and Edelman (1998)", role: "origin", claim: "통합" }] } as never);
   engine.start(g.id, "gaps", false);
   const done = await settle(engine, g.id);

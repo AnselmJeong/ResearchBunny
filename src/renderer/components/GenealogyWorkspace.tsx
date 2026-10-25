@@ -191,12 +191,19 @@ function Candidates({ view, busy, onDecide, onUndo }: { view: GenealogyView; bus
   const added = view.papers.filter((p) => p.included && p.origin !== "collection");
   const pending = view.candidates.filter((c) => c.decision === "pending" && c.score > 0);
   const rejected = view.candidates.filter((c) => c.decision === "rejected");
-  const mode = { auto: "자동 채택", suggest: "제안만", off: "끄기" }[view.genealogy.settings.expansion];
+  const settings = view.genealogy.settings;
+  const mode = { auto: "자동 채택", suggest: "제안만", off: "끄기" }[settings.expansion];
   return (
     <>
       <p className="subtle">
-        공백 점검이 찾은, 계보 문헌이 기대거나(공통 참고문헌·카드 속 언급) 이어받는(최근 후속 연구) 논문입니다. 반영 방식: {mode}. 채택하면 아카이브 → 서고 → OpenAlex 순으로 찾아 컬렉션에 넣고, 다음 진행에서 자료 준비와 카드를 만듭니다.
+        공백 점검이 찾은, 계보 문헌이 기대거나(공통 참고문헌·카드 속 언급) 이어받는(최근 후속 연구) 논문과, 집필 중 근거가 필요하다고 요청한 논문입니다. 채택하면 아카이브 → 서고 → OpenAlex 순으로 찾아 컬렉션에 넣고, 다음 진행에서 자료 준비와 카드를 만들어 요청한 절을 다시 씁니다.
       </p>
+      <div className="genealogy-budget">
+        <span className="badge">{mode}</span>
+        <span>
+          공백 점검 {view.genealogy.rounds}/{settings.rounds}차 · 리포트가 추가한 문헌 {view.budget.added}/{view.budget.cap}편 (처음 컬렉션의 {Math.round(settings.growth * 100)}%까지, 한 차례 최대 {settings.perRound}편)
+        </span>
+      </div>
       {added.length > 0 && (
         <>
           <h3 className="genealogy-subhead">리포트가 추가한 문헌 {added.length}</h3>
@@ -237,6 +244,11 @@ function Candidates({ view, busy, onDecide, onUndo }: { view: GenealogyView; bus
                 {` · 점수 ${c.score.toFixed(2)}`}
               </small>
               {c.reason && <p className="genealogy-reason">{c.reason}</p>}
+              {c.requests.length > 0 && (
+                <small className="block">
+                  요청한 절: {c.requests.map((r) => `${r.section} — ${r.need}`).join(" · ")}
+                </small>
+              )}
             </div>
             <div className="inline-actions">
               <button className="primary" disabled={busy} onClick={() => onDecide(c.id, "accept")}>
@@ -434,7 +446,12 @@ function Manuscript({ id, view, busy, onRewrite, onError }: { id: string; view: 
               </span>
               <span className={`badge${s.status === "stale" ? " warning" : ""}`}>{SECTION_STATUS[s.status]}</span>
               {s.problems.length > 0 && <span className="badge warning" title={s.problems.join("\n")}>검사 {s.problems.length}</span>}
-              {s.missing.length > 0 && <span className="badge" title={s.missing.map((m) => `${m.need} (${m.hint})`).join("\n")}>근거 요청 {s.missing.length}</span>}
+              {s.missing.length > 0 && (
+                <span className="badge" title={s.missing.map((m) => `${m.need} (${m.hint})${m.resolved ? " · 찾아봄" : ""}`).join("\n")}>
+                  근거 요청 {s.missing.length}
+                  {s.missing.every((m) => m.resolved) ? " · 찾아봄" : ""}
+                </span>
+              )}
               <button className="text-button" disabled={busy} onClick={() => onRewrite(s.uid)} title="이 절만 다시 씁니다. 직접 고친 장 파일은 덮어쓰지 않습니다.">
                 <PenLine size={13} />
                 다시 쓰기

@@ -3961,3 +3961,4 @@ html[data-theme="dark"] .selection-bar .primary {
 .genealogy-checklist > li { border-bottom: 1px solid var(--border); padding: 8px 0; }
 .genealogy-checklist summary { display: flex; align-items: center; gap: 8px; }
 .genealogy-checklist ul { margin: 6px 0 0 22px; line-height: 1.6; color: var(--muted); }
+.genealogy-budget { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 0 10px; font-size: 12px; color: var(--muted); }
