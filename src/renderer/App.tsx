@@ -10,6 +10,7 @@ import {
   ArrowUpRight,
   ArrowRight,
   ArrowLeft,
+  ArrowRightLeft,
   Bookmark,
   BookmarkMinus,
   Check,
@@ -532,6 +533,18 @@ export function App() {
   const morePages = list.total > list.works.length;
   const allSelected = list.ids.length > 0 && list.ids.every((id) => selectedIds.has(id));
   const someSelected = list.ids.some((id) => selectedIds.has(id));
+  // 선택 반전 flips the papers 모두 선택 reaches; picks outside the list (other views, pinned groups) stay.
+  const invertSelection = () =>
+    setSelected((current) => {
+      const picked = new Set(current);
+      return [
+        ...current.filter((id) => !listedIds.has(id)),
+        ...list.ids.filter((id) => !picked.has(id)),
+      ];
+    });
+  const invertHelp = morePages
+    ? "현재 검색·필터에 해당하는 모든 페이지의 문헌에서 선택한 문헌은 해제하고 선택하지 않은 문헌을 선택합니다."
+    : "이 목록에서 선택한 문헌은 해제하고 선택하지 않은 문헌을 선택합니다.";
   const navigate = (
     next: Scope,
     id = "",
@@ -1852,6 +1865,16 @@ export function App() {
                               {allSelected ? "모두 선택 해제" : `모두 선택 · ${list.total.toLocaleString()}편`}
                             </label>
                           )}
+                          <button
+                            type="button"
+                            className="invert-selection"
+                            disabled={!list.ids.length}
+                            data-help={invertHelp}
+                            onClick={invertSelection}
+                          >
+                            <ArrowRightLeft size={12} />
+                            선택 반전
+                          </button>
                         </div>
                         <span>연도</span>
                         <span>{scope === "run" ? "인용" : "읽기 상태"}</span>
@@ -2025,7 +2048,7 @@ export function App() {
                       : ""}
                   </span>
                   <div>
-                    {/* The list heading has its own 모두 선택; a graph has no heading. */}
+                    {/* The list heading has its own 모두 선택 and 선택 반전; a graph has no heading. */}
                     {graphView && list.total > 0 && (
                       <button
                         className="text-button"
@@ -2034,6 +2057,15 @@ export function App() {
                         }
                       >
                         현재 필터 결과 {list.total}편 선택
+                      </button>
+                    )}
+                    {graphView && list.total > 0 && (
+                      <button
+                        className="text-button"
+                        data-help={`현재 필터 결과 ${list.total}편에서 선택한 문헌은 해제하고 선택하지 않은 문헌을 선택합니다.`}
+                        onClick={invertSelection}
+                      >
+                        선택 반전
                       </button>
                     )}
                     {!graphView && offset + list.works.length < list.total && limit < 500 && (
