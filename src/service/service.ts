@@ -6,6 +6,11 @@ import { searchPubMedIds } from "./search/pubmed-search";
 import { searchWebWithTinyFish } from "./search/web-search";
 import { CodexClient } from "./codex/client";
 import { ClaudeClient } from "./claude/client";
+import { GenealogyAI } from "./genealogy/llm";
+import { GenealogyEngine } from "./genealogy/engine";
+import { GenealogyStore } from "./genealogy/store";
+import { genealogyTools } from "./genealogy/tools";
+import { defaultGenealogySettings } from "../shared/genealogy";
 import { version } from "../../package.json";
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile, rename, stat } from "node:fs/promises";
@@ -59,6 +64,7 @@ export class Service {
   shelf: Shelf;
   shelfQueries: ShelfQueries;
   sorter: ShelfSorter;
+  genealogy: GenealogyEngine;
   secrets: {
     openalex?: string;
     openai?: string;
@@ -126,6 +132,19 @@ export class Service {
     this.pdf.shelf = inbox;
     this.classifier = new ArchiveClassifier(this.db, this.ai, emit);
     this.sorter = new ShelfSorter(this.db, this.shelf, this.shelfQueries, this.ai, emit);
+    this.genealogy = new GenealogyEngine({
+      db: this.db,
+      store: new GenealogyStore(this.db),
+      ai: new GenealogyAI(this.db, { codex: this.codex, claude: this.claude, ollama: this.ollama }),
+      oa: this.oa,
+      downloads: this.downloads,
+      workerPath,
+      emit,
+      pubmedKey: () => this.secrets.pubmed,
+      shelfWritable: () => this.shelfWritable().then(() => true, () => false),
+      busy: () => this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || !!this.sorter.active,
+      tools: genealogyTools,
+    });
   }
   /** Downloads and imports are stored in the shelf inbox: refuse to start while a configured shelf is offline. */
   /**
@@ -205,7 +224,7 @@ export class Service {
     return this.ai.seedQueries(question, run, AbortSignal.timeout(120000), false);
   }
   busy() {
-    return this.chat.active.size > 0 || this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0 || !!this.sorter.active;
+    return this.chat.active.size > 0 || this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0 || !!this.sorter.active || this.genealogy.active.size > 0;
   }
   settings(): Settings {
     const saved = this.db.pref<Partial<AIConfig>>("ai");
@@ -253,6 +272,7 @@ export class Service {
           counts: this.db.counts(projectId),
           settings: this.settings(),
           shelf: this.shelf.summary(projectId),
+          genealogies: this.genealogy.store.list(projectId),
           ui: settledUi(this.db, projectId),
         };
       }
@@ -519,6 +539,26 @@ export class Service {
           throw new AppError("CODEX_CONNECTION", error instanceof Error ? error.message : "Codex 연결에 실패했습니다.");
         }
       }
+      case "genealogies": return this.genealogy.store.list(schemas.genealogies.parse(args).projectId);
+      case "genealogyCreate": {
+        const p = schemas.genealogyCreate.parse(args);
+        const project = this.db.project(p.projectId);
+        const seed = this.db.seedHistory(p.projectId)[0];
+        const settings = { ...defaultGenealogySettings(this.settings(), project.question || seed?.question || ""), ...p.settings };
+        return this.genealogy.create({ projectId: p.projectId, collectionId: p.collectionId, title: p.title, settings, workspace: p.workspace });
+      }
+      case "genealogyView": return this.genealogy.view(schemas.genealogyView.parse(args).id);
+      case "genealogyUpdate": { const p = schemas.genealogyUpdate.parse(args); return this.genealogy.update(p.id, p); }
+      case "genealogyType": { const p = schemas.genealogyType.parse(args); return this.genealogy.setType(p.id, p.workId, p.type); }
+      case "genealogyStart": {
+        const p = schemas.genealogyStart.parse(args);
+        if (this.genealogy.active.size === 0 && (this.discovery.active.size || this.pdf.active.size || this.downloads.active.size || this.sorter.active))
+          throw new AppError("BUSY", "진행 중인 탐색·가져오기·원문 확보·정리 작업이 끝난 뒤 실행하세요.");
+        return this.genealogy.start(p.id, p.step, p.auto);
+      }
+      case "genealogyCancel": return this.genealogy.cancel(schemas.genealogyCancel.parse(args).id);
+      case "genealogyDelete": return this.genealogy.remove(schemas.genealogyDelete.parse(args).id);
+      case "genealogyWorkspace": return this.genealogy.store.get(schemas.genealogyReveal.parse(args).id).workspace;
       case "claudeStatus": return this.claude.status();
       case "claudeModels":
       case "claudeLogin":
@@ -737,6 +777,7 @@ export class Service {
         this.chat.close();
         this.codex.close();
         this.claude.close();
+        this.genealogy.close();
         for (const control of [
           ...this.discovery.active.values(),
           ...this.pdf.active.values(),

@@ -323,7 +323,7 @@ interface GenealogyCard {
 
 ## 7. 데이터
 
-스키마 4. 새 표:
+새 표(구현에서는 스키마 번호를 올리지 않는 곁 표로 만들었다. [구현 기록](genealogy-report.md) 참고):
 
 | 표 | 주요 열 |
 |---|---|
@@ -333,9 +333,9 @@ interface GenealogyCard {
 | `genealogy_sections` | genealogy_id, section_id, position, title, plan(JSON), keys, status(`planned / written / stale / user-edited`), file, file_hash, version |
 | `genealogy_texts` | attachment_hash 또는 pmcid, source(`jats / pdf`), sections(JSON), extracted_at |
 
-- 각 단계 실행은 기존 `runs` 표에 `Run.genealogy = { genealogyId, stage }`로 남긴다.
+- 각 단계 실행은 계보 행의 `job`에 남긴다(계획 초안의 `Run.genealogy` 대신. 탐색 기록 화면과 섞이지 않게).
 - 컬렉션·아카이브 변경은 기존 `changes` 기록에 남겨 되돌리기와 맞춘다.
-- 스키마 3 → 4 이전은 표 추가뿐이다. 0.3.x 이하 앱은 스키마 4 라이브러리를 열지 못하므로(지금도 `NEWER_SCHEMA`로 막음) 릴리스 기록에 적는다.
+- 표 추가뿐이라 스키마 번호는 3 그대로 두었다. 0.3.x 앱도 라이브러리를 열고 계보 표를 무시한다.
 
 ## 8. 화면
 

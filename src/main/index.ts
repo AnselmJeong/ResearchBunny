@@ -77,6 +77,18 @@ async function command(name: Command, input: any): Promise<any> {
       await rpc("rememberDownloadDirectory", {directory:result.filePaths[0]});
       return result.filePaths[0];
     }
+    case "chooseGenealogyFolder": {
+      const result = await dialog.showOpenDialog(window!, {
+        title: "계보 리포트 작업 폴더 선택",
+        properties: ["openDirectory", "createDirectory"],
+      });
+      return result.canceled ? null : result.filePaths[0];
+    }
+    case "genealogyReveal": {
+      const path = await rpc<string>("genealogyWorkspace", args);
+      if (!Utils.openPath(path)) throw new AppError("OPEN_FILE", "작업 폴더를 열지 못했습니다. 아직 만들어지지 않았다면 자료 준비를 먼저 실행하세요.");
+      return;
+    }
     case "chooseBib": {
       const result = await dialog.showOpenDialog(window!, {
         properties: ["openFile"],
@@ -245,7 +257,7 @@ const hostRpc = BrowserView.defineRPC<BunnyRPC>({
             });
           if (
             ![
-              "pdfInfo", "pdfReadChunk", "chatThreads", "chatSession", "chatSend", "chatCancel", "chatClear", "chatOpenSource", "ollamaModels", "claudeStatus", "claudeModels",
+              "pdfInfo", "pdfReadChunk", "chatThreads", "chatSession", "chatSend", "chatCancel", "chatClear", "chatOpenSource", "ollamaModels", "claudeStatus", "claudeModels", "genealogies", "genealogyView", "genealogyReveal", "chooseGenealogyFolder",
               "snapshot",
               "projectStats",
               "list",

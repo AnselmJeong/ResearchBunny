@@ -382,6 +382,7 @@ export interface Snapshot {
   counts: Record<string, number>;
   settings: Settings;
   shelf: import("./shelf").ShelfSummary;
+  genealogies: import("./genealogy").GenealogySummary[];
   ui: Record<string, unknown>;
 }
 export interface ListResult {
@@ -454,7 +455,7 @@ export type AppEvent = {
   type: "changed" | "progress" | "service-error" | "shelf";
   runId?: string;
   message?: string;
-} | { type: "chat"; session: import("./chat").ChatSession };
+} | { type: "chat"; session: import("./chat").ChatSession } | { type: "genealogy"; id: string };
 export type Result<T> =
   | { ok: true; data: T }
   | { ok: false; error: { code: string; message: string; retryable: boolean } };
