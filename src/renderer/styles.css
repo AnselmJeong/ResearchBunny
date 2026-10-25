@@ -3331,6 +3331,9 @@ html[data-theme="dark"] .selection-bar .primary {
 .graph-warnings .text-button { display: inline; white-space: normal; text-align: left; padding: 0; }
 .download-options { display: flex; align-items: end; gap: 18px; flex-wrap: wrap; margin: 18px 0 8px; }
 .download-scope { display: grid; gap: 7px; max-width: 320px; }
+.sci-hub-mirrors { display: grid; gap: 7px; max-width: 420px; margin: 10px 0 4px; }
+.sci-hub-mirrors textarea { color: var(--text); font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.6; }
+.download-settings code { padding: 2px 6px; border-radius: 4px; background: var(--soft); font-size: 12px; }
 .pdf-current-summary { font-weight: 600; }
 .download-settings { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px; }
 .download-settings summary, .pdf-folder-match summary { cursor: pointer; color: var(--muted); }

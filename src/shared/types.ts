@@ -267,6 +267,8 @@ export interface Run {
     items: PdfDownloadItem[];
     includeBooks: boolean;
     useBrowser?: boolean;
+    /** Sci-Hub mirrors are tried after every other route fails. */
+    useSciHub?: boolean;
     downloadDirectory?: string;
     observedDirectories?: string[];
   };
@@ -300,6 +302,8 @@ export interface MissingPdfItem {
 }
 export interface MissingPdfs extends PdfDownloadPreview {
   items: MissingPdfItem[];
+  /** The remembered Sci-Hub fallback settings. */
+  sciHub?: { enabled: boolean; mirrors: string[] };
 }
 export interface Attachment {
   id: string;

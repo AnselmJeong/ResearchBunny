@@ -3,7 +3,7 @@ import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { Library } from "../db/database";
 import { extractPdf, hashFile, verifyPdf, hasValidPdf } from "../interchange/pdf";
-import { cleanDoi, FulltextEngine, isBook } from "./engine";
+import { cleanDoi, DEFAULT_SCIHUB_MIRRORS, FulltextEngine, isBook, SciHubError, sciHubMirrors } from "./engine";
 import { ChromeDownloads, chromeDownloadDirectories, type BrowserRetrieval } from "./chrome";
 import { LocalDownloads, isAuxiliaryPdf } from "./local-downloads";
 import type { RetrievedPdf } from "./engine";
@@ -18,6 +18,9 @@ export interface DownloadTarget {
   includeBooks?: boolean;
   useBrowser?: boolean;
   downloadDirectory?: string;
+  /** Try Sci-Hub mirrors after every other route fails; remembered with the mirror list. */
+  useSciHub?: boolean;
+  sciHubMirrors?: string[];
 }
 export interface ShelfLinker {
   /** Shelf files holding the paper; `own` is the paper's own (already linked) shelf file. */
@@ -27,6 +30,9 @@ export interface ShelfLinker {
   configured(): boolean;
   deposit(path: string, workId: string, options: { hash: string; signal: AbortSignal; fields: Partial<Attachment> }): Promise<Attachment>;
 }
+const via = (retrieved: RetrievedPdf) => retrieved.mirror
+  ? `Sci-Hub(${retrieved.mirror})${retrieved.method === 'chrome' ? ' · Chrome' : ''}에서 `
+  : retrieved.method === 'chrome' ? 'Chrome에서 ' : '';
 const SHELF_UNREACHABLE = "서고에 있는 PDF를 지금 열 수 없습니다. 서고(NAS) 연결을 확인하세요.";
 export class PdfDownloads {
   active = new Map<string, AbortController>();
@@ -47,6 +53,13 @@ export class PdfDownloads {
   rememberDirectory(directory: string) {
     if (typeof directory !== 'string' || !isAbsolute(directory)) throw new AppError('CHROME_DIRECTORY', '다운로드 폴더의 절대 경로가 필요합니다.');
     this.db.pref('pdfDownloadDirectory', directory);
+  }
+  sciHub(): { enabled: boolean; mirrors: string[] } {
+    const saved = this.db.pref<{ enabled?: boolean; mirrors?: string[] }>('sciHub');
+    return { enabled: saved?.enabled ?? true, mirrors: saved?.mirrors ?? DEFAULT_SCIHUB_MIRRORS };
+  }
+  private rememberSciHub(enabled: boolean, mirrors?: string[]) {
+    this.db.pref('sciHub', { enabled, mirrors: mirrors ? sciHubMirrors(mirrors) : this.sciHub().mirrors });
   }
   startRecoveryMonitor(blocked: () => boolean, intervalMs = 5000) {
     if (this.recoveryTimer) return;
@@ -92,7 +105,7 @@ export class PdfDownloads {
       this.db.saveAttachment({id:attachment?.id || randomUUID(), workId:work.id, name:work.title + '.pdf', path:destination,
         hash, mode:'managed', size, status:downloadedPath ? '다운로드 파일 복구 · PDF 검증됨' : '원문 확보 · PDF 검증됨', exists:true,
         sourceUrl:retrieved.sourceUrl, retrievalMethod:retrieved.method, fetchedAt:now(), version:retrieved.version});
-      item.status = 'completed'; item.message = downloadedPath ? '다운로드 파일 자동 복구·검증·첨부 완료' : `${retrieved.method === 'chrome' ? 'Chrome에서 ' : ''}PDF 확보·검증·첨부 완료`;
+      item.status = 'completed'; item.message = downloadedPath ? '다운로드 파일 자동 복구·검증·첨부 완료' : `${via(retrieved)}PDF 확보·검증·첨부 완료`;
       item.sourceUrl = retrieved.sourceUrl; item.retrievalMethod = retrieved.method;
       if (downloadedPath) item.downloadedPath = downloadedPath;
       delete item.errorCode;
@@ -108,7 +121,7 @@ export class PdfDownloads {
       sourceUrl:retrieved.sourceUrl, retrievalMethod:retrieved.method, fetchedAt:now(), version:retrieved.version}});
     this.db.transaction(() => {
       item.status = 'completed';
-      item.message = `${downloadedPath ? '다운로드 파일 자동 복구·검증' : `${retrieved.method === 'chrome' ? 'Chrome에서 ' : ''}PDF 확보·검증`} · 서고 수신함에 저장 (${attachment.name})`;
+      item.message = `${downloadedPath ? '다운로드 파일 자동 복구·검증' : `${via(retrieved)}PDF 확보·검증`} · 서고 수신함에 저장 (${attachment.name})`;
       item.sourceUrl = retrieved.sourceUrl; item.retrievalMethod = retrieved.method;
       if (downloadedPath) item.downloadedPath = downloadedPath;
       delete item.errorCode;
@@ -274,7 +287,7 @@ export class PdfDownloads {
     }
     items.sort((a, b) => a.title.localeCompare(b.title, "ko") || a.workId.localeCompare(b.workId));
     const directory = this.db.pref<string>("pdfDownloadDirectory");
-    return { total: works.length, existing, books, eligible: items.length, ...(shelf ? { shelf } : {}), items, ...(directory ? { downloadDirectory: directory } : {}) };
+    return { total: works.length, existing, books, eligible: items.length, ...(shelf ? { shelf } : {}), items, ...(directory ? { downloadDirectory: directory } : {}), sciHub: this.sciHub() };
   }
   async preview(target: DownloadTarget): Promise<PdfDownloadPreview> {
     const works = this.targets(target);
@@ -292,6 +305,7 @@ export class PdfDownloads {
     const works = this.targets(target);
     if (!works.length) throw new AppError("DOWNLOAD_EMPTY", "대상 아카이브에 문헌이 없습니다.");
     if (target.downloadDirectory) this.rememberDirectory(target.downloadDirectory);
+    if (target.useSciHub !== undefined || target.sciHubMirrors) this.rememberSciHub(target.useSciHub ?? this.sciHub().enabled, target.sciHubMirrors);
     target = {...target, downloadDirectory:target.downloadDirectory || this.db.pref<string>('pdfDownloadDirectory')};
     const run: Run = {
       id: randomUUID(), projectId: target.projectId, mode: "search", query: `PDF 원문 확보 (${works.length}편)`,
@@ -299,13 +313,13 @@ export class PdfDownloads {
       status: "queued", createdAt: now(), updatedAt: now(), calls: 0, maxCalls: 0,
       maxCandidates: works.length, total: works.length, count: 0, message: "원문 확보 준비",
       tasks: [], rankingVersion: "fulltext-v1",
-      download: { includeBooks: !!target.includeBooks, useBrowser: !!target.useBrowser, downloadDirectory: target.downloadDirectory, items: works.map(w => ({ workId: w.id, title: w.title, status: "pending", message: "대기 중" })) },
+      download: { includeBooks: !!target.includeBooks, useBrowser: !!target.useBrowser, useSciHub: !!target.useSciHub, downloadDirectory: target.downloadDirectory, items: works.map(w => ({ workId: w.id, title: w.title, status: "pending", message: "대기 중" })) },
     };
     this.db.saveRun(run);
     void this.execute(run.id);
     return run;
   }
-  control(id: string, action: string, useBrowser?: boolean, downloadDirectory?: string) {
+  control(id: string, action: string, useBrowser?: boolean, downloadDirectory?: string, useSciHub?: boolean) {
     if (action === "cancel") { this.active.get(id)?.abort(); return; }
     if (action === "skip") { this.currentItems.get(id)?.abort(new AppError("DOWNLOAD_SKIPPED", "사용자가 이 문헌을 건너뛰었습니다.")); return; }
     if (action !== "resume") throw new AppError("INVALID", "원문 확보는 재시도로 이어갈 수 있습니다.");
@@ -313,6 +327,7 @@ export class PdfDownloads {
     const run = this.db.run(id);
     if (!run.download) throw new AppError("INVALID", "원문 확보 작업이 아닙니다.");
     if (useBrowser !== undefined) run.download.useBrowser = useBrowser;
+    if (useSciHub !== undefined) run.download.useSciHub = useSciHub;
     if (downloadDirectory !== undefined) { this.rememberDirectory(downloadDirectory); run.download.downloadDirectory = downloadDirectory; }
     else run.download.downloadDirectory ||= this.db.pref<string>('pdfDownloadDirectory');
     for (const item of run.download.items) {
@@ -350,6 +365,23 @@ export class PdfDownloads {
     if (inShelf[0].own && !await this.existing(work.id, signal)) { item.status = "skipped"; item.message = `${SHELF_UNREACHABLE} 다운로드하지 않았습니다.`; return true; }
     item.status = "completed"; item.message = `서고 PDF 연결 · 다운로드 없음 (${inShelf[0].folder})`;
     return true;
+  }
+  /** Sci-Hub over HTTP, then in Chrome when a person can finish what stopped it, such as a robot check. */
+  private async retrieveSciHub(work: Work, mirrors: string[], path: string, signal: AbortSignal, progress: (message: string) => void,
+    validate: (candidate: RetrievedPdf) => Promise<void>, run: Run, chromeDisabled: boolean): Promise<RetrievedPdf> {
+    try { return await this.engine.sciHub(work, mirrors, path, signal, progress, validate); }
+    catch (error) {
+      signal.throwIfAborted();
+      if (!(error instanceof SciHubError) || !error.page || !run.download!.useBrowser || chromeDisabled) throw error;
+      const mirror = new URL(error.page).hostname;
+      // Nothing answers the check for the person: Chrome waits while they complete it in the tab.
+      progress('Chrome에서 Sci-Hub 미러 열기 · 로봇 확인이 나오면 Chrome에서 직접 완료하세요');
+      try { return { ...await this.browser.retrieve(work, path, signal, progress, validate, run.download!.downloadDirectory, error.page), mirror }; }
+      catch (chrome) {
+        signal.throwIfAborted();
+        throw chrome instanceof AppError ? new SciHubError(chrome.code, `Sci-Hub(${mirror}) · ${chrome.message}`) : error;
+      }
+    }
   }
   private isArchived(projectId: string, workId: string) {
     return this.db.state(projectId, workId).screening === "included" &&
@@ -418,10 +450,21 @@ export class PdfDownloads {
               progress("공개 원문 보조 경로 확인");
             }
           }
+          let failure: unknown;
           if (!retrieved) {
             try { retrieved = await this.engine.retrieve(work, path, itemSignal, progress, validate); }
-            catch (error) { if (chromeFailure) throw chromeFailure; throw error; }
+            catch (error) { itemSignal.throwIfAborted(); failure = chromeFailure || error; }
           }
+          const mirrors = run.download!.useSciHub ? this.sciHub().mirrors : [];
+          if (!retrieved && mirrors.length) {
+            try { retrieved = await this.retrieveSciHub(work, mirrors, path, itemSignal, progress, validate, run, !!browserError); }
+            catch (error) {
+              itemSignal.throwIfAborted();
+              const earlier = failure instanceof AppError ? failure.message : '공개 원문·출판사 경로에서 PDF를 확보하지 못했습니다.';
+              failure = new AppError(error instanceof AppError ? error.code : 'SCIHUB_UNAVAILABLE', `${earlier} · ${error instanceof AppError ? error.message : 'Sci-Hub 미러에서도 PDF를 받지 못했습니다.'}`);
+            }
+          }
+          if (!retrieved) throw failure;
           await this.attach(run, item, work, path, itemSignal, retrieved);
         } catch (error) {
           signal.throwIfAborted();

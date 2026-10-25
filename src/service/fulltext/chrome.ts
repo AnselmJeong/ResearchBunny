@@ -69,7 +69,6 @@ const APPLESCRIPT = `on run argv
   return ""
 end run`;
 const PROBE_JS = `(() => {
-  const challenge = /just a moment|verify you are human|checking your browser|security check|사람인지 확인/i.test(document.title) || !!document.querySelector('iframe[src*="challenges.cloudflare.com"], #challenge-running');
   const links = [];
   const add = value => { try { const u = new URL(value, location.href); if (/^https?:$/.test(u.protocol) && !u.username && !u.password && !links.includes(u.href)) links.push(u.href); } catch {} };
   for (const m of document.querySelectorAll('meta[name="citation_pdf_url"]')) add(m.content);
@@ -77,6 +76,9 @@ const PROBE_JS = `(() => {
     if (/\\.pdf(?:[?#]|$)|\\/(?:pdf|pdfdirect|epdf|pdfft|article-pdf)(?:[/?]|$)/i.test(a.getAttribute('href') || '') || /^(?:view|download|get) (?:full[- ]text )?pdf|^pdf$/i.test((a.textContent || '').trim())) add(a.href);
   }
   for (const el of document.querySelectorAll('link[type="application/pdf"][href], [data-pdf-url], [data-article-pdf-url]')) add(el.getAttribute('href') || el.getAttribute('data-pdf-url') || el.getAttribute('data-article-pdf-url'));
+  for (const el of document.querySelectorAll('object[data], embed[src], iframe[src]')) { const src = el.getAttribute('data') || el.getAttribute('src') || ''; if (el.type === 'application/pdf' || /\\.pdf(?:[?#]|$)/i.test(src)) add(src); }
+  // Sci-Hub's robot check is an ALTCHA form; its article page has one too, but alongside the PDF.
+  const challenge = /just a moment|verify you are human|checking your browser|security check|사람인지 확인|로봇 확인|^ddos-guard$/i.test(document.title) || !!document.querySelector('iframe[src*="challenges.cloudflare.com"], #challenge-running') || (!links.length && !!document.querySelector('altcha-widget'));
   if (!challenge && !links.length && !window.__researchbunnyMenu && document.readyState === 'complete') {
     const menu = [...document.querySelectorAll('button, [role="button"], summary, a[aria-haspopup]')].find(el => /^(download|download pdf|pdf|다운로드)$/i.test((el.textContent || '').trim()));
     if (menu) { window.__researchbunnyMenu = true; menu.click(); }
@@ -199,16 +201,17 @@ export async function downloadedPdfs(directories: string[]) {
   return files;
 }
 export interface BrowserRetrieval {
+  /** `start` opens another page than the paper's own, e.g. a Sci-Hub mirror's page for its DOI. */
   retrieve(work: Work, path: string, signal: AbortSignal, progress: (message: string) => void,
-    validate: (candidate: RetrievedPdf) => Promise<void>, directory?: string): Promise<RetrievedPdf>;
+    validate: (candidate: RetrievedPdf) => Promise<void>, directory?: string, start?: string): Promise<RetrievedPdf>;
 }
 export class ChromeDownloads implements BrowserRetrieval {
   constructor(private chrome: ChromeControl = new SystemChrome(), private directories = chromeDownloadDirectories,
     private budgetMs = 60000, private pollMs = 1000) {}
   async retrieve(work: Work, path: string, signal: AbortSignal, progress: (message: string) => void,
-    validate: (candidate: RetrievedPdf) => Promise<void>, directory?: string) {
+    validate: (candidate: RetrievedPdf) => Promise<void>, directory?: string, start?: string) {
     const doi = cleanDoi(work.doi);
-    const initial = publicUrl(work.url) || (doi ? `https://doi.org/${encodeURI(doi)}` : publicUrl(work.oaUrl));
+    const initial = start ? publicUrl(start) : publicUrl(work.url) || (doi ? `https://doi.org/${encodeURI(doi)}` : publicUrl(work.oaUrl));
     if (!initial) throw new AppError('CHROME_NO_URL', 'Chrome에서 열 원문 주소가 없습니다.');
     const itemSignal = AbortSignal.any([signal, AbortSignal.timeout(this.budgetMs)]);
     progress('Chrome 다운로드 폴더 확인');
@@ -225,7 +228,7 @@ export class ChromeDownloads implements BrowserRetrieval {
     let previousFiles = new Map<string, FileStamp>();
     let lastUrl = '', stableSince = Date.now(), pending: string | null = null;
     let exhaustedSince = 0, challengeSince = 0, downloadedSince = 0;
-    progress('로그인된 Chrome에서 원문 열기');
+    progress(start ? `Chrome에서 열기 · ${new URL(initial).hostname}` : '로그인된 Chrome에서 원문 열기');
     const tab = await this.chrome.open(initial, itemSignal);
     try {
       while (true) {

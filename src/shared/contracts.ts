@@ -47,6 +47,8 @@ const downloadTarget = z.object({
   includeBooks: z.boolean().default(false),
   useBrowser: z.boolean().default(false),
   downloadDirectory: z.string().min(1).max(4096).optional(),
+  useSciHub: z.boolean().optional(),
+  sciHubMirrors: z.array(z.string().max(500)).max(10).optional(),
 });
 const exportSelection = z.object({
   projectId: id,
@@ -195,6 +197,7 @@ export const schemas = {
     action: z.enum(["cancel", "resume", "more", "skip"]),
     useBrowser: z.boolean().optional(),
     downloadDirectory: z.string().min(1).max(4096).optional(),
+    useSciHub: z.boolean().optional(),
   }),
   previewBib: z.object({ text: z.string().max(20_000_000) }),
   importBib: z.object({
