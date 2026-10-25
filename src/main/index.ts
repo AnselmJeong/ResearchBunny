@@ -84,6 +84,11 @@ async function command(name: Command, input: any): Promise<any> {
       });
       return result.canceled ? null : result.filePaths[0];
     }
+    case "genealogyOpenOutput": {
+      const path = await rpc<string>("genealogyOutputPath", args);
+      if (!Utils.openPath(path)) Utils.showItemInFolder(path);
+      return;
+    }
     case "genealogyReveal": {
       const path = await rpc<string>("genealogyWorkspace", args);
       if (!Utils.openPath(path)) throw new AppError("OPEN_FILE", "작업 폴더를 열지 못했습니다. 아직 만들어지지 않았다면 자료 준비를 먼저 실행하세요.");
@@ -257,7 +262,7 @@ const hostRpc = BrowserView.defineRPC<BunnyRPC>({
             });
           if (
             ![
-              "pdfInfo", "pdfReadChunk", "chatThreads", "chatSession", "chatSend", "chatCancel", "chatClear", "chatOpenSource", "ollamaModels", "claudeStatus", "claudeModels", "genealogies", "genealogyView", "genealogyReveal", "chooseGenealogyFolder",
+              "pdfInfo", "pdfReadChunk", "chatThreads", "chatSession", "chatSend", "chatCancel", "chatClear", "chatOpenSource", "ollamaModels", "claudeStatus", "claudeModels", "genealogies", "genealogyView", "genealogyReveal", "chooseGenealogyFolder", "genealogyChapter", "genealogyOpenOutput",
               "snapshot",
               "projectStats",
               "list",

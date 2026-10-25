@@ -292,6 +292,9 @@ export const schemas = {
   genealogyRemovePaper: z.object({ id, workId: id }),
   genealogyOutlineSave: z.object({ id, markdown: z.string().max(2_000_000).optional() }),
   genealogyApprove: z.object({ id }),
+  genealogyChapter: z.object({ id, file: z.string().min(1).max(300) }),
+  genealogyRewrite: z.object({ id, uid: id }),
+  genealogyOpenOutput: z.object({ id, kind: z.enum(["epub", "pdf", "markdown", "bib"]) }),
   genealogyDelete: z.object({ id }),
   genealogyReveal: z.object({ id }),
   chooseGenealogyFolder: z.object({}),
@@ -459,6 +462,9 @@ export interface Outputs {
   genealogyRemovePaper: void;
   genealogyOutlineSave: Outline | null;
   genealogyApprove: void;
+  genealogyChapter: string | null;
+  genealogyRewrite: Genealogy;
+  genealogyOpenOutput: void;
   genealogyDelete: void;
   genealogyReveal: void;
   chooseGenealogyFolder: string | null;

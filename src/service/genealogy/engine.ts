@@ -1,4 +1,6 @@
 import { existsSync } from "node:fs";
+import { exportBib } from "../interchange/bibtex";
+import { citedKeys } from "../../shared/citations";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -12,7 +14,9 @@ import {
   type GapCandidate,
   type GenealogyCard,
   type GenealogyJob,
+  type GenealogyOutputs,
   type Outline,
+  type OutlineChapter,
   type PaperOrigin,
   type GenealogyPaper,
   type GenealogySettings,
@@ -27,7 +31,10 @@ import { extractPdf, verifyPdf } from "../interchange/pdf";
 import { fetchPublicationTypes } from "../search/pubmed-search";
 import type { FetchLike } from "../search/web-search";
 import { GenealogyAI, Meter } from "./llm";
-import { EMPTY_OUTPUTS, GenealogyStore } from "./store";
+import { EMPTY_OUTPUTS, GenealogyStore, slug } from "./store";
+import { SECTION_SCHEMA, chapterMarkdown, numberPool, parseSection, sectionInput, sectionInstruction } from "./writer";
+import { EPUB_CSS, assemble, citeprocWarnings, familyFirst, reviewChecks, runTool, typstFont } from "./render";
+import { VANCOUVER_CSL } from "./csl";
 import { jatsText, pdfText, readingText, type PaperText } from "./sections";
 import { europePmcIds, europePmcXml, pmcidOf, typeFromMetadata } from "./sources";
 import { CARD_SCHEMA, MERGE_INSTRUCTION, cardInput, cardInstruction, cardMarkdown, parseCard, splitText } from "./cards";
@@ -145,7 +152,6 @@ export class GenealogyEngine {
     if (this.active.size) throw new AppError("BUSY", "진행 중인 계보 작업이 끝나거나 취소한 뒤 실행하세요.");
     const g = this.store.get(id);
     const first = step === "continue" ? (STEPS.find((s) => !g.completed[s]) ?? "render") : step;
-    if (!this.implemented(first)) throw new AppError("NOT_READY", `${STEP_NAMES[first]} 단계는 아직 사용할 수 없습니다.`);
     if (first === "write" && step === "continue" && g.settings.pauseAtOutline && !g.outlineApproved)
       throw new AppError("NOT_APPROVED", "목차 탭에서 목차를 확인하고 승인하면 집필을 시작합니다.");
     g.job = { step: first, status: "running", message: `${STEP_NAMES[first]} 준비 중`, done: 0, total: 0, calls: 0, auto, startedAt: now(), updatedAt: now() };
@@ -195,7 +201,7 @@ export class GenealogyEngine {
           this.progress(g, { status: "paused", message: `${g.job?.message ?? ""} · 목차 탭에서 목차를 확인하고 승인하면 집필을 시작합니다.` });
           return;
         }
-        if (!auto || !next || !this.implemented(next)) break;
+        if (!auto || !next) break;
         step = next;
       }
       this.progress(g, { status: "completed", calls: meter.calls });
@@ -213,18 +219,16 @@ export class GenealogyEngine {
     }
   }
 
-  /** Steps the engine can run; later milestones add theirs. */
-  protected implemented(step: GenealogyStep): boolean {
-    return step === "prepare" || step === "cards" || step === "gaps" || step === "outline";
-  }
-
   /** Runs one step; a returned line is shown with its completion. */
   protected async run(g: Genealogy, step: GenealogyStep, signal: AbortSignal, meter: Meter): Promise<string | void> {
     if (step === "prepare") return this.prepare(g, signal, meter);
     if (step === "cards") return this.cards(g, signal, meter);
     if (step === "gaps") return this.gaps(g, signal, meter);
     if (step === "outline") return this.outline(g, signal, meter);
-    throw new AppError("NOT_READY", `${STEP_NAMES[step]} 단계는 아직 사용할 수 없습니다.`);
+    if (step === "write") return this.write(g, signal, meter);
+    if (step === "check") return this.check(g, signal);
+    if (step === "render") return this.render(g, signal);
+    throw new AppError("INVALID", `알 수 없는 단계입니다: ${step}`);
   }
 
   // --- prepare: corpus, metadata, types, full text, reading text ---
@@ -927,6 +931,225 @@ export class GenealogyEngine {
     g.outlineApproved = true;
     this.store.save(g);
     this.changed(id);
+  }
+
+  // --- write: one call per section, in the order of the outline ---
+
+  private label(paper: GenealogyPaper) {
+    const first = paper.authors[0]?.split(/[ ,]+/).filter(Boolean);
+    const surname = paper.authors[0]?.includes(",") ? first?.[0] : first?.[first.length - 1];
+    return `${surname ?? ""} ${paper.year ?? "n.d."} · ${paper.title.slice(0, 90)}`.trim();
+  }
+
+  private async write(g: Genealogy, signal: AbortSignal, meter: Meter): Promise<string> {
+    const fromFile = await this.edited(g, "00_contents.md");
+    if (fromFile !== null) await this.saveOutline(g, parseOutlineMarkdown(fromFile, this.store.state<Outline>(g.id, "outline")));
+    const outline = this.store.state<Outline>(g.id, "outline");
+    if (!outline) throw new AppError("NOT_READY", "목차를 먼저 만드세요.");
+    const papers = this.store.papers(g.id, true);
+    const works = new Map(papers.map((p) => [p.workId, this.deps.db.get(p.workId)]));
+    const cards = this.store.cards(g.id);
+    const byKey = new Map(papers.map((p) => [p.key, p]));
+    const allowed = new Set(byKey.keys());
+    const allowedList = papers.map((p) => ({ key: p.key, label: this.label(p) }));
+    const pool = numberPool(cards.values());
+    const branches = this.store.state<Branch[]>(g.id, "branches") ?? [];
+    const texts = this.store.sectionTexts(g.id);
+    const todo = outline.chapters.flatMap((c) => c.sections).filter((s) => s.status === "planned" || s.status === "stale").length;
+    let done = 0;
+    let problems = 0;
+    let requests = 0;
+    const previous: { id: string; title: string; summary: string }[] = [];
+    this.progress(g, { message: `집필 · 0/${todo}절`, done: 0, total: todo });
+    for (const chapter of outline.chapters) {
+      let changed = false;
+      const chapterKeys = new Set(chapter.sections.flatMap((s) => s.keys));
+      for (const section of chapter.sections) {
+        if (section.status === "planned" || section.status === "stale") {
+          signal.throwIfAborted();
+          this.progress(g, { message: `집필 · ${done + 1}/${todo}절 · ${section.id} ${section.title}`, calls: meter.calls });
+          let attempt = 0;
+          const result = await this.deps.ai.json({
+            route: g.settings.routes.write,
+            runId: g.id,
+            meter,
+            signal,
+            schema: SECTION_SCHEMA,
+            maxOutputTokens: 16000,
+            instruction: sectionInstruction(g.settings),
+            input: sectionInput({
+              settings: g.settings,
+              outline,
+              chapter,
+              section,
+              branches,
+              cards: section.keys.map((k) => byKey.get(k)).filter((p): p is GenealogyPaper => !!p).map((paper) => ({ paper, work: works.get(paper.workId)!, card: cards.get(paper.workId) })),
+              others: papers.filter((p) => chapterKeys.has(p.key) && !section.keys.includes(p.key)).map((p) => ({ key: p.key, year: p.year, title: p.title, significance: cards.get(p.workId)?.significance ?? "" })),
+              previous,
+              allowed: allowedList,
+            }),
+            parse: (value) => parseSection(value, section.title, allowed, attempt++ === 0, pool),
+          });
+          this.store.saveSectionText(g.id, section.uid, result.markdown);
+          texts.set(section.uid, result.markdown);
+          Object.assign(section, {
+            status: "written",
+            summary: result.summary,
+            usedKeys: result.usedKeys,
+            missing: result.missing,
+            problems: result.problems,
+            writtenAt: now(),
+            rewrites: section.writtenAt ? section.rewrites + 1 : section.rewrites,
+          });
+          this.store.state(g.id, "outline", outline);
+          problems += result.problems.length;
+          requests += result.missing.length;
+          changed = true;
+          this.progress(g, { done: ++done, calls: meter.calls });
+        }
+        previous.push({ id: section.id, title: section.title, summary: section.summary });
+      }
+      if (changed || !existsSync(join(g.workspace, chapter.file))) await this.writeChapter(g, chapter, texts);
+    }
+    await this.pruneChapters(g, outline);
+    for (const step of ["check", "render"] as const) delete g.completed[step];
+    this.store.save(g);
+    return `${done}절 집필${problems ? ` · 검사 표시 ${problems}건` : ""}${requests ? ` · 근거 요청 ${requests}건` : ""}`;
+  }
+
+  /** A chapter file; when the user edited it, the new version goes beside it instead. */
+  private async writeChapter(g: Genealogy, chapter: OutlineChapter, texts: Map<string, string>) {
+    const text = chapterMarkdown(chapter, texts);
+    if ((await this.edited(g, chapter.file)) !== null) {
+      await writeFile(join(g.workspace, chapter.file.replace(/\.md$/, ".rb-new.md")), text);
+      return;
+    }
+    await this.writeOwned(g, chapter.file, text);
+  }
+
+  /** Removes chapter files of chapters no longer in the outline, unless the user changed them. */
+  private async pruneChapters(g: Genealogy, outline: Outline) {
+    const keep = new Set(outline.chapters.map((c) => c.file));
+    const hashes = this.store.state<Record<string, string>>(g.id, "hashes") ?? {};
+    for (const name of Object.keys(hashes)) {
+      if (!/^\d{2}_.+\.md$/.test(name) || keep.has(name)) continue;
+      if ((await this.edited(g, name)) !== null) continue;
+      await rm(join(g.workspace, name), { force: true });
+      delete hashes[name];
+    }
+    this.store.state(g.id, "hashes", hashes);
+  }
+
+  /** Marks one section for rewriting and runs the writing step for it. */
+  rewrite(id: string, uid: string) {
+    const outline = this.store.state<Outline>(id, "outline");
+    const section = outline?.chapters.flatMap((c) => c.sections).find((s) => s.uid === uid);
+    if (!outline || !section) throw new AppError("NOT_FOUND", "절을 찾을 수 없습니다.");
+    section.status = "stale";
+    this.store.state(id, "outline", outline);
+    return this.start(id, "write", false);
+  }
+
+  /** A chapter file as it is on disk. */
+  async chapter(id: string, file: string) {
+    const g = this.store.get(id);
+    const outline = this.store.state<Outline>(id, "outline");
+    if (!outline?.chapters.some((c) => c.file === file)) throw new AppError("NOT_FOUND", "장을 찾을 수 없습니다.");
+    return readFile(join(g.workspace, file), "utf8").catch(() => null);
+  }
+
+  // --- check and render ---
+
+  /** Writes the bib, the style and build/<slug>.md from the files on disk; returns their names. */
+  private async assembleFiles(g: Genealogy) {
+    const outline = this.store.state<Outline>(g.id, "outline");
+    if (!outline) throw new AppError("NOT_READY", "목차와 원고를 먼저 만드세요.");
+    const chapters = (await Promise.all(outline.chapters.map((c) => readFile(join(g.workspace, c.file), "utf8").catch(() => null)))).filter((t): t is string => t !== null);
+    if (!chapters.length) throw new AppError("NOT_READY", "아직 쓴 장이 없습니다. 집필을 먼저 실행하세요.");
+    const ledger = await readFile(join(g.workspace, "부록A_가지_장부.md"), "utf8").catch(() => null);
+    const name = slug(outline.title || g.title);
+    const cited = new Set(citedKeys([...chapters, ledger ?? ""].join("\n")));
+    const works = this.store
+      .papers(g.id)
+      .filter((p) => cited.has(p.key))
+      .map((p) => this.deps.db.get(p.workId));
+    const bib = `${name}.bib`;
+    await writeFile(join(g.workspace, bib), exportBib(works.map((w) => ({ ...w, authors: w.authors.map(familyFirst) }))).text);
+    let csl = g.settings.csl;
+    if (!csl) {
+      csl = "vancouver.csl";
+      await writeFile(join(g.workspace, csl), VANCOUVER_CSL);
+    }
+    await mkdir(join(g.workspace, "build"), { recursive: true });
+    const markdown = `build/${name}.md`;
+    await writeFile(join(g.workspace, markdown), assemble(g, outline, chapters, ledger, { bib, csl }));
+    await writeFile(join(g.workspace, "build", "epub.css"), EPUB_CSS);
+    return { name, bib, markdown, cited: works.length };
+  }
+
+  private async check(g: Genealogy, signal: AbortSignal): Promise<string> {
+    const outline = this.store.state<Outline>(g.id, "outline");
+    if (!outline) throw new AppError("NOT_READY", "목차를 먼저 만드세요.");
+    this.progress(g, { message: "원고 검증 중", done: 0, total: 0 });
+    const chapters = await Promise.all(
+      outline.chapters.map(async (c) => ({
+        file: c.file,
+        text: await readFile(join(g.workspace, c.file), "utf8").catch(() => null),
+        editedByUser: (await this.edited(g, c.file)) !== null,
+        pendingNew: existsSync(join(g.workspace, c.file.replace(/\.md$/, ".rb-new.md"))),
+      })),
+    );
+    let warnings: string[] | null = null;
+    const pandoc = this.deps.tools?.().pandoc;
+    if (pandoc && chapters.some((c) => c.text !== null)) {
+      const files = await this.assembleFiles(g);
+      const result = await runTool(pandoc, [files.markdown, "-f", "markdown-smart", "--citeproc", "-t", "plain", "-o", "/dev/null"], g.workspace, signal, 120_000);
+      warnings = [...citeprocWarnings(result.stderr), ...(result.code === 0 ? [] : [`pandoc 오류: ${result.stderr.trim().split("\n").slice(-3).join(" ")}`])];
+    }
+    const checks = reviewChecks({ outline, chapters, papers: this.store.papers(g.id, true), citeprocWarnings: warnings });
+    this.store.state(g.id, "checks", checks);
+    const open = checks.filter((c) => !c.ok).length;
+    return open ? `확인할 항목 ${open}개` : "모든 항목 통과";
+  }
+
+  private async render(g: Genealogy, signal: AbortSignal): Promise<string> {
+    const tools = this.deps.tools?.() ?? { pandoc: null, typst: null };
+    this.progress(g, { message: "원고와 bib 정리 중", done: 0, total: 3 });
+    const files = await this.assembleFiles(g);
+    const outputs: GenealogyOutputs = { markdown: join(g.workspace, files.markdown), bib: join(g.workspace, files.bib), epub: null, pdf: null, renderedAt: now(), errors: [] };
+    if (!tools.pandoc) outputs.errors.push("pandoc을 찾지 못해 EPUB·PDF를 만들지 못했습니다. Homebrew로 pandoc을 설치하면(brew install pandoc) 다음 렌더에서 만듭니다.");
+    else {
+      this.progress(g, { message: "EPUB 만드는 중", done: 1, total: 3 });
+      const epub = `build/${files.name}.epub`;
+      const result = await runTool(tools.pandoc, [files.markdown, "-f", "markdown-smart", "--citeproc", "--toc", "--toc-depth=2", "--split-level=1", "--css=build/epub.css", "-o", epub], g.workspace, signal);
+      if (result.code === 0) outputs.epub = join(g.workspace, epub);
+      else outputs.errors.push(`EPUB: ${result.stderr.trim().split("\n").slice(-4).join(" ")}`);
+      if (!tools.typst) outputs.errors.push("typst를 찾지 못해 PDF를 만들지 못했습니다(brew install typst).");
+      else {
+        this.progress(g, { message: "PDF 만드는 중", done: 2, total: 3 });
+        const font = await typstFont(tools.typst, signal);
+        const pdf = `build/${files.name}.pdf`;
+        const made = await runTool(
+          tools.pandoc,
+          [files.markdown, "-f", "markdown-smart", "--citeproc", "--toc", "--toc-depth=2", `--pdf-engine=${tools.typst}`, "-V", `mainfont=${font}`, "-V", "papersize=a4", "-V", "fontsize=10.5pt", "-o", pdf],
+          g.workspace,
+          signal,
+        );
+        if (made.code === 0) outputs.pdf = join(g.workspace, pdf);
+        else outputs.errors.push(`PDF: ${made.stderr.trim().split("\n").slice(-4).join(" ")}`);
+      }
+    }
+    this.store.state(g.id, "outputs", outputs);
+    this.progress(g, { done: 3, total: 3 });
+    return [outputs.epub && "EPUB", outputs.pdf && "PDF", "Markdown·bib"].filter(Boolean).join("·") + ` · 인용 문헌 ${files.cited}편${outputs.errors.length ? ` · 오류 ${outputs.errors.length}건` : ""}`;
+  }
+
+  /** Path of one of the rendered files, for opening it. */
+  output(id: string, kind: "epub" | "pdf" | "markdown" | "bib") {
+    const outputs = this.store.state<GenealogyOutputs>(id, "outputs");
+    const path = outputs?.[kind];
+    if (!path || !existsSync(path)) throw new AppError("NOT_FOUND", "아직 만든 파일이 없습니다. 렌더를 실행하세요.");
+    return path;
   }
 }
 

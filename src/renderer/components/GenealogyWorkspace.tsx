@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
-import { Check, CircleDashed, FileText, FolderOpen, LoaderCircle, Pause, Play, RotateCcw, Save, Square, Trash2, TriangleAlert, Undo2, X } from "lucide-react";
+import { BookOpen, Check, CircleDashed, FileText, FolderOpen, LoaderCircle, Pause, PenLine, Play, RotateCcw, Save, Square, Trash2, TriangleAlert, Undo2, X } from "lucide-react";
 import {
   BRANCH_STATUS,
   ORIGINS,
@@ -13,13 +13,18 @@ import {
   type GenealogyView,
   type PaperType,
 } from "../../shared/genealogy";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { GenealogySettingsForm } from "./GenealogySettingsForm";
+import { numberCitations } from "../../shared/citations";
 
-type Tab = "papers" | "candidates" | "outline" | "settings";
+type Tab = "papers" | "candidates" | "outline" | "manuscript" | "checks" | "settings";
 const TABS: { key: Tab; label: string }[] = [
   { key: "papers", label: "문헌" },
   { key: "candidates", label: "추가" },
   { key: "outline", label: "목차" },
+  { key: "manuscript", label: "본문" },
+  { key: "checks", label: "검증·내보내기" },
   { key: "settings", label: "설정" },
 ];
 
@@ -306,7 +311,7 @@ function OutlineTab({ view, busy, onSave, onSync, onApprove }: { view: Genealogy
         ) : (
           <button className="primary" disabled={busy} onClick={onApprove}>
             <Check size={14} />
-            목차 승인
+            승인하고 집필 시작
           </button>
         )}
       </div>
@@ -370,6 +375,151 @@ function OutlineTab({ view, busy, onSave, onSync, onApprove }: { view: Genealogy
           </li>
         ))}
       </ol>
+    </div>
+  );
+}
+
+const SECTION_STATUS = { planned: "쓸 차례", stale: "다시 쓸 차례", written: "집필됨", edited: "직접 고침" } as const;
+
+function Manuscript({ id, view, busy, onRewrite, onError }: { id: string; view: GenealogyView; busy: boolean; onRewrite: (uid: string) => void; onError: (error: unknown) => void }) {
+  const outline = view.outline;
+  const [file, setFile] = useState<string | null>(outline?.chapters[0]?.file ?? null);
+  const [text, setText] = useState<string | null>(null);
+  const revision = outline?.chapters.flatMap((c) => c.sections.map((s) => `${s.uid}:${s.writtenAt}`)).join("|");
+  useEffect(() => {
+    if (!file) return;
+    let current = true;
+    void window.bunny
+      .genealogyChapter({ id, file })
+      .then((t) => current && setText(t))
+      .catch(onError);
+    return () => {
+      current = false;
+    };
+  }, [id, file, revision, onError]);
+  // Numbers in order of first citation across the report, as the rendered EPUB and PDF number them.
+  const order = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const c of outline?.chapters ?? []) for (const s of c.sections) for (const k of s.usedKeys) if (!map.has(k)) map.set(k, map.size + 1);
+    return map;
+  }, [outline]);
+  if (!outline) return <p className="subtle">목차를 만들고 승인하면 장별 원고가 여기에 쌓입니다.</p>;
+  const chapter = outline.chapters.find((c) => c.file === file) ?? outline.chapters[0];
+  const byKey = new Map(view.papers.map((p) => [p.key, p]));
+  const rendered = text ? numberCitations(text, new Map(order)) : null;
+  const cited = chapter.sections.flatMap((s) => s.usedKeys).filter((k, i, all) => all.indexOf(k) === i).sort((a, b) => (order.get(a) ?? 999) - (order.get(b) ?? 999));
+  return (
+    <div className="genealogy-manuscript">
+      <nav>
+        {outline.chapters.map((c) => {
+          const written = c.sections.filter((s) => s.status === "written" || s.status === "edited").length;
+          return (
+            <button key={c.file} className={c.file === chapter.file ? "active" : ""} onClick={() => setFile(c.file)}>
+              <span className="ellipsis">
+                {c.number}. {c.title}
+              </span>
+              <small>
+                {written}/{c.sections.length}
+              </small>
+            </button>
+          );
+        })}
+      </nav>
+      <div>
+        <ul className="genealogy-sections">
+          {chapter.sections.map((s) => (
+            <li key={s.uid}>
+              <span>
+                {s.id} {s.title}
+              </span>
+              <span className={`badge${s.status === "stale" ? " warning" : ""}`}>{SECTION_STATUS[s.status]}</span>
+              {s.problems.length > 0 && <span className="badge warning" title={s.problems.join("\n")}>검사 {s.problems.length}</span>}
+              {s.missing.length > 0 && <span className="badge" title={s.missing.map((m) => `${m.need} (${m.hint})`).join("\n")}>근거 요청 {s.missing.length}</span>}
+              <button className="text-button" disabled={busy} onClick={() => onRewrite(s.uid)} title="이 절만 다시 씁니다. 직접 고친 장 파일은 덮어쓰지 않습니다.">
+                <PenLine size={13} />
+                다시 쓰기
+              </button>
+            </li>
+          ))}
+        </ul>
+        {rendered ? (
+          <article className="genealogy-article">
+            <Markdown remarkPlugins={[remarkGfm]} skipHtml>
+              {rendered}
+            </Markdown>
+          </article>
+        ) : (
+          <p className="subtle">이 장은 아직 쓰지 않았습니다.</p>
+        )}
+        {cited.length > 0 && (
+          <div className="genealogy-refs">
+            <strong>이 장에서 인용한 문헌</strong>
+            <ol>
+              {cited.map((k) => {
+                const p = byKey.get(k);
+                return (
+                  <li key={k} value={order.get(k)}>
+                    {p ? `${p.authors.slice(0, 3).join(", ")}${p.authors.length >= 3 ? " 외" : ""}. ${p.title}. ${p.venue} ${p.year ?? ""}` : k}
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Checks({ id, view, busy, onRun, onError }: { id: string; view: GenealogyView; busy: boolean; onRun: (step: GenealogyStep) => void; onError: (error: unknown) => void }) {
+  const open = (kind: "epub" | "pdf" | "markdown" | "bib") => void window.bunny.genealogyOpenOutput({ id, kind }).catch(onError);
+  const o = view.outputs;
+  return (
+    <div className="genealogy-checks">
+      <div className="inline-actions">
+        <button disabled={busy || !view.outline} onClick={() => onRun("check")}>
+          <Check size={14} />
+          검증 실행
+        </button>
+        <button className="primary" disabled={busy || !view.outline} onClick={() => onRun("render")}>
+          <BookOpen size={14} />
+          EPUB·PDF 만들기
+        </button>
+        <button disabled={!o.epub} onClick={() => open("epub")}>EPUB 열기</button>
+        <button disabled={!o.pdf} onClick={() => open("pdf")}>PDF 열기</button>
+        <button disabled={!o.markdown} onClick={() => open("markdown")}>Markdown 열기</button>
+        <button disabled={!o.bib} onClick={() => open("bib")}>bib 열기</button>
+      </div>
+      <p className="subtle">
+        pandoc {view.tools.pandoc ? `· ${view.tools.pandoc}` : "을 찾지 못함 (brew install pandoc)"} · typst {view.tools.typst ? `· ${view.tools.typst}` : "를 찾지 못함 (brew install typst)"}
+        {o.renderedAt ? ` · 마지막 렌더 ${new Date(o.renderedAt).toLocaleString()}` : ""}. 본문의 [@key]는 등장 순서대로 [1]처럼 번호가 붙고, 참고문헌은 {view.genealogy.settings.csl ? "고른 CSL" : "기본 Vancouver형"} 양식으로 정리됩니다.
+      </p>
+      {o.errors.map((e, i) => (
+        <p key={i} className="notice">
+          {e}
+        </p>
+      ))}
+      {!view.checks.length && <p className="subtle">검증을 실행하면 계보 스킬의 점검 목록으로 원고를 확인합니다.</p>}
+      <ul className="genealogy-checklist">
+        {view.checks.map((c) => (
+          <li key={c.id} className={c.ok ? "ok" : "warn"}>
+            <details>
+              <summary>
+                {c.ok ? <Check size={14} className="green" /> : <TriangleAlert size={14} className="danger" />}
+                {c.label}
+                {!c.ok && c.details.length > 0 && <span className="badge">{c.details.length}</span>}
+              </summary>
+              {c.details.length > 0 && (
+                <ul>
+                  {c.details.map((d, i) => (
+                    <li key={i}>{d}</li>
+                  ))}
+                </ul>
+              )}
+            </details>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -469,9 +619,20 @@ export function GenealogyWorkspace({ id, onError, onDeleted }: { id: string; onE
             busy={running}
             onSave={(markdown) => void window.bunny.genealogyOutlineSave({ id, markdown }).then(() => load()).catch(onError)}
             onSync={() => void window.bunny.genealogyOutlineSave({ id }).then(() => load()).catch(onError)}
-            onApprove={() => void window.bunny.genealogyApprove({ id }).then(() => load()).catch(onError)}
+            onApprove={() =>
+              void window.bunny
+                .genealogyApprove({ id })
+                .then(() => window.bunny.genealogyStart({ id, step: "continue", auto: true }))
+                .then(() => {
+                  setTab("manuscript");
+                  return load();
+                })
+                .catch(onError)
+            }
           />
         )}
+        {tab === "manuscript" && <Manuscript id={id} view={view} busy={running} onError={onError} onRewrite={(uid) => void window.bunny.genealogyRewrite({ id, uid }).then(() => load()).catch(onError)} />}
+        {tab === "checks" && <Checks id={id} view={view} busy={running} onError={onError} onRun={(step) => void run(step, false)} />}
         {tab === "settings" && (
           <>
             <GenealogySettingsForm value={draft ?? g.settings} onChange={setDraft} />

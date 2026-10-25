@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   BRANCH_STATUS,
@@ -244,6 +245,7 @@ function section(chapter: number, index: number, s: { title: string; thesis: str
   const same = prior && prior.title === s.title && prior.keys.join() === s.keys.join() && prior.thesis === s.thesis;
   return {
     id,
+    uid: same ? prior.uid : randomUUID(),
     chapter,
     title: s.title,
     thesis: s.thesis,

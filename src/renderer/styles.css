@@ -3942,3 +3942,22 @@ html[data-theme="dark"] .selection-bar .primary {
 .badge.branch-alive { background: var(--accent-soft); color: var(--accent); }
 .badge.branch-blocked { background: #fbede6; color: #aa5745; }
 .badge.branch-contested { background: #fbf3e0; color: #8a6420; }
+.genealogy-manuscript { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; }
+.genealogy-manuscript nav { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; align-self: start; }
+.genealogy-manuscript nav button { justify-content: space-between; border: 0; background: transparent; text-align: left; min-width: 0; }
+.genealogy-manuscript nav button.active { background: var(--accent-soft); color: var(--accent); }
+.genealogy-sections { list-style: none; padding: 0; margin: 0 0 14px; border: 1px solid var(--border); border-radius: 8px; }
+.genealogy-sections li { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.genealogy-sections li:last-child { border-bottom: 0; }
+.genealogy-sections li > span:first-child { flex: 1; min-width: 0; }
+.genealogy-article { max-width: 760px; font-size: 14px; line-height: 1.85; }
+.genealogy-article h1 { font-size: 22px; margin: 8px 0 14px; }
+.genealogy-article h2 { font-size: 17px; margin: 28px 0 10px; }
+.genealogy-article h3 { font-size: 15px; margin: 20px 0 8px; }
+.genealogy-article p { margin: 0 0 12px; word-break: keep-all; }
+.genealogy-refs { max-width: 760px; margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+.genealogy-refs ol { padding-left: 22px; line-height: 1.6; }
+.genealogy-checklist { list-style: none; padding: 0; margin: 14px 0; }
+.genealogy-checklist > li { border-bottom: 1px solid var(--border); padding: 8px 0; }
+.genealogy-checklist summary { display: flex; align-items: center; gap: 8px; }
+.genealogy-checklist ul { margin: 6px 0 0 22px; line-height: 1.6; color: var(--muted); }

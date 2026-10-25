@@ -561,6 +561,14 @@ export class Service {
       case "genealogyRemovePaper": { const p = schemas.genealogyRemovePaper.parse(args); return this.genealogy.removeAdded(p.id, p.workId); }
       case "genealogyOutlineSave": { const p = schemas.genealogyOutlineSave.parse(args); return this.genealogy.editOutline(p.id, p.markdown); }
       case "genealogyApprove": return this.genealogy.approve(schemas.genealogyApprove.parse(args).id);
+      case "genealogyChapter": { const p = schemas.genealogyChapter.parse(args); return this.genealogy.chapter(p.id, p.file); }
+      case "genealogyRewrite": {
+        const p = schemas.genealogyRewrite.parse(args);
+        if (this.genealogy.active.size === 0 && (this.discovery.active.size || this.pdf.active.size || this.downloads.active.size || this.sorter.active))
+          throw new AppError("BUSY", "진행 중인 탐색·가져오기·원문 확보·정리 작업이 끝난 뒤 실행하세요.");
+        return this.genealogy.rewrite(p.id, p.uid);
+      }
+      case "genealogyOutputPath": { const p = schemas.genealogyOpenOutput.parse(args); return this.genealogy.output(p.id, p.kind); }
       case "genealogyDelete": return this.genealogy.remove(schemas.genealogyDelete.parse(args).id);
       case "genealogyWorkspace": return this.genealogy.store.get(schemas.genealogyReveal.parse(args).id).workspace;
       case "claudeStatus": return this.claude.status();

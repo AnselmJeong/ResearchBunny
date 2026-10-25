@@ -249,8 +249,10 @@ export interface MissingSource {
   kind: "primary" | "recent" | "counter";
 }
 export interface OutlineSection {
-  /** "2" for a chapter, "2.3" for a section. */
+  /** "2.3": the section's number, which changes when the outline is edited. */
   id: string;
+  /** Stays with the section across renumbering; its written text is stored under it. */
+  uid: string;
   chapter: number;
   title: string;
   thesis: string;

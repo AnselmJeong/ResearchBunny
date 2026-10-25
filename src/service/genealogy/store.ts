@@ -189,6 +189,18 @@ export class GenealogyStore {
     return row ? (JSON.parse(row.data) as T) : null;
   }
 
+  /** Written section texts by section uid. */
+  sectionTexts(id: string): Map<string, string> {
+    const rows = this.db.db.prepare("SELECT key,data FROM genealogy_state WHERE genealogy_id=? AND key LIKE 'text:%'").all(id) as { key: string; data: string }[];
+    return new Map(rows.map((r) => [r.key.slice(5), JSON.parse(r.data) as string]));
+  }
+
+  saveSectionText(id: string, uid: string, text: string) {
+    this.db.db
+      .prepare("INSERT INTO genealogy_state VALUES(?,?,?) ON CONFLICT(genealogy_id,key) DO UPDATE SET data=excluded.data")
+      .run(id, `text:${uid}`, JSON.stringify(text));
+  }
+
   text<T>(key: string, value?: T): T | null {
     if (value !== undefined) {
       this.db.db.prepare("INSERT OR REPLACE INTO genealogy_texts VALUES(?,?,?)").run(key, JSON.stringify(value), now());
