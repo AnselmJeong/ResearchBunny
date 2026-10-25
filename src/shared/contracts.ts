@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { CodexStatus, CodexModel } from "./codex";
 import type { ClaudeStatus } from "./claude";
-import type { Genealogy, GenealogySummary, GenealogyView } from "./genealogy";
+import type { Genealogy, GenealogySummary, GenealogyView, Outline } from "./genealogy";
 import type { ChatSession, ChatThreadSummary } from "./chat";
 import type { ShelfAdoptResult, ShelfMovePreview, ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo, ShelfSortResult, ShelfSortView } from "./shelf";
 import type {
@@ -288,6 +288,10 @@ export const schemas = {
   genealogyType: z.object({ id, workId: id, type: z.enum(["R", "M", "O", "P"]) }),
   genealogyStart: z.object({ id, step: z.union([genealogyStep, z.literal("continue")]), auto: z.boolean().default(true) }),
   genealogyCancel: z.object({ id }),
+  genealogyCandidate: z.object({ id, candidateId: z.string().min(1).max(200), action: z.enum(["accept", "reject", "reset"]) }),
+  genealogyRemovePaper: z.object({ id, workId: id }),
+  genealogyOutlineSave: z.object({ id, markdown: z.string().max(2_000_000).optional() }),
+  genealogyApprove: z.object({ id }),
   genealogyDelete: z.object({ id }),
   genealogyReveal: z.object({ id }),
   chooseGenealogyFolder: z.object({}),
@@ -451,6 +455,10 @@ export interface Outputs {
   genealogyType: void;
   genealogyStart: Genealogy;
   genealogyCancel: void;
+  genealogyCandidate: void;
+  genealogyRemovePaper: void;
+  genealogyOutlineSave: Outline | null;
+  genealogyApprove: void;
   genealogyDelete: void;
   genealogyReveal: void;
   chooseGenealogyFolder: string | null;

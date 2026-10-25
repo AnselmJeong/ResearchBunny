@@ -557,6 +557,10 @@ export class Service {
         return this.genealogy.start(p.id, p.step, p.auto);
       }
       case "genealogyCancel": return this.genealogy.cancel(schemas.genealogyCancel.parse(args).id);
+      case "genealogyCandidate": { const p = schemas.genealogyCandidate.parse(args); return this.genealogy.decide(p.id, p.candidateId, p.action); }
+      case "genealogyRemovePaper": { const p = schemas.genealogyRemovePaper.parse(args); return this.genealogy.removeAdded(p.id, p.workId); }
+      case "genealogyOutlineSave": { const p = schemas.genealogyOutlineSave.parse(args); return this.genealogy.editOutline(p.id, p.markdown); }
+      case "genealogyApprove": return this.genealogy.approve(schemas.genealogyApprove.parse(args).id);
       case "genealogyDelete": return this.genealogy.remove(schemas.genealogyDelete.parse(args).id);
       case "genealogyWorkspace": return this.genealogy.store.get(schemas.genealogyReveal.parse(args).id).workspace;
       case "claudeStatus": return this.claude.status();

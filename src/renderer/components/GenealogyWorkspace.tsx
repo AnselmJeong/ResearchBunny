@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
-import { Check, CircleDashed, FolderOpen, LoaderCircle, Pause, Play, Square, Trash2, TriangleAlert } from "lucide-react";
+import { Check, CircleDashed, FileText, FolderOpen, LoaderCircle, Pause, Play, RotateCcw, Save, Square, Trash2, TriangleAlert, Undo2, X } from "lucide-react";
 import {
+  BRANCH_STATUS,
   ORIGINS,
   PAPER_TYPES,
   STEPS,
@@ -14,9 +15,11 @@ import {
 } from "../../shared/genealogy";
 import { GenealogySettingsForm } from "./GenealogySettingsForm";
 
-type Tab = "papers" | "settings";
+type Tab = "papers" | "candidates" | "outline" | "settings";
 const TABS: { key: Tab; label: string }[] = [
   { key: "papers", label: "문헌" },
+  { key: "candidates", label: "추가" },
+  { key: "outline", label: "목차" },
   { key: "settings", label: "설정" },
 ];
 
@@ -109,7 +112,7 @@ function Papers({ view, onType }: { view: GenealogyView; onType: (workId: string
       <p className="subtle">
         {papers.length}편 · 카드 {papers.filter((p) => p.cardStatus === "done").length}편 · {Object.entries(counts).map(([k, n]) => `${TEXT_BASIS[k as keyof typeof TEXT_BASIS]} ${n}`).join(" · ")}. 유형을 바꾸면 그 논문의 카드를 다시 만듭니다.
       </p>
-      <table className="genealogy-table">
+      <table className="genealogy-table papers">
         <thead>
           <tr>
             <th>연도</th>
@@ -176,6 +179,198 @@ function Papers({ view, onType }: { view: GenealogyView; onType: (workId: string
         </tbody>
       </table>
     </>
+  );
+}
+
+function Candidates({ view, busy, onDecide, onUndo }: { view: GenealogyView; busy: boolean; onDecide: (id: string, action: "accept" | "reject" | "reset") => void; onUndo: (workId: string) => void }) {
+  const added = view.papers.filter((p) => p.included && p.origin !== "collection");
+  const pending = view.candidates.filter((c) => c.decision === "pending" && c.score > 0);
+  const rejected = view.candidates.filter((c) => c.decision === "rejected");
+  const mode = { auto: "자동 채택", suggest: "제안만", off: "끄기" }[view.genealogy.settings.expansion];
+  return (
+    <>
+      <p className="subtle">
+        공백 점검이 찾은, 계보 문헌이 기대거나(공통 참고문헌·카드 속 언급) 이어받는(최근 후속 연구) 논문입니다. 반영 방식: {mode}. 채택하면 아카이브 → 서고 → OpenAlex 순으로 찾아 컬렉션에 넣고, 다음 진행에서 자료 준비와 카드를 만듭니다.
+      </p>
+      {added.length > 0 && (
+        <>
+          <h3 className="genealogy-subhead">리포트가 추가한 문헌 {added.length}</h3>
+          <ul className="genealogy-list">
+            {added.map((p) => (
+              <li key={p.workId}>
+                <div>
+                  <div className="genealogy-paper-title">{p.title}</div>
+                  <small>
+                    {p.year ?? "—"} · {ORIGINS[p.origin]}
+                    {p.round ? ` · ${p.round}차` : ""} · {p.reason}
+                  </small>
+                </div>
+                <button disabled={busy} onClick={() => onUndo(p.workId)} title="컬렉션에서 빼고, 리포트가 아카이브에 처음 넣었다면 아카이브에서도 뺍니다.">
+                  <Undo2 size={14} />
+                  되돌리기
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      <h3 className="genealogy-subhead">후보 {pending.length}</h3>
+      {!pending.length && <p className="subtle">{view.genealogy.completed.gaps ? "남은 후보가 없습니다." : "공백 점검을 실행하면 후보가 나옵니다."}</p>}
+      <ul className="genealogy-list">
+        {pending.map((c) => (
+          <li key={c.id}>
+            <div>
+              <div className="genealogy-paper-title">
+                {c.title} {c.role && <span className="badge">{c.role}</span>}
+              </div>
+              <small>
+                {c.year ?? "—"} · {c.authors.join(", ")}
+                {c.venue ? ` · ${c.venue}` : ""}
+              </small>
+              <small className="block">
+                {[c.cocited.length && `공통 참고문헌 ${c.cocited.length}편`, c.mentions.length && `카드 언급 ${c.mentions.length}회 (${c.mentions.slice(0, 2).map((m) => m.text).join("; ")})`, c.cites.length && `계보 문헌 ${c.cites.length}편을 인용`, c.requests.length && `집필 요청 ${c.requests.length}건`].filter(Boolean).join(" · ")}
+                {` · 점수 ${c.score.toFixed(2)}`}
+              </small>
+              {c.reason && <p className="genealogy-reason">{c.reason}</p>}
+            </div>
+            <div className="inline-actions">
+              <button className="primary" disabled={busy} onClick={() => onDecide(c.id, "accept")}>
+                <Check size={14} />
+                채택
+              </button>
+              <button disabled={busy} onClick={() => onDecide(c.id, "reject")}>
+                <X size={14} />
+                제외
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+      {rejected.length > 0 && (
+        <details>
+          <summary className="subtle">제외한 후보 {rejected.length}</summary>
+          <ul className="genealogy-list">
+            {rejected.map((c) => (
+              <li key={c.id}>
+                <div>
+                  <div className="genealogy-paper-title">{c.title}</div>
+                  <small>{c.year ?? "—"}</small>
+                </div>
+                <button disabled={busy} onClick={() => onDecide(c.id, "reset")}>
+                  <RotateCcw size={14} />
+                  되살리기
+                </button>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </>
+  );
+}
+
+function OutlineTab({ view, busy, onSave, onSync, onApprove }: { view: GenealogyView; busy: boolean; onSave: (markdown: string) => void; onSync: () => void; onApprove: () => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const outline = view.outline;
+  const titles = new Map(view.papers.map((p) => [p.key, `${p.authors[0] ?? ""} ${p.year ?? ""}`.trim() || p.key]));
+  if (!outline) return <p className="subtle">가지 장부·목차 단계를 실행하면 상세 목차가 여기에 나옵니다.</p>;
+  if (draft !== null)
+    return (
+      <div className="genealogy-editor">
+        <p className="subtle">장(##)·절(###) 제목, 논지, 질문, 증거를 고칠 수 있습니다. rb:section 주석의 keys는 그 절이 기대는 문헌입니다. 저장하면 바뀐 절만 다시 씁니다.</p>
+        <textarea value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false} />
+        <div className="inline-actions">
+          <button className="primary" disabled={busy} onClick={() => { onSave(draft); setDraft(null); }}>
+            <Save size={14} />
+            목차 저장
+          </button>
+          <button onClick={() => setDraft(null)}>취소</button>
+        </div>
+      </div>
+    );
+  return (
+    <div className="genealogy-outline">
+      <div className="inline-actions">
+        <button disabled={busy || !view.contents} onClick={() => setDraft(view.contents ?? "")}>
+          <FileText size={14} />
+          목차 고치기
+        </button>
+        {view.contentsEdited && (
+          <button disabled={busy} onClick={onSync} title="다른 편집기에서 고친 00_contents.md를 읽어 옵니다.">
+            <RotateCcw size={14} />
+            고친 파일 읽기
+          </button>
+        )}
+        {view.genealogy.outlineApproved ? (
+          <span className="badge">승인됨</span>
+        ) : (
+          <button className="primary" disabled={busy} onClick={onApprove}>
+            <Check size={14} />
+            목차 승인
+          </button>
+        )}
+      </div>
+      {view.contentsEdited && <p className="notice">작업 폴더의 00_contents.md가 앱이 쓴 뒤 바뀌었습니다. ‘고친 파일 읽기’를 누르면 그 내용으로 목차를 바꿉니다.</p>}
+      <h2>{outline.title}</h2>
+      {outline.subtitle && <p className="subtle">{outline.subtitle}</p>}
+      {outline.summary && <p className="genealogy-summary">{outline.summary}</p>}
+      {view.branches.length > 0 && (
+        <details className="genealogy-ledger" open>
+          <summary>가지 장부 · {view.branches.length}개</summary>
+          <table className="genealogy-table ledger">
+            <thead>
+              <tr>
+                <th>가지</th>
+                <th>상태</th>
+                <th>근거</th>
+              </tr>
+            </thead>
+            <tbody>
+              {view.branches.map((b) => (
+                <tr key={b.id}>
+                  <td>
+                    <strong>{b.name}</strong>
+                    <small className="block">{b.claim}</small>
+                    <small className="block">출발: {b.origin.map((k) => titles.get(k) ?? k).join(", ") || "—"}{b.lastActive ? ` · 마지막 활동 ${b.lastActive}` : ""}</small>
+                  </td>
+                  <td>
+                    <span className={`badge branch-${b.status}`}>{BRANCH_STATUS[b.status]}</span>
+                  </td>
+                  <td>
+                    <small>{b.evidence}</small>
+                    {b.reason && <small className="block">{b.status === "blocked" ? "막힌 이유: " : ""}{b.reason}</small>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      )}
+      <ol className="genealogy-chapters">
+        {outline.chapters.map((c) => (
+          <li key={c.number}>
+            <h3>
+              {c.number}. {c.title}
+            </h3>
+            {c.thesis && <p className="genealogy-thesis">{c.thesis}</p>}
+            <ol>
+              {c.sections.map((s) => (
+                <li key={s.id}>
+                  <strong>
+                    {s.id} {s.title}
+                  </strong>
+                  {s.status !== "planned" && <span className="badge">{{ written: "집필됨", stale: "다시 쓸 차례", edited: "직접 고침", planned: "" }[s.status]}</span>}
+                  {s.thesis && <p>{s.thesis}</p>}
+                  {s.questions.length > 0 && <small className="block">질문: {s.questions.join(" / ")}</small>}
+                  {s.evidence && <small className="block">가를 증거: {s.evidence}</small>}
+                  {s.keys.length > 0 && <small className="block">문헌: {s.keys.map((k) => titles.get(k) ?? k).join(", ")}</small>}
+                </li>
+              ))}
+            </ol>
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }
 
@@ -260,6 +455,23 @@ export function GenealogyWorkspace({ id, onError, onDeleted }: { id: string; onE
       </div>
       <div className="genealogy-body">
         {tab === "papers" && <Papers view={view} onType={(workId, type) => void window.bunny.genealogyType({ id, workId, type }).then(() => load()).catch(onError)} />}
+        {tab === "candidates" && (
+          <Candidates
+            view={view}
+            busy={running}
+            onDecide={(candidateId, action) => void window.bunny.genealogyCandidate({ id, candidateId, action }).then(() => load()).catch(onError)}
+            onUndo={(workId) => void window.bunny.genealogyRemovePaper({ id, workId }).then(() => load()).catch(onError)}
+          />
+        )}
+        {tab === "outline" && (
+          <OutlineTab
+            view={view}
+            busy={running}
+            onSave={(markdown) => void window.bunny.genealogyOutlineSave({ id, markdown }).then(() => load()).catch(onError)}
+            onSync={() => void window.bunny.genealogyOutlineSave({ id }).then(() => load()).catch(onError)}
+            onApprove={() => void window.bunny.genealogyApprove({ id }).then(() => load()).catch(onError)}
+          />
+        )}
         {tab === "settings" && (
           <>
             <GenealogySettingsForm value={draft ?? g.settings} onChange={setDraft} />

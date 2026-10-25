@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
 import { AppError, now, type AppEvent, type Work } from "../../shared/types";
@@ -7,8 +8,12 @@ import {
   STEPS,
   STEP_NAMES,
   type Genealogy,
+  type Branch,
+  type GapCandidate,
   type GenealogyCard,
   type GenealogyJob,
+  type Outline,
+  type PaperOrigin,
   type GenealogyPaper,
   type GenealogySettings,
   type GenealogyStep,
@@ -26,6 +31,20 @@ import { EMPTY_OUTPUTS, GenealogyStore } from "./store";
 import { jatsText, pdfText, readingText, type PaperText } from "./sections";
 import { europePmcIds, europePmcXml, pmcidOf, typeFromMetadata } from "./sources";
 import { CARD_SCHEMA, MERGE_INSTRUCTION, cardInput, cardInstruction, cardMarkdown, parseCard, splitText } from "./cards";
+import { citedCorpus, coCitationThreshold, coCitations, forwardThreshold, mentionsByPaper, resolveMention, score } from "./gaps";
+import {
+  LEDGER_SCHEMA,
+  OUTLINE_SCHEMA,
+  digest,
+  evidencePack,
+  ledgerInstruction,
+  ledgerMarkdown,
+  outlineInstruction,
+  outlineMarkdown,
+  parseLedger,
+  parseOutline,
+  parseOutlineMarkdown,
+} from "./outline";
 
 export interface EngineDeps {
   db: Library;
@@ -66,8 +85,9 @@ export class GenealogyEngine {
     return this.deps.store;
   }
 
-  view(id: string): GenealogyView {
+  async view(id: string): Promise<GenealogyView> {
     const g = this.store.get(id);
+    const contents = await readFile(join(g.workspace, "00_contents.md"), "utf8").catch(() => null);
     const collection = this.deps.db.collections(g.projectId).find((c) => c.id === g.collectionId);
     return {
       genealogy: g,
@@ -79,6 +99,8 @@ export class GenealogyEngine {
       checks: this.store.state(id, "checks") ?? [],
       outputs: this.store.state(id, "outputs") ?? EMPTY_OUTPUTS,
       cards: Object.fromEntries(this.store.cards(id)),
+      contents,
+      contentsEdited: contents !== null && !!(await this.edited(g, "00_contents.md")),
       tools: this.deps.tools?.() ?? { pandoc: null, typst: null },
     };
   }
@@ -123,6 +145,9 @@ export class GenealogyEngine {
     if (this.active.size) throw new AppError("BUSY", "진행 중인 계보 작업이 끝나거나 취소한 뒤 실행하세요.");
     const g = this.store.get(id);
     const first = step === "continue" ? (STEPS.find((s) => !g.completed[s]) ?? "render") : step;
+    if (!this.implemented(first)) throw new AppError("NOT_READY", `${STEP_NAMES[first]} 단계는 아직 사용할 수 없습니다.`);
+    if (first === "write" && step === "continue" && g.settings.pauseAtOutline && !g.outlineApproved)
+      throw new AppError("NOT_APPROVED", "목차 탭에서 목차를 확인하고 승인하면 집필을 시작합니다.");
     g.job = { step: first, status: "running", message: `${STEP_NAMES[first]} 준비 중`, done: 0, total: 0, calls: 0, auto, startedAt: now(), updatedAt: now() };
     this.store.save(g);
     const control = new AbortController();
@@ -166,11 +191,11 @@ export class GenealogyEngine {
         g.completed[step] = now();
         this.progress(g, { calls: meter.calls, message: `${STEP_NAMES[step]} 완료${summary ? ` · ${summary}` : ""}` });
         const next = STEPS[STEPS.indexOf(step) + 1];
-        if (!auto || !next || !this.implemented(next)) break;
-        if (step === "outline" && g.settings.pauseAtOutline && !g.outlineApproved) {
-          this.progress(g, { status: "paused", message: "목차를 확인하고 승인하면 집필을 시작합니다." });
+        if (auto && step === "outline" && g.settings.pauseAtOutline && !g.outlineApproved) {
+          this.progress(g, { status: "paused", message: `${g.job?.message ?? ""} · 목차 탭에서 목차를 확인하고 승인하면 집필을 시작합니다.` });
           return;
         }
+        if (!auto || !next || !this.implemented(next)) break;
         step = next;
       }
       this.progress(g, { status: "completed", calls: meter.calls });
@@ -189,14 +214,16 @@ export class GenealogyEngine {
   }
 
   /** Steps the engine can run; later milestones add theirs. */
-  protected implemented(step: GenealogyStep) {
-    return step === "prepare" || step === "cards";
+  protected implemented(step: GenealogyStep): boolean {
+    return step === "prepare" || step === "cards" || step === "gaps" || step === "outline";
   }
 
   /** Runs one step; a returned line is shown with its completion. */
   protected async run(g: Genealogy, step: GenealogyStep, signal: AbortSignal, meter: Meter): Promise<string | void> {
     if (step === "prepare") return this.prepare(g, signal, meter);
     if (step === "cards") return this.cards(g, signal, meter);
+    if (step === "gaps") return this.gaps(g, signal, meter);
+    if (step === "outline") return this.outline(g, signal, meter);
     throw new AppError("NOT_READY", `${STEP_NAMES[step]} 단계는 아직 사용할 수 없습니다.`);
   }
 
@@ -551,6 +578,355 @@ export class GenealogyEngine {
     }
     for (const file of await readdir(dir))
       if (/^\d{3}_.+\.md$/.test(file) && !names.has(file)) await rm(join(dir, file), { force: true });
+  }
+
+  /** Later steps must run again: their input changed. */
+  invalidate(g: Genealogy, from: GenealogyStep) {
+    for (const step of STEPS.slice(STEPS.indexOf(from))) delete g.completed[step];
+    if (STEPS.indexOf(from) <= STEPS.indexOf("outline")) g.outlineApproved = false;
+    this.store.save(g);
+  }
+
+  // --- gaps: what the papers lean on or lead to that the collection lacks ---
+
+  /** OpenAlex records by id, 100 per request, without adding them to the library. */
+  private async fetchWorks(ids: string[], signal: AbortSignal): Promise<Map<string, Work>> {
+    const found = new Map<string, Work>();
+    const unique = [...new Set(ids)];
+    for (let i = 0; i < unique.length; i += 100) {
+      signal.throwIfAborted();
+      const page = await this.openAlex({ filter: `openalex:${unique.slice(i, i + 100).join("|")}`, per_page: "100" }, signal);
+      for (const work of page?.works ?? []) if (work.openalex) found.set(work.openalex, work);
+    }
+    return found;
+  }
+
+  private async openAlex(params: Record<string, string>, signal: AbortSignal) {
+    try {
+      return await this.deps.oa.page(params, signal, () => {});
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (error instanceof AppError && ["RATE_LIMIT", "DAILY_BUDGET"].includes(error.code)) throw new Pause(`OpenAlex 사용 한도: ${error.message}`);
+      return null;
+    }
+  }
+
+  private async gaps(g: Genealogy, signal: AbortSignal, meter: Meter): Promise<string> {
+    const papers = this.store.papers(g.id, true);
+    const works = new Map(papers.map((p) => [p.workId, this.deps.db.get(p.workId)]));
+    const corpus = new Map(papers.map((p) => [works.get(p.workId)!.openalex ?? "", p.key]).filter(([oa]) => !!oa) as [string, string][]);
+    const exclude = new Set(corpus.keys());
+    const entries = new Map<string, { work?: Work; cocited: string[]; mentions: GapCandidate["mentions"]; cites: string[] }>();
+    const entry = (id: string) => {
+      let e = entries.get(id);
+      if (!e) entries.set(id, (e = { cocited: [], mentions: [], cites: [] }));
+      return e;
+    };
+    // a. References many of the papers share.
+    this.progress(g, { message: "공통 참고문헌 세는 중", done: 0, total: 3 });
+    const shared = coCitations(papers.map((p) => ({ key: p.key, type: p.type, references: works.get(p.workId)!.references ?? [] })), exclude)
+      .filter((c) => c.citers.length >= coCitationThreshold(papers.length))
+      .slice(0, 80);
+    for (const c of shared) entry(c.id).cocited = c.citers;
+    // b. Earlier work the cards name, found in the citing paper's own references.
+    this.progress(g, { message: "카드가 언급한 앞선 연구 찾는 중", done: 1, total: 3 });
+    const cards = this.store.cards(g.id);
+    const mentioning = mentionsByPaper(papers, cards);
+    const refIds = mentioning.flatMap((m) => works.get(m.paper.workId)!.references ?? []).filter((id) => !exclude.has(id));
+    const records = await this.fetchWorks([...shared.map((c) => c.id), ...refIds].slice(0, 2500), signal);
+    for (const { paper, mentions } of mentioning) {
+      const refs = (works.get(paper.workId)!.references ?? []).map((id) => records.get(id)).filter((w): w is Work => !!w);
+      for (const f of mentions) {
+        const hit = resolveMention(f.mention, refs);
+        if (hit?.openalex && !exclude.has(hit.openalex)) entry(hit.openalex).mentions.push({ key: paper.key, text: f.mention, role: f.role });
+      }
+    }
+    // c. Recent works that cite several of the papers: the branches still alive.
+    this.progress(g, { message: "최근 후속 연구 찾는 중", done: 2, total: 3 });
+    const recent: Record<string, number> = {};
+    const seen = new Set<string>();
+    const ids = [...exclude];
+    for (let i = 0; i < ids.length; i += 50) {
+      let cursor = "*";
+      for (let pageNo = 0; pageNo < 3 && cursor; pageNo++) {
+        const page = await this.openAlex({ filter: `cites:${ids.slice(i, i + 50).join("|")}`, sort: "publication_date:desc", per_page: "200", cursor }, signal);
+        if (!page) break;
+        for (const work of page.works) {
+          if (!work.openalex || seen.has(work.openalex)) continue;
+          seen.add(work.openalex);
+          const cites = citedCorpus(work, corpus);
+          for (const key of cites) recent[key] = (recent[key] ?? 0) + 1;
+          if (!exclude.has(work.openalex) && cites.length >= forwardThreshold(papers.length)) {
+            const e = entry(work.openalex);
+            e.cites = cites;
+            e.work = work;
+          }
+        }
+        cursor = page.cursor ?? "";
+      }
+    }
+    this.store.state(g.id, "pack", { recentCiters: recent });
+    for (const [id, e] of entries) e.work ??= records.get(id);
+    // The model judges the strongest candidates against the question.
+    const prior = new Map(this.store.candidates(g.id).map((c) => [c.id, c]));
+    const candidates: GapCandidate[] = [...entries]
+      .filter(([, e]) => e.work)
+      .map(([id, e]) => {
+        const old = prior.get(id);
+        const w = e.work!;
+        const c: GapCandidate = {
+          id,
+          workId: old?.workId ?? null,
+          openalex: id,
+          title: w.title,
+          authors: w.authors.slice(0, 3),
+          year: w.year,
+          venue: w.venue,
+          cocited: e.cocited,
+          mentions: e.mentions,
+          cites: e.cites,
+          requests: old?.requests ?? [],
+          score: 0,
+          relevance: old?.relevance ?? null,
+          role: old?.role ?? "",
+          reason: old?.reason ?? "",
+          decision: old?.decision ?? "pending",
+          foundIn: old?.foundIn ?? null,
+          round: old?.round ?? g.rounds,
+          createdAt: old?.createdAt ?? now(),
+        };
+        c.score = score(c, papers.length);
+        return c;
+      })
+      .sort((a, b) => b.score - a.score);
+    const judge = candidates.filter((c) => c.decision === "pending" && c.relevance === null).slice(0, Math.min(60, Math.max(20, g.settings.perRound * 3)));
+    const abstracts = new Map([...entries].map(([id, e]) => [id, e.work?.abstract ?? ""]));
+    await this.judge(g, judge, papers, signal, meter, abstracts);
+    for (const c of candidates) c.score = c.relevance === 0 ? 0 : score(c, papers.length);
+    this.deps.db.transaction(() => {
+      for (const c of candidates) this.store.saveCandidate(g.id, c);
+      // Pending candidates whose signals disappeared are dropped; decided ones stay on record.
+      for (const old of prior.values())
+        if (old.decision === "pending" && !entries.has(old.id) && !old.requests.length)
+          this.deps.db.db.prepare("DELETE FROM genealogy_candidates WHERE genealogy_id=? AND id=?").run(g.id, old.id);
+    });
+    const kept = candidates.filter((c) => c.score > 0);
+    return `후보 ${kept.length}편 · 공통 참고문헌 ${kept.filter((c) => c.cocited.length).length} · 카드 언급 ${kept.filter((c) => c.mentions.length).length} · 최근 후속 ${kept.filter((c) => c.cites.length).length}`;
+  }
+
+  /** Relevance and role of candidates for the research question, by the light model, 20 at a time. */
+  private async judge(g: Genealogy, candidates: GapCandidate[], papers: GenealogyPaper[], signal: AbortSignal, meter: Meter, abstracts = new Map<string, string>()) {
+    const schema = {
+      type: "object",
+      properties: {
+        candidates: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              role: { type: "string", enum: ["origin", "turning", "refutation", "review", "method", "recent", "unrelated"] },
+              relevance: { type: "number" },
+              reason: { type: "string" },
+            },
+            required: ["id", "role", "relevance", "reason"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["candidates"],
+      additionalProperties: false,
+    };
+    const ROLE: Record<string, string> = { origin: "출발점", turning: "전환점", refutation: "반박", review: "최신 정리", method: "방법", recent: "최근 진전", unrelated: "무관" };
+    for (let i = 0; i < candidates.length; i += 20) {
+      signal.throwIfAborted();
+      const batch = candidates.slice(i, i + 20);
+      this.progress(g, { message: `후보 판정 · ${Math.min(i + 20, candidates.length)}/${candidates.length}편`, calls: meter.calls });
+      const ids = new Set(batch.map((c) => c.id));
+      const result = await this.deps.ai.json({
+        route: g.settings.routes.light,
+        runId: g.id,
+        meter,
+        signal,
+        schema,
+        instruction:
+          "A genealogy review of the research question is being written from the listed corpus. Each candidate is a paper the corpus leans on or that builds on it but is missing from the corpus. Judge whether the review needs it: origin (where an idea started), turning (changed a line of work), refutation, review (a recent synthesis), method, recent (a recent advance), or unrelated. relevance is 0 to 1 for the research question; unrelated papers get 0. Give a one-line Korean reason that names the signal you relied on. Return every id once.",
+        input: JSON.stringify({
+          researchQuestion: g.settings.question,
+          corpus: papers.slice(0, 60).map((p) => `${p.year ?? ""} ${p.title}`),
+          candidates: batch.map((c) => {
+            return {
+              id: c.id,
+              title: c.title,
+              year: c.year,
+              venue: c.venue,
+              authors: c.authors,
+              abstract: (abstracts.get(c.id) ?? "").slice(0, 700),
+              signals: { citedByCorpus: c.cocited.length, mentionedAs: c.mentions.map((m) => m.text).slice(0, 5), citesCorpus: c.cites.length },
+            };
+          }),
+        }),
+        parse: (value) =>
+          z
+            .object({ candidates: z.array(z.object({ id: z.string(), role: z.string(), relevance: z.number().min(0).max(1), reason: z.string() })) })
+            .parse(value)
+            .candidates.filter((c) => ids.has(c.id)),
+      });
+      const byId = new Map(result.map((r) => [r.id, r]));
+      for (const c of batch) {
+        const r = byId.get(c.id);
+        if (!r) continue;
+        c.relevance = r.role === "unrelated" ? 0 : r.relevance;
+        c.role = ROLE[r.role] ?? r.role;
+        c.reason = r.reason;
+      }
+    }
+  }
+
+  /** Adds a candidate to the collection (and the archive), found in the archive, the shelf or OpenAlex. */
+  async adopt(g: Genealogy, candidate: GapCandidate, signal: AbortSignal, reason: string): Promise<GenealogyPaper> {
+    const db = this.deps.db;
+    let workId = candidate.workId ?? (candidate.openalex ? db.findIdentifier("openalex", candidate.openalex) : undefined);
+    if (!workId && candidate.openalex) {
+      const page = await this.openAlex({ filter: `openalex:${candidate.openalex}`, per_page: "1" }, signal);
+      const work = page?.works[0];
+      if (!work) throw new AppError("NOT_FOUND", "OpenAlex에서 후보 문헌을 찾지 못했습니다.");
+      workId = db.upsert(work).work.id;
+    }
+    if (!workId) throw new AppError("NOT_FOUND", "후보 문헌을 찾지 못했습니다.");
+    const member = db.db.prepare("SELECT state FROM project_works WHERE project_id=? AND work_id=?").get(g.projectId, workId) as { state: string } | undefined;
+    const before = member ? (JSON.parse(member.state) as { screening: GenealogyPaper["adoptedFrom"] }).screening : null;
+    const inShelf = !!db.db.prepare("SELECT 1 FROM shelf_files WHERE work_id=? LIMIT 1").get(workId);
+    const origin: PaperOrigin = before === "included" ? "archive" : inShelf ? "shelf" : "openalex";
+    db.transaction(() => {
+      db.mutate(g.projectId, [workId!], { screening: "included" });
+      db.db.prepare("INSERT OR IGNORE INTO collection_works VALUES(?,?)").run(g.collectionId, workId);
+      const paper = this.store.paperFrom(db.get(workId!), this.store.paper(g.id, workId!), origin, { origin, round: g.rounds, reason, adoptedFrom: before, included: true });
+      this.store.savePaper(g.id, paper);
+      this.store.saveCandidate(g.id, { ...candidate, workId: workId!, decision: "added", foundIn: origin });
+    });
+    this.deps.emit({ type: "changed" });
+    return this.store.paper(g.id, workId)!;
+  }
+
+  async decide(id: string, candidateId: string, action: "accept" | "reject" | "reset") {
+    if (this.active.has(id)) throw new AppError("BUSY", "계보 작업이 끝난 뒤 후보를 정리하세요.");
+    const g = this.store.get(id);
+    const candidate = this.store.candidates(id).find((c) => c.id === candidateId);
+    if (!candidate) throw new AppError("NOT_FOUND", "후보를 찾을 수 없습니다.");
+    if (action === "accept") {
+      await this.adopt(g, candidate, AbortSignal.timeout(60000), candidate.reason || "사용자가 채택");
+      this.invalidate(g, "prepare");
+    } else this.store.saveCandidate(id, { ...candidate, decision: action === "reject" ? "rejected" : "pending" });
+    this.changed(id);
+  }
+
+  /** Takes a paper the report added back out of the collection, and out of the archive if it was not there before. */
+  removeAdded(id: string, workId: string) {
+    if (this.active.has(id)) throw new AppError("BUSY", "계보 작업이 끝난 뒤 되돌리세요.");
+    const g = this.store.get(id);
+    const paper = this.store.paper(id, workId);
+    if (!paper || paper.origin === "collection") throw new AppError("INVALID", "계보 리포트가 추가한 문헌만 되돌릴 수 있습니다.");
+    const db = this.deps.db;
+    db.transaction(() => {
+      db.db.prepare("DELETE FROM collection_works WHERE collection_id=? AND work_id=?").run(g.collectionId, workId);
+      if (paper.adoptedFrom !== "included") db.mutate(g.projectId, [workId], paper.adoptedFrom ? { screening: paper.adoptedFrom } : { screening: "pending", pendingDismissed: true });
+      this.store.savePaper(id, { ...paper, included: false });
+      for (const c of this.store.candidates(id)) if (c.workId === workId) this.store.saveCandidate(id, { ...c, decision: "rejected" });
+    });
+    this.invalidate(g, "outline");
+    this.deps.emit({ type: "changed" });
+    this.changed(id);
+  }
+
+  // --- outline: branch ledger and detailed table of contents ---
+
+  private hash(text: string) {
+    return createHash("sha256").update(text).digest("hex");
+  }
+
+  /** Writes a workspace file and remembers its hash, so a later edit by the user is noticed. */
+  async writeOwned(g: Genealogy, name: string, text: string) {
+    await mkdir(g.workspace, { recursive: true });
+    await writeFile(join(g.workspace, name), text);
+    const hashes = this.store.state<Record<string, string>>(g.id, "hashes") ?? {};
+    hashes[name] = this.hash(text);
+    this.store.state(g.id, "hashes", hashes);
+  }
+
+  /** True when the user changed a file the app wrote. */
+  async edited(g: Genealogy, name: string) {
+    const hashes = this.store.state<Record<string, string>>(g.id, "hashes") ?? {};
+    const text = await readFile(join(g.workspace, name), "utf8").catch(() => null);
+    return text !== null && !!hashes[name] && hashes[name] !== this.hash(text) ? text : null;
+  }
+
+  private async outline(g: Genealogy, signal: AbortSignal, meter: Meter): Promise<string> {
+    const papers = this.store.papers(g.id, true);
+    if (!papers.length) throw new AppError("EMPTY", "계보 문헌이 없습니다.");
+    const works = new Map(papers.map((p) => [p.workId, this.deps.db.get(p.workId)]));
+    const cards = this.store.cards(g.id);
+    const recent = this.store.state<{ recentCiters: Record<string, number> }>(g.id, "pack")?.recentCiters ?? {};
+    const pack = evidencePack(papers, works, recent);
+    const digests = papers.map((p) => digest(p, cards.get(p.workId), works.get(p.workId)!));
+    const keys = new Set(papers.map((p) => p.key));
+    this.progress(g, { message: "가지 장부 만드는 중", done: 0, total: 2 });
+    const branches: Branch[] = await this.deps.ai.json({
+      route: g.settings.routes.write,
+      runId: g.id,
+      meter,
+      signal,
+      schema: LEDGER_SCHEMA,
+      instruction: ledgerInstruction(g.settings),
+      input: JSON.stringify({ researchQuestion: g.settings.question, digests, citations: pack.citations, clusters: pack.clusters, recentCitersPerPaper: pack.recentCiters }),
+      parse: (value) => parseLedger(value, keys),
+    });
+    this.store.state(g.id, "branches", branches);
+    this.progress(g, { message: "상세 목차 만드는 중", done: 1, total: 2, calls: meter.calls });
+    let attempt = 0;
+    const result = await this.deps.ai.json({
+      route: g.settings.routes.write,
+      runId: g.id,
+      meter,
+      signal,
+      schema: OUTLINE_SCHEMA,
+      instruction: outlineInstruction(g.settings),
+      input: JSON.stringify({ researchQuestion: g.settings.question, branches, digests, timeline: pack.timeline }),
+      // The second answer may leave a few papers out; they are reported instead of refused.
+      parse: (value) => parseOutline(value, keys, attempt++ === 0),
+    });
+    await this.saveOutline(g, result.outline, branches);
+    g.outlineApproved = false;
+    this.store.save(g);
+    const sections = result.outline.chapters.reduce((n, c) => n + c.sections.length, 0);
+    return `${result.outline.chapters.length}장 ${sections}절 · 가지 ${branches.length}개${result.unassigned.length ? ` · 어느 절에도 없는 문헌 ${result.unassigned.length}편` : ""}`;
+  }
+
+  async saveOutline(g: Genealogy, outline: Outline, branches = this.store.state<Branch[]>(g.id, "branches") ?? []) {
+    this.store.state(g.id, "outline", outline);
+    await this.writeOwned(g, "00_contents.md", outlineMarkdown(outline));
+    const titles = new Map(this.store.papers(g.id, true).map((p) => [p.key, p.title]));
+    await this.writeOwned(g, "부록A_가지_장부.md", ledgerMarkdown(branches, titles));
+  }
+
+  /** The user's edit of 00_contents.md, from the app or from the file. */
+  async editOutline(id: string, markdown?: string) {
+    if (this.active.has(id)) throw new AppError("BUSY", "계보 작업이 끝난 뒤 목차를 고치세요.");
+    const g = this.store.get(id);
+    const text = markdown ?? (await this.edited(g, "00_contents.md"));
+    if (text === null) return this.store.state<Outline>(id, "outline");
+    const outline = parseOutlineMarkdown(text, this.store.state<Outline>(id, "outline"));
+    await this.saveOutline(g, outline);
+    this.changed(id);
+    return outline;
+  }
+
+  approve(id: string) {
+    const g = this.store.get(id);
+    if (!this.store.state(id, "outline")) throw new AppError("NOT_READY", "목차를 먼저 만드세요.");
+    g.outlineApproved = true;
+    this.store.save(g);
+    this.changed(id);
   }
 }
 

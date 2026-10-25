@@ -3904,7 +3904,9 @@ html[data-theme="dark"] .selection-bar .primary {
 .genealogy-table tbody tr:not(.genealogy-detail) { cursor: pointer; }
 .genealogy-table tbody tr:not(.genealogy-detail):hover { background: var(--soft); }
 .genealogy-table tr.open { background: var(--accent-soft); }
-.genealogy-table td:first-child { width: 52px; color: var(--muted); }
+.genealogy-table.papers td:first-child { width: 52px; color: var(--muted); }
+.genealogy-table.ledger td:first-child { width: 42%; }
+.genealogy-table.ledger td:nth-child(2) { width: 90px; }
 .genealogy-table select { padding: 3px 24px 3px 6px; appearance: none; background: var(--panel) var(--select-chevron) no-repeat right 6px center / 12px; }
 .genealogy-paper-title { font-weight: 550; line-height: 1.4; }
 .genealogy-detail td { background: var(--soft); }
@@ -3920,3 +3922,23 @@ html[data-theme="dark"] .selection-bar .primary {
 .genealogy-card-field p { margin: 0; line-height: 1.65; }
 .genealogy-card-field ul { margin: 0; padding-left: 18px; line-height: 1.65; }
 .genealogy-card blockquote { margin: 3px 0 6px; padding-left: 10px; border-left: 2px solid var(--border); color: var(--muted); font-size: 12px; }
+.genealogy-subhead { font-size: 13px; margin: 18px 0 6px; }
+.genealogy-list { list-style: none; margin: 0; padding: 0; }
+.genealogy-list > li { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.genealogy-list > li > div:first-child { min-width: 0; }
+.genealogy-reason { margin: 4px 0 0; line-height: 1.55; }
+.genealogy-outline h2 { font-size: 20px; margin: 18px 0 4px; }
+.genealogy-summary { line-height: 1.7; max-width: 860px; }
+.genealogy-ledger { margin: 14px 0; }
+.genealogy-ledger summary { font-weight: 600; margin-bottom: 6px; }
+.genealogy-chapters { padding-left: 0; list-style: none; }
+.genealogy-chapters > li { margin: 18px 0; }
+.genealogy-chapters h3 { font-size: 15px; margin: 0 0 4px; }
+.genealogy-chapters ol { list-style: none; padding-left: 14px; border-left: 2px solid var(--border); }
+.genealogy-chapters ol li { margin: 10px 0; }
+.genealogy-chapters ol p { margin: 3px 0; line-height: 1.6; }
+.genealogy-thesis { color: var(--muted); margin: 0 0 6px; line-height: 1.6; }
+.genealogy-editor textarea { width: 100%; min-height: 60vh; font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.6; }
+.badge.branch-alive { background: var(--accent-soft); color: var(--accent); }
+.badge.branch-blocked { background: #fbede6; color: #aa5745; }
+.badge.branch-contested { background: #fbf3e0; color: #8a6420; }

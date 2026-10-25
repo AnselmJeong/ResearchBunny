@@ -170,6 +170,8 @@ export interface GenealogyPaper {
   /** An open-access PMC article whose structured full text Europe PMC serves. */
   pmcid: string | null;
   pmcChecked: boolean;
+  /** For papers the report added: the project state before, so the addition can be undone (null: not in the project). */
+  adoptedFrom?: "pending" | "included" | "excluded" | "trash" | null;
   addedAt: string;
 }
 
@@ -312,6 +314,9 @@ export interface GenealogyView {
   outputs: GenealogyOutputs;
   /** Cards by work id. */
   cards: Record<string, GenealogyCard>;
+  /** 00_contents.md as it is on disk, and whether someone changed it since the app wrote it. */
+  contents: string | null;
+  contentsEdited: boolean;
   /** The connections the report can use, for the settings form. */
   tools: { pandoc: string | null; typst: string | null };
 }

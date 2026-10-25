@@ -94,7 +94,7 @@ test("the cards step reads each paper, merges long ones, records failures and wr
   expect(markdown).toStartWith(`# ${first.citekey} — `);
   expect(markdown).toContain("“Hubs lost 20% of their blood flow under the drug.”");
   expect(markdown).toContain("Tononi and Edelman (1998) (출발점)");
-  expect(engine.view(g.id).cards[first.id].key).toBe(first.citekey);
+  expect((await engine.view(g.id)).cards[first.id].key).toBe(first.citekey);
 });
 
 test("a spent quota stops every card worker and pauses the step", async () => {
