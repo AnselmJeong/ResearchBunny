@@ -3236,8 +3236,8 @@ html[data-theme="dark"] .selection-bar .primary {
 .page-selection-label:hover {
   color: var(--accent);
 }
-/* A narrow list wraps 모두 선택 under the page checkbox instead of running into the year column. */
-.table-heading:has(.all-selection) {
+/* A narrow list wraps 모두 선택 and 선택 반전 under the page checkbox instead of running into the year column. */
+.table-heading:has(.all-selection, .invert-selection) {
   height: auto;
   min-height: 38px;
   padding-top: 6px;
@@ -3257,6 +3257,20 @@ html[data-theme="dark"] .selection-bar .primary {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+.invert-selection,
+.invert-selection:hover {
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+.invert-selection {
+  gap: 5px;
+  color: var(--text);
+}
+.invert-selection:hover:not(:disabled) {
+  color: var(--accent);
 }
 /* Sits above a pinned group's scrolling list, so it stays put while the titles scroll. */
 .group-selection {
