@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { CodexStatus, CodexModel } from "./codex";
+import type { ClaudeStatus } from "./claude";
 import type { ChatSession, ChatThreadSummary } from "./chat";
 import type { ShelfAdoptResult, ShelfMovePreview, ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo, ShelfSortResult, ShelfSortView } from "./shelf";
 import type {
@@ -251,6 +252,11 @@ export const schemas = {
   codexLogin: z.object({}),
   codexCancelLogin: z.object({}),
   codexLogout: z.object({}),
+  claudeStatus: z.object({}),
+  claudeModels: z.object({}),
+  claudeLogin: z.object({}),
+  claudeCancelLogin: z.object({}),
+  claudeLogout: z.object({}),
   ollamaModels: z.object({}),
   chatSession: z.object(chatTarget),
   chatSend: z.object({ ...chatTarget, requestId: id, message: z.string().trim().min(1).max(8000), searchEnabled: z.boolean() }),
@@ -260,9 +266,10 @@ export const schemas = {
   chatOpenSource: z.object({ ...chatTarget, messageId: id, index: z.number().int().min(0).max(20) }),
   saveSettings: z.object({
     linkedDiscoveries: z.boolean().optional(),
-    aiProvider: z.enum(["ollama", "codex", "openai"]).optional(),
+    aiProvider: z.enum(["ollama", "codex", "openai", "claude"]).optional(),
     ollamaModel: z.string().trim().min(1).max(120).optional(),
     codexModel: z.string().trim().max(120).default(""),
+    claudeModel: z.string().trim().max(120).default(""),
     openalexKey: z.string().max(1000).optional(),
     openaiKey: z.string().max(1000).optional(),
     ollamaKey: z.string().max(1000).optional(),
@@ -398,6 +405,11 @@ export interface Outputs {
   codexLogin: void;
   codexCancelLogin: void;
   codexLogout: void;
+  claudeStatus: ClaudeStatus;
+  claudeModels: string[];
+  claudeLogin: void;
+  claudeCancelLogin: void;
+  claudeLogout: void;
   ollamaModels: string[];
   chatSession: ChatSession;
   chatThreads: ChatThreadSummary[];

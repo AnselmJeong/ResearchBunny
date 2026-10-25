@@ -245,7 +245,7 @@ const hostRpc = BrowserView.defineRPC<BunnyRPC>({
             });
           if (
             ![
-              "pdfInfo", "pdfReadChunk", "chatThreads", "chatSession", "chatSend", "chatCancel", "chatClear", "chatOpenSource", "ollamaModels",
+              "pdfInfo", "pdfReadChunk", "chatThreads", "chatSession", "chatSend", "chatCancel", "chatClear", "chatOpenSource", "ollamaModels", "claudeStatus", "claudeModels",
               "snapshot",
               "projectStats",
               "list",

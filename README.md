@@ -71,6 +71,8 @@
 
 AI 추천과 sidebar 대화는 **실험 기능**입니다. 새 설정의 기본 연결은 `Ollama Cloud`의 `gpt-oss:120b`이며 기존에 선택한 연결은 유지합니다. 설정에서 Ollama 키·모델을 지정하거나 `Codex (ChatGPT subscription)` 또는 `OpenAI API`를 선택합니다. Codex 연결은 설치된 공식 Codex CLI를 사용하며 `ChatGPT로 로그인`으로 연결합니다. ResearchBunny 전용 로그인은 `~/Library/Application Support/ResearchBunny/codex`에 저장하고 라이브러리 백업에는 넣지 않습니다. 계정 기본 모델 또는 계정에서 제공하는 모델을 선택할 수 있습니다.
 
+`Claude (Claude subscription)`은 설치된 공식 Claude Code CLI(2.1.273 이상)로 Claude 구독에 연결합니다. 설정에서 `Claude 계정으로 로그인`을 누르면 브라우저에서 로그인하고, ResearchBunny 전용 로그인은 `~/Library/Application Support/ResearchBunny/claude`에 저장해 평소 Claude Code 로그인과 섞이지 않으며 백업에도 넣지 않습니다. 도구·MCP·확장 없이 답변만 받고, 한도나 초과 사용 신호가 오면 중단하며 유료 API로 넘어가지 않습니다. 모델은 계정 기본 모델, Opus, Sonnet, Haiku 중에서 고릅니다. 구현과 검증은 [Claude 구독 연결 기록](docs/claude-subscription.md)을 참고하세요.
+
 사용자가 AI 추천을 실행하면 연구 질문과 후보의 제목·초록을 선택한 공급자에 보냅니다. Sidebar 대화에서는 현재 화면의 초록 또는 추출한 PDF 본문과 해당 thread의 대화 기록을 보냅니다. 개인 노트는 보내지 않습니다. 대화의 검색 옵션은 기본적으로 꺼져 있으며 켜면 OpenAlex·PubMed, 결과가 부족한 경우 설정된 TinyFish를 통해 추가 근거를 찾습니다. 구독 연결은 호출마다 포함 사용 허용 상태와 한도를 확인하며, 확인 실패·한도 소진 시 중단합니다. 유료 API로 자동 전환하지 않습니다. 여러 앱이 계정 한도를 공유하므로 이 사전 확인은 서버 차원의 추가 과금 차단을 보장하지 않습니다. Codex에는 실행당 3회 호출 및 입력 예산을 적용하며 API의 응답 토큰·달러 상한은 지원하지 않습니다.
 
 기존 키와 API 모델·예산은 보존되며 `OpenAI API · 별도 API 과금`을 직접 선택했을 때만 사용합니다. API 요금 입력값은 사용자가 확인하는 예상 비용 기준입니다. 구현 범위와 검증 기록은 [마이그레이션 문서](docs/codex-subscription-migration.md)를 참고하세요.

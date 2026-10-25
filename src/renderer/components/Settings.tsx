@@ -1,4 +1,5 @@
 import { CodexConnection } from "./CodexConnection";
+import { ClaudeConnection } from "./ClaudeConnection";
 import { ShelfSettings } from "./ShelfSettings";
 import { ProjectSettings } from "./ProjectSettings";
 import { useState } from "react";
@@ -55,6 +56,7 @@ export function Settings({
       model: value.model,
       aiProvider: value.aiProvider,
       codexModel: value.codexModel,
+      claudeModel: value.claudeModel,
       ollamaModel: value.ollamaModel,
       ...(extraKeys.ollama !== undefined ? { ollamaKey: extraKeys.ollama } : {}),
       ...(extraKeys.pubmed !== undefined ? { pubmedKey: extraKeys.pubmed } : {}),
@@ -190,9 +192,10 @@ export function Settings({
               전송합니다. AI 대화에서는 선택한 논문의 초록과 해당 대화가 포함됩니다.
             </p>
             <label className="field">AI 연결 방식
-              <select value={value.aiProvider} onChange={e => setValue({ ...value, aiProvider: e.target.value === "openai" ? "openai" : e.target.value === "ollama" ? "ollama" : "codex" })}>
+              <select value={value.aiProvider} onChange={e => setValue({ ...value, aiProvider: e.target.value === "openai" ? "openai" : e.target.value === "ollama" ? "ollama" : e.target.value === "claude" ? "claude" : "codex" })}>
                 <option value="ollama">Ollama Cloud · 기본</option>
                 <option value="codex">Codex (ChatGPT subscription)</option>
+                <option value="claude">Claude (Claude subscription)</option>
                 <option value="openai">OpenAI API · 별도 API 과금</option>
               </select>
             </label>
@@ -232,6 +235,16 @@ export function Settings({
                 <p className="subtle">검색·분류 한 번에서 AI에 보내는 연구 질문, 논문 제목·초록, 지시문의 누적량을 제한합니다. 실제 토큰 수와 다른 보수적 추정치입니다. 낮추면 검토할 후보 수나 초록 길이가 줄어들 수 있고, 높이면 구독 사용량과 대기 시간이 늘 수 있습니다.</p>
               </details>
               <p className="subtle">추천·분류는 실행당 최대 3회 호출. 대화는 질문당 1회, 검색을 켜면 2회 호출. Codex 연결은 응답 토큰 상한·달러 예산을 지원하지 않으며, 구독 허용 상태를 매번 확인합니다.</p>
+            </> : value.aiProvider === "claude" ? <>
+              <ClaudeConnection model={value.claudeModel} onModel={claudeModel => setValue(current => ({ ...current, claudeModel }))} />
+              <details className="settings-advanced">
+                <summary>AI 입력량 제한 · 고급 설정</summary>
+                <label className="field">실행당 AI 입력량 상한 · 보수적 추정
+                  <input type="number" min="1000" max="100000" value={value.aiMaxInputTokens} onChange={e => setValue({ ...value, aiMaxInputTokens: Number(e.target.value) })} />
+                </label>
+                <p className="subtle">검색·분류 한 번에서 AI에 보내는 연구 질문, 논문 제목·초록, 지시문의 누적량을 제한합니다. 실제 토큰 수와 다른 보수적 추정치입니다.</p>
+              </details>
+              <p className="subtle">추천·분류는 실행당 최대 3회 호출. 대화는 질문당 1회, 검색을 켜면 2회 호출. Claude 연결은 응답 토큰 상한·달러 예산을 지원하지 않습니다.</p>
             </> : <details className="settings-advanced">
               <summary>모델과 사용 한도 · API 키</summary>
               <label className="field">

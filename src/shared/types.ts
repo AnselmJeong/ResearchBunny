@@ -350,9 +350,11 @@ export interface Settings {
   tinyfishConfigured: boolean;
   secureStorage: boolean | null;
   credentialMigrationRequired?: boolean;
-  aiProvider: "ollama" | "codex" | "openai";
+  aiProvider: "ollama" | "codex" | "openai" | "claude";
   ollamaModel: string;
   codexModel: string;
+  /** A Claude Code model alias or name; empty uses the account default. */
+  claudeModel: string;
   model: string;
   aiEnabled: boolean;
   aiMaxInputTokens: number;

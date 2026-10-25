@@ -5,6 +5,7 @@ import { OllamaCloud } from "./providers/ollama";
 import { searchPubMedIds } from "./search/pubmed-search";
 import { searchWebWithTinyFish } from "./search/web-search";
 import { CodexClient } from "./codex/client";
+import { ClaudeClient } from "./claude/client";
 import { version } from "../../package.json";
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile, rename, stat } from "node:fs/promises";
@@ -46,6 +47,7 @@ export class Service {
   oa: OpenAlex;
   ai: AIProvider;
   codex: CodexClient;
+  claude: ClaudeClient;
   ollama: OllamaCloud;
   chat: ArticleChat;
   reader: PdfReader;
@@ -73,8 +75,10 @@ export class Service {
     workerPath: string,
     private emit: (event: AppEvent) => void,
     codex = new CodexClient(),
+    claude = new ClaudeClient(),
   ) {
     this.codex = codex;
+    this.claude = claude;
     this.db = new Library(root);
     this.oa = new OpenAlex(this.db, () => this.secrets.openalex);
     this.ollama = new OllamaCloud(() => this.secrets.ollama);
@@ -82,7 +86,7 @@ export class Service {
     this.shelf = new Shelf(this.db, this.oa, workerPath, emit, () => this.secrets);
     this.shelfQueries = new ShelfQueries(this.db, this.shelf);
     this.db.shelfHints = (works) => this.shelfQueries.hints(works);
-    this.chat = new ArticleChat(this.db, () => this.settings(), () => this.secrets, new ChatProvider(this.ollama, this.codex, () => this.secrets.openai), emit, (query, keys, signal) => this.evidence(query, keys, signal), (projectId, workId, attachmentId, signal) => this.reader.context({ projectId, workId, attachmentId }, signal));
+    this.chat = new ArticleChat(this.db, () => this.settings(), () => this.secrets, new ChatProvider(this.ollama, this.codex, () => this.secrets.openai, fetch, this.claude), emit, (query, keys, signal) => this.evidence(query, keys, signal), (projectId, workId, attachmentId, signal) => this.reader.context({ projectId, workId, attachmentId }, signal));
     this.ai = new AIProvider(
       this.db,
       () => this.secrets.openai,
@@ -90,6 +94,7 @@ export class Service {
       fetch,
       this.codex,
       this.ollama,
+      this.claude,
     );
     this.discovery = new Discovery(this.db, this.oa, emit, this.ai, new LinkedDiscoveries(this.db), {
       enabled: () => !!this.shelf.root(),
@@ -514,11 +519,28 @@ export class Service {
           throw new AppError("CODEX_CONNECTION", error instanceof Error ? error.message : "Codex 연결에 실패했습니다.");
         }
       }
+      case "claudeStatus": return this.claude.status();
+      case "claudeModels":
+      case "claudeLogin":
+      case "claudeCancelLogin":
+      case "claudeLogout": {
+        try {
+          if (command === "claudeModels") return await this.claude.models();
+          if (command === "claudeLogin") return await this.claude.login();
+          if (command === "claudeCancelLogin") return await this.claude.cancelLogin();
+          if (this.busy()) throw new AppError("BUSY", "AI 작업을 취소한 뒤 로그아웃하세요.");
+          return await this.claude.logout();
+        } catch (error) {
+          if (error instanceof AppError) throw error;
+          throw new AppError("CLAUDE_CONNECTION", error instanceof Error ? error.message : "Claude 연결에 실패했습니다.");
+        }
+      }
       case "saveSettings": {
         const {
           model,
           aiProvider,
           codexModel,
+          claudeModel,
           ollamaModel,
           aiEnabled,
           aiMaxInputTokens,
@@ -531,6 +553,7 @@ export class Service {
           model,
           aiProvider: aiProvider ?? this.settings().aiProvider,
           codexModel,
+          claudeModel: claudeModel ?? "",
           ollamaModel: ollamaModel ?? this.settings().ollamaModel,
           aiEnabled,
           aiMaxInputTokens,
@@ -713,6 +736,7 @@ export class Service {
         this.sorter.cancel();
         this.chat.close();
         this.codex.close();
+        this.claude.close();
         for (const control of [
           ...this.discovery.active.values(),
           ...this.pdf.active.values(),
