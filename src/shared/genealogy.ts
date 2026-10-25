@@ -310,6 +310,8 @@ export interface GenealogyView {
   outline: Outline | null;
   checks: CheckItem[];
   outputs: GenealogyOutputs;
+  /** Cards by work id. */
+  cards: Record<string, GenealogyCard>;
   /** The connections the report can use, for the settings form. */
   tools: { pandoc: string | null; typst: string | null };
 }

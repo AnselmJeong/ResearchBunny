@@ -17,7 +17,7 @@ async function fixture() {
   return f;
 }
 
-const JATS = `<?xml version="1.0"?><!DOCTYPE article PUBLIC "-//NLM//DTD JATS" "x.dtd"><article><front><article-meta><abstract><p>Short abstract &amp; aims.</p></abstract></article-meta></front>
+const JATS = `<?xml version="1.0"?><!DOCTYPE article PUBLIC "-//NLM//DTD JATS" "x.dtd"><article><front><article-meta><abstract><title>Abstract</title><p>Short abstract &amp; aims.</p></abstract></article-meta></front>
 <body><sec sec-type="intro"><title>Introduction</title><p>Origins of the entropic brain idea${" with context".repeat(120)}.</p></sec>
 <sec><title>Methods</title><p>Scanner details.</p><table-wrap><table><tr><td>TABLE_SECRET</td></tr></table></table-wrap></sec>
 <sec><title>Discussion</title><p>The hypothesis was refuted by later work${" in detail".repeat(120)}.</p></sec></body><back><ref-list><ref>REF_SECRET</ref></ref-list></back></article>`;

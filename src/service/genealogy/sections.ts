@@ -112,7 +112,8 @@ export function jatsText(xml: string): PaperText | null {
   const front = find(article, "front");
   const abstract = front ? elements(find(front, "article-meta") ?? front, "abstract").map(textOf).join("\n") : "";
   const result = blank("jats");
-  result.abstract = clean(abstract);
+  // The abstract's own "Abstract" title is not part of it.
+  result.abstract = clean(abstract).replace(/^abstract\s*\n/i, "");
   if (!body) {
     result.body = result.abstract;
     result.notes.push("PMC 전문에 본문이 없습니다.");

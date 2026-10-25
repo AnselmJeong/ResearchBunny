@@ -3914,3 +3914,9 @@ html[data-theme="dark"] .selection-bar .primary {
 .genealogy-route small { color: var(--muted); }
 .form-grid.three { grid-template-columns: 1fr 1fr 1fr; }
 .genealogy-path { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+.genealogy-card { margin-top: 10px; padding: 12px 14px; border-radius: 8px; background: var(--panel); border: 1px solid var(--border); }
+.genealogy-card-field { margin: 0 0 10px; }
+.genealogy-card-field strong { display: block; font-size: 12px; color: var(--muted); font-weight: 600; margin-bottom: 3px; }
+.genealogy-card-field p { margin: 0; line-height: 1.65; }
+.genealogy-card-field ul { margin: 0; padding-left: 18px; line-height: 1.65; }
+.genealogy-card blockquote { margin: 3px 0 6px; padding-left: 10px; border-left: 2px solid var(--border); color: var(--muted); font-size: 12px; }

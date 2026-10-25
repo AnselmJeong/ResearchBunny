@@ -1,12 +1,15 @@
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { z } from "zod";
 import { AppError, now, type AppEvent, type Work } from "../../shared/types";
 import {
   STEPS,
   STEP_NAMES,
   type Genealogy,
+  type GenealogyCard,
   type GenealogyJob,
+  type GenealogyPaper,
   type GenealogySettings,
   type GenealogyStep,
   type GenealogyView,
@@ -22,6 +25,7 @@ import { GenealogyAI, Meter } from "./llm";
 import { EMPTY_OUTPUTS, GenealogyStore } from "./store";
 import { jatsText, pdfText, readingText, type PaperText } from "./sections";
 import { europePmcIds, europePmcXml, pmcidOf, typeFromMetadata } from "./sources";
+import { CARD_SCHEMA, MERGE_INSTRUCTION, cardInput, cardInstruction, cardMarkdown, parseCard, splitText } from "./cards";
 
 export interface EngineDeps {
   db: Library;
@@ -74,6 +78,7 @@ export class GenealogyEngine {
       outline: this.store.state(id, "outline") ?? null,
       checks: this.store.state(id, "checks") ?? [],
       outputs: this.store.state(id, "outputs") ?? EMPTY_OUTPUTS,
+      cards: Object.fromEntries(this.store.cards(id)),
       tools: this.deps.tools?.() ?? { pandoc: null, typst: null },
     };
   }
@@ -157,9 +162,9 @@ export class GenealogyEngine {
       while (true) {
         signal.throwIfAborted();
         this.progress(g, { step, status: "running", message: `${STEP_NAMES[step]} 시작`, done: 0, total: 0 });
-        await this.run(g, step, signal, meter);
+        const summary = await this.run(g, step, signal, meter);
         g.completed[step] = now();
-        this.progress(g, { calls: meter.calls, message: `${STEP_NAMES[step]} 완료` });
+        this.progress(g, { calls: meter.calls, message: `${STEP_NAMES[step]} 완료${summary ? ` · ${summary}` : ""}` });
         const next = STEPS[STEPS.indexOf(step) + 1];
         if (!auto || !next || !this.implemented(next)) break;
         if (step === "outline" && g.settings.pauseAtOutline && !g.outlineApproved) {
@@ -185,11 +190,13 @@ export class GenealogyEngine {
 
   /** Steps the engine can run; later milestones add theirs. */
   protected implemented(step: GenealogyStep) {
-    return step === "prepare";
+    return step === "prepare" || step === "cards";
   }
 
-  protected async run(g: Genealogy, step: GenealogyStep, signal: AbortSignal, meter: Meter) {
+  /** Runs one step; a returned line is shown with its completion. */
+  protected async run(g: Genealogy, step: GenealogyStep, signal: AbortSignal, meter: Meter): Promise<string | void> {
     if (step === "prepare") return this.prepare(g, signal, meter);
+    if (step === "cards") return this.cards(g, signal, meter);
     throw new AppError("NOT_READY", `${STEP_NAMES[step]} 단계는 아직 사용할 수 없습니다.`);
   }
 
@@ -457,6 +464,93 @@ export class GenealogyEngine {
       done++;
     }
     this.progress(g, { done, total: papers.length });
+  }
+
+  // --- cards ---
+
+  /** Cards for every paper without a current one, a few at a time; a spent quota stops them all. */
+  private async cards(g: Genealogy, signal: AbortSignal, meter: Meter): Promise<string | void> {
+    const papers = this.store.papers(g.id, true).filter((p) => p.cardStatus !== "done");
+    const total = papers.length;
+    let done = 0;
+    const queue = [...papers];
+    const stop = new AbortController();
+    const linked = AbortSignal.any([signal, stop.signal]);
+    let halt: unknown = null;
+    this.progress(g, { message: total ? `문헌 카드 · 0/${total}편` : "만들 카드가 없습니다.", done: 0, total });
+    const worker = async () => {
+      while (queue.length && !halt) {
+        const paper = queue.shift()!;
+        try {
+          await this.card(g, paper, linked, meter);
+        } catch (error) {
+          if (signal.aborted) throw error;
+          if (halt) return;
+          if (error instanceof AppError && error.code === "BUDGET") {
+            halt = error;
+            stop.abort();
+            return;
+          }
+          this.store.savePaper(g.id, { ...paper, cardStatus: "failed", cardError: error instanceof Error ? error.message : "카드를 만들지 못했습니다." });
+        }
+        done++;
+        this.progress(g, { done, total, calls: meter.calls, message: `문헌 카드 · ${done}/${total}편 · ${paper.key}` });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(g.settings.concurrency, total)) }, worker));
+    signal.throwIfAborted();
+    if (halt) throw halt;
+    await this.writeCards(g);
+    const failed = this.store.papers(g.id, true).filter((p) => p.cardStatus === "failed").length;
+    if (failed) return `카드 ${failed}편을 만들지 못했습니다. 문헌 탭에서 이유를 확인하고 다시 실행하세요.`;
+  }
+
+  /** Longest reading text one card call reads; longer reviews are read in parts and merged. */
+  static PART = 150_000;
+
+  private async card(g: Genealogy, paper: GenealogyPaper, signal: AbortSignal, meter: Meter) {
+    const work = this.deps.db.get(paper.workId);
+    const type = paper.type ?? "O";
+    const reading = await this.readingFor(work, paper.pmcid, type, signal);
+    if (reading.basis === "none") throw new AppError("NO_TEXT", "읽을 본문과 초록이 없습니다. PDF를 연결하거나 초록을 채운 뒤 다시 실행하세요.");
+    const current = { ...paper, type, basis: reading.basis, textNote: reading.note, textSize: reading.text.length };
+    const parts = splitText(reading.text, GenealogyEngine.PART);
+    const read = (text: string, strict: boolean, instruction = cardInstruction(type, g.settings), input = cardInput(current, work, g.settings, text)) =>
+      this.deps.ai.json({
+        route: g.settings.routes.cards,
+        runId: g.id,
+        meter,
+        signal,
+        schema: CARD_SCHEMA,
+        instruction,
+        input,
+        parse: (value) => parseCard(value, text, paper.key, type, strict),
+      });
+    let card: GenealogyCard;
+    if (parts.length === 1) card = await read(reading.text, true);
+    else {
+      const partial: GenealogyCard[] = [];
+      for (const [i, part] of parts.entries()) partial.push(await read(part, true, `${cardInstruction(type, g.settings)}\n\nThis is part ${i + 1} of ${parts.length} of the paper's text.`));
+      card = await read(reading.text, false, MERGE_INSTRUCTION, JSON.stringify({ paper: JSON.parse(cardInput(current, work, g.settings, "")).paper, partialCards: partial }));
+    }
+    this.store.saveCard(g.id, paper.workId, card);
+    this.store.savePaper(g.id, { ...current, cardStatus: "done", cardError: "" });
+  }
+
+  /** Writes cards/NNN_citekey.md in publication order and removes card files of papers no longer in the report. */
+  async writeCards(g: Genealogy) {
+    const dir = join(g.workspace, "cards");
+    await mkdir(dir, { recursive: true });
+    const cards = this.store.cards(g.id);
+    const papers = this.store.papers(g.id, true).filter((p) => cards.has(p.workId));
+    const names = new Set<string>();
+    for (const [i, paper] of papers.entries()) {
+      const name = `${String(i + 1).padStart(3, "0")}_${paper.key.replace(/[^\p{L}\p{N}_.-]/gu, "")}.md`;
+      names.add(name);
+      await writeFile(join(dir, name), cardMarkdown(cards.get(paper.workId)!, paper, this.deps.db.get(paper.workId)));
+    }
+    for (const file of await readdir(dir))
+      if (/^\d{3}_.+\.md$/.test(file) && !names.has(file)) await rm(join(dir, file), { force: true });
   }
 }
 

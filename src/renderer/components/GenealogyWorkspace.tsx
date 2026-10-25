@@ -6,6 +6,7 @@ import {
   STEPS,
   STEP_NAMES,
   TEXT_BASIS,
+  type GenealogyCard,
   type GenealogySettings,
   type GenealogyStep,
   type GenealogyView,
@@ -44,6 +45,56 @@ function Steps({ view, busy, onRun }: { view: GenealogyView; busy: boolean; onRu
   );
 }
 
+const ROLE_NAMES = { origin: "출발점", support: "지지", refute: "반박", method: "방법", review: "정리" } as const;
+
+function CardView({ card }: { card: GenealogyCard }) {
+  const list = (label: string, items: string[]) =>
+    items.length > 0 && (
+      <div className="genealogy-card-field">
+        <strong>{label}</strong>
+        <ul>
+          {items.map((item, i) => (
+            <li key={i}>{item}</li>
+          ))}
+        </ul>
+      </div>
+    );
+  const field = (label: string, text: string) =>
+    text && (
+      <div className="genealogy-card-field">
+        <strong>{label}</strong>
+        <p>{text}</p>
+      </div>
+    );
+  return (
+    <div className="genealogy-card">
+      {field("계보상 의의", card.significance)}
+      {field("계보 위치", card.position)}
+      {field("문제제기", card.problem)}
+      {list("가설·주장·정의", card.claims)}
+      {card.evidence.length > 0 && (
+        <div className="genealogy-card-field">
+          <strong>근거</strong>
+          <ul>
+            {card.evidence.map((e, i) => (
+              <li key={i}>
+                {e.text}
+                <blockquote>{e.quote}</blockquote>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {field("해석·방법론 비판", card.critique)}
+      {list("미해결", card.unresolved)}
+      {field("자금·이해상충·학파", card.interests)}
+      {list("앞선 연구", card.foundations.map((f) => `${f.mention} (${ROLE_NAMES[f.role]}) — ${f.claim}`))}
+      {list("가지 상태 신호", card.statusSignals)}
+      {list("⚠ 주의", card.cautions)}
+    </div>
+  );
+}
+
 function Papers({ view, onType }: { view: GenealogyView; onType: (workId: string, type: PaperType) => void }) {
   const [open, setOpen] = useState<string | null>(null);
   const papers = view.papers.filter((p) => p.included);
@@ -56,7 +107,7 @@ function Papers({ view, onType }: { view: GenealogyView; onType: (workId: string
   return (
     <>
       <p className="subtle">
-        {papers.length}편 · {Object.entries(counts).map(([k, n]) => `${TEXT_BASIS[k as keyof typeof TEXT_BASIS]} ${n}`).join(" · ")}. 유형을 바꾸면 그 논문의 카드를 다시 만듭니다.
+        {papers.length}편 · 카드 {papers.filter((p) => p.cardStatus === "done").length}편 · {Object.entries(counts).map(([k, n]) => `${TEXT_BASIS[k as keyof typeof TEXT_BASIS]} ${n}`).join(" · ")}. 유형을 바꾸면 그 논문의 카드를 다시 만듭니다.
       </p>
       <table className="genealogy-table">
         <thead>
@@ -116,6 +167,7 @@ function Papers({ view, onType }: { view: GenealogyView; onType: (workId: string
                       </p>
                     )}
                     {p.cardError && <p className="danger">{p.cardError}</p>}
+                    {view.cards[p.workId] ? <CardView card={view.cards[p.workId]} /> : <p className="subtle">카드가 아직 없습니다.</p>}
                   </td>
                 </tr>
               )}
