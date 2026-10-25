@@ -155,6 +155,7 @@ export const schemas = {
   mutateWorks: z.object({ projectId: id, ids, patch: state }),
   restoreWorks: z.object({ projectId: id, ids }),
   unarchiveWorks: z.object({ projectId: id, ids }),
+  trashWorks: z.object({ projectId: id, ids, keepCollected: z.boolean().default(false) }),
   clearPending: z.object({ projectId: id }),
   deleteTrashedWorks: trashTarget,
   previewTrashDeletion: trashTarget,
@@ -343,6 +344,7 @@ export interface Outputs {
   mutateWorks: void;
   restoreWorks: void;
   unarchiveWorks: { ids: string[] };
+  trashWorks: { ids: string[]; kept: number };
   clearPending: { ids: string[] };
   deleteTrashedWorks: TrashDeletion;
   previewTrashDeletion: { count: number; shelfFiles: string[] };

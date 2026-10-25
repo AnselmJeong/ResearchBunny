@@ -136,3 +136,26 @@ test("unarchiving returns only saved papers to the review queue, across pages, a
   assert.equal(db.counts(projectId).archive, 65);
   assert.equal(db.counts(projectId).pending, 1);
 }));
+
+test("trashing from the archive keeps papers in collections; elsewhere trash takes them", () => fixture(async service => {
+  const db = service.db, projectId = db.projects()[0].id;
+  const other = db.createProject("Other", "").id;
+  const [loose, collected, collectedElsewhere] = ["Loose", "Collected", "Other project's collection"].map(title => db.upsert(blankWork({ title })).work.id);
+  db.mutate(projectId, [loose, collected, collectedElsewhere], { screening: "included" });
+  const mine = db.createCollection(projectId, "핵심");
+  await service.call("collectionMembers", { projectId, collectionId: mine.id, ids: [collected] });
+  const theirs = db.createCollection(other, "남의 것");
+  await service.call("collectionMembers", { projectId: other, collectionId: theirs.id, ids: [collectedElsewhere] });
+
+  const result = await service.call("trashWorks", schemas.trashWorks.parse({ projectId, ids: [loose, collected, collectedElsewhere, loose], keepCollected: true }));
+  assert.deepEqual(result, { ids: [loose, collectedElsewhere], kept: 1 });
+  assert.equal(db.state(projectId, collected).screening, "included");
+  assert.equal(db.collections(projectId)[0].count, 1);
+  assert.equal(db.state(projectId, collectedElsewhere).screening, "trash");
+  assert.equal(db.undo(projectId), true);
+  assert.equal(db.counts(projectId).archive, 3);
+
+  // From a collection (or any non-archive view) the trash button means it.
+  assert.deepEqual(await service.call("trashWorks", schemas.trashWorks.parse({ projectId, ids: [collected] })), { ids: [collected], kept: 0 });
+  assert.equal(db.collections(projectId)[0].count, 0);
+}));

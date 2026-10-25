@@ -291,6 +291,8 @@ export class Service {
         return;
       case "unarchiveWorks":
         return this.db.unarchive(args.projectId, args.ids);
+      case "trashWorks":
+        return this.db.trash(args.projectId, args.ids, args.keepCollected);
       case "clearPending":
         if (this.busy())
           throw new AppError("BUSY", "진행 중인 작업이 끝난 뒤 검토 대기함을 비우세요.");
