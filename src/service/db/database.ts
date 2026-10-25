@@ -494,6 +494,27 @@ export class Library {
       return { ids: saved };
     });
   }
+  /**
+   * Moves papers to the trash. With `keepCollected`, papers in one of the
+   * project's collections stay put: emptying the archive must not empty the
+   * collections curated from it.
+   */
+  trash(projectId: string, ids: string[], keepCollected = false): { ids: string[]; kept: number } {
+    return this.transaction(() => {
+      this.project(projectId);
+      const unique = [...new Set(ids)];
+      const collected = new Set(
+        keepCollected
+          ? (this.db.prepare(
+              "SELECT DISTINCT cw.work_id AS id FROM collection_works cw JOIN collections c ON c.id=cw.collection_id WHERE c.project_id=? AND cw.work_id IN (SELECT value FROM json_each(?))",
+            ).all(projectId, JSON.stringify(unique)) as { id: string }[]).map((row) => row.id)
+          : [],
+      );
+      const trashed = unique.filter((id) => !collected.has(id));
+      if (trashed.length) this.mutate(projectId, trashed, { screening: "trash" });
+      return { ids: trashed, kept: collected.size };
+    });
+  }
   clearPending(projectId: string): { ids: string[] } {
     return this.transaction(() => {
       this.project(projectId);

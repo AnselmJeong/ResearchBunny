@@ -158,6 +158,7 @@ export const schemas = {
   mutateWorks: z.object({ projectId: id, ids, patch: state }),
   restoreWorks: z.object({ projectId: id, ids }),
   unarchiveWorks: z.object({ projectId: id, ids }),
+  trashWorks: z.object({ projectId: id, ids, keepCollected: z.boolean().default(false) }),
   clearPending: z.object({ projectId: id }),
   /** `keep` (the default) leaves shelf PDFs on disk and hides them from the app; `delete` deletes them. */
   deleteTrashedWorks: trashTarget.extend({ pdfs: z.enum(["keep", "delete"]).default("keep") }),
@@ -362,6 +363,7 @@ export interface Outputs {
   mutateWorks: void;
   restoreWorks: void;
   unarchiveWorks: { ids: string[] };
+  trashWorks: { ids: string[]; kept: number };
   clearPending: { ids: string[] };
   deleteTrashedWorks: TrashDeletion;
   previewTrashDeletion: { count: number; shelfFiles: string[] };

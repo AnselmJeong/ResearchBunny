@@ -628,14 +628,20 @@ export function App() {
   };
   const trashSelected = () => {
     if (busy || !selected.length) return;
-    patch(
-      selected,
-      { screening: "trash" },
-      `${selected.length}편을 휴지통으로 옮겼습니다. 상단 되돌리기로 복원할 수 있습니다.`,
-    );
-    deselectElsewhere(selected, false);
+    const ids = [...selected],
+      targetProject = projectId;
     setDialog(null);
-    setSelected([]);
+    void task(async () => {
+      // Emptying the archive keeps the papers its collections were curated from.
+      const { ids: trashed, kept } = await window.bunny.trashWorks({ projectId: targetProject, ids, keepCollected: archiveScope });
+      if (projectRef.current !== targetProject) return;
+      deselectElsewhere(trashed, false);
+      setSelected([]);
+      const keptNote = kept ? ` 컬렉션에 든 ${kept}편은 아카이브에 남겼습니다.` : "";
+      flash(trashed.length
+        ? `${trashed.length}편을 휴지통으로 옮겼습니다.${keptNote} 상단 되돌리기로 복원할 수 있습니다.`
+        : `선택한 문헌이 모두 컬렉션에 있어 아카이브에 남겼습니다. 컬렉션에서 휴지통으로 보내세요.`);
+    });
   };
   const restoreSelected = () => {
     if (busy || !selected.length) return;
