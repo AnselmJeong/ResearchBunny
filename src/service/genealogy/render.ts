@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { CheckItem, Genealogy, GenealogyPaper, Outline } from "../../shared/genealogy";
 import { NUMERIC_CITATION, citedKeys } from "../../shared/citations";
+import { PARTICLES } from "../../shared/domain";
 
 export interface ProcessResult {
   code: number | null;
@@ -52,7 +53,6 @@ export async function typstFont(typst: string, signal: AbortSignal): Promise<str
 
 const yaml = (value: string) => JSON.stringify(value);
 
-const PARTICLES = new Set(["van", "von", "de", "der", "den", "da", "di", "del", "della", "du", "le", "la", "dos", "das", "ter", "ten", "bin", "al"]);
 /**
  * "Robin L. Carhart-Harris" as "Carhart-Harris, Robin L.", so a citation style
  * can abbreviate given names. Names already in that form, single-word names

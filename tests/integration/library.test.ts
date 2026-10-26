@@ -169,6 +169,33 @@ test("identity deduplication, citekey stability, user overrides and project isol
       ),
     );
   }));
+test("new works key on the first author's surname while existing and imported keys stay", () =>
+  fixture((db) => {
+    const openalex = (n: number, title: string, year: number, author: string) => ({
+      ...raw(n, title),
+      publication_year: year,
+      authorships: [{ author: { display_name: author } }],
+    });
+    const entropic = openalex(20, "The entropic brain: a theory of conscious states informed by neuroimaging research with psychedelic drugs", 2014, "Robin L. Carhart-Harris");
+    assert.equal(db.upsert(fromOpenAlex(entropic)).work.citekey, "CarhartHarris2014Entropic");
+    assert.equal(db.upsert(fromOpenAlex({ ...entropic, cited_by_count: 9 })).work.citekey, "CarhartHarris2014Entropic");
+    // A work keyed by the old first-name rule keeps that key when OpenAlex refreshes it.
+    const plasticity = openalex(21, "Psychedelics promote structural and functional neural plasticity", 2018, "Calvin Ly");
+    assert.equal(db.upsert({ ...fromOpenAlex(plasticity), citekey: "Calvin2018Psychedelics" }).work.citekey, "Calvin2018Psychedelics");
+    assert.equal(db.upsert(fromOpenAlex({ ...plasticity, cited_by_count: 9 })).work.citekey, "Calvin2018Psychedelics");
+    // Imported BibTeX keeps its label, also when OpenAlex later fills in the same DOI.
+    const [entry] = parseBib("@article{nutt2010drug,title={Drug harms in the UK: a multicriteria decision analysis},author={Nutt, David J.},year={2010},doi={10.9999/22}}");
+    assert.equal(db.upsert(entry.work!).work.citekey, "nutt2010drug");
+    assert.equal(db.upsert(fromOpenAlex(openalex(22, "Drug harms in the UK: a multicriteria decision analysis", 2010, "David J. Nutt"))).work.citekey, "nutt2010drug");
+    // Particles stay with the surname in both name orders; the second key gets the uniqueness suffix.
+    const key = (author: string, title = "On the symphony") => db.upsert(blankWork({ title, authors: [author], year: 1801 })).work.citekey;
+    assert.equal(key("Ludwig van Beethoven"), "vanBeethoven1801Symphony");
+    assert.equal(key("van Beethoven, Ludwig"), "vanBeethoven1801Symphony_1");
+    assert.equal(key("Carhart-Harris, Robin", "A theory of mind"), "CarhartHarris1801Theory");
+    assert.equal(key("Martin Luther King Jr.", "Strength to love"), "King1801Strength");
+    assert.equal(key("Di Wu", "Of mice and men"), "Wu1801Mice");
+    assert.equal(db.upsert(blankWork({ title: "제목", year: null })).work.citekey, "AnonndPaper");
+  }));
 test("120 BibTeX entries round trip with macros, corporate authors, Unicode, custom fields and subset export", () =>
   fixture((db) => {
     const bib =

@@ -83,7 +83,7 @@
   - 절마다 `다시 쓰기`가 있다(그 절만 `다시 쓸 차례`로 바꾸고 집필 단계를 실행).
 - `검증` 단계: 디스크의 장 파일(사용자 수정 포함)을 기준으로 스킬의 점검 목록을 돈다. 모든 절을 썼는가, 인용 키가 모두 계보 문헌인가(= bib에 들어가는가), 번호·평문 인용이 없는가, pandoc 시험 렌더에서 해석되지 않는 인용이 없는가, 계보 문헌이 모두 본문에 나오는가, 수치가 카드에 있는가, 배타적·비교 주장(최초·유일·only·first) 문장, 집필 중 요청한 근거, 집필 검사에서 고친 것, 직접 고친 장 파일.
 - `렌더` 단계
-  - 본문에서 인용한 문헌만 `<제목>.bib`로 내보낸다(`exportBib`). 저자는 "성, 이름"으로 바꿔 넣어 양식이 이름을 줄일 수 있게 했다(OpenAlex 표기 "Robin L. Carhart-Harris" → "Carhart-Harris, Robin L."). 가져온 bib의 저자 필드는 그대로 둔다.
+  - 본문에서 인용한 문헌만 `<제목>.bib`로 내보낸다(`exportBib`). 저자는 "성, 이름"으로 바꿔 넣어 양식이 이름을 줄일 수 있게 했다(OpenAlex 표기 "Robin L. Carhart-Harris" → "Carhart-Harris, Robin L."). 가져온 bib의 저자 필드는 그대로 둔다. 키는 `works.citekey` 그대로다. 새 문헌의 키는 첫 저자의 성(van·de 같은 접두어 포함), 연도, 관사·전치사를 건너뛴 제목 첫 단어로 만든다(`CarhartHarris2014Entropic`). 이미 있는 키와 가져온 bib의 키는 다른 원고가 인용하므로 바꾸지 않는다.
   - CSL: 설정에 파일이 없으면 직접 쓴 기본 양식 `vancouver.csl`(등장 순서 번호 `[1]`, NLM/Vancouver형 참고문헌, 6명 넘으면 et al., 문서 언어와 관계없이 영문 용어)을 작업 폴더에 둔다.
   - `build/<제목>.md`: YAML(title, subtitle, date, `lang: ko`, bibliography, csl, `reference-section-title: 참고문헌`, `link-citations: true`), 리포트 요지, 장 파일들, 부록 A 가지 장부.
   - EPUB: `pandoc -f markdown-smart --citeproc --toc --split-level=1`과 본문 CSS.
