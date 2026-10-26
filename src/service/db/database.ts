@@ -26,6 +26,7 @@ import {
   filterReasons,
   similarityEdges,
   wordMatcher,
+  citekeyFor,
 } from "../../shared/domain";
 import type { ShelfSearchResult } from "../../shared/shelf";
 import { citationWarnings, graphNodeIds } from "../../shared/graph";
@@ -323,7 +324,7 @@ export class Library {
       }
       work = { ...work, ...work.edits } as Work;
       if (!work.citekey)
-        work.citekey = `${(work.authors[0] || "Anon").split(/[ ,]+/)[0].replace(/[^\p{L}\p{N}]/gu, "") || "Work"}${work.year || "nd"}${work.title.match(/[A-Za-z]{3,}/)?.[0] || "Paper"}`;
+        work.citekey = citekeyFor(work);
       const base = work.citekey.replace(/[^\p{L}\p{N}_:.-]/gu, "") || "Work";
       let key = base,
         n = 1;
