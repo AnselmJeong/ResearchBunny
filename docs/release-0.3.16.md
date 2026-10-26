@@ -29,7 +29,8 @@ Library schema stays at 3. The genealogy tables are side tables, so an older app
 
 ## Installation
 
-- Not installed. `/Applications/ResearchBunny.app` is still 0.3.13.
+- Backed up the previous app and a consistent SQLite snapshot under `~/Library/Application Support/ResearchBunny/app-backups/20261026-173053-genealogy-0.3.16` (integrity ok, schema 3, **12,232 works**, **9,075 attachments**, **9,110 shelf files**, 6 projects, matching the live library). The replaced 0.3.13 bundle is kept there as `ResearchBunny-0.3.13-installed.app`.
+- Replaced `/Applications/ResearchBunny.app` with version **0.3.16** (bundle hash `1tzzsrchpdv4p`); all **242 files** match the package and strict signature verification passed. The app was not running and was not launched; its first launch adds the genealogy side tables to the library.
 
 Artifacts, built from main at `81941b7`: `out/electrobun/stable-macos-arm64-ResearchBunny.dmg` and `out/electrobun/stable-macos-arm64-ResearchBunny.app.tar.zst`, also copied to the main checkout's `out/electrobun`. Local validation logs are under `.qa/release-0.3.16/`.
 
