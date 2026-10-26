@@ -11,25 +11,26 @@
   - The outline and chapter files can be edited in the app or elsewhere; edited chapters are not overwritten (a new version goes beside them as `.rb-new.md`).
   - Design: [계획](genealogy-report-plan.md). Implementation and validation by milestone: [구현 기록](genealogy-report.md).
 
+- **Citekeys start with the first author's surname.** OpenAlex writes authors as "Robin L. Carhart-Harris", so new papers used to get keys from the given name and the title's leading article (`Robin2014The`). New papers now get the surname, the year and the first title word after articles and prepositions: `CarhartHarris2014Entropic`. The surname is the part before a comma, otherwise the last word with any particles before it (`vanBeethoven`). Keys that already exist and labels from imported BibTeX do not change, since manuscripts and exported .bib files cite them. Genealogy reports show these keys in their Markdown.
+
 Library schema stays at 3. The genealogy tables are side tables, so an older app still opens the library and ignores them.
 
 ## Validation
 
-- Typecheck and lint passed. Integration suite on macOS: **280 passed, 0 failed** across 32 files, including 23 Claude connection tests with a stand-in CLI and 34 genealogy tests (AI layer, preparation, cards, gaps and outline, writing with a real pandoc 3.11 and typst render, automatic expansion).
+- Typecheck and lint passed. Integration suite on macOS: **281 passed, 0 failed** across 32 files, including 23 Claude connection tests with a stand-in CLI, a citekey test in `tests/integration/library.test.ts` (surname keys for new OpenAlex papers, old keys and imported BibTeX labels kept through refreshes, particles, the uniqueness suffix), and 34 genealogy tests (AI layer, preparation, cards, gaps and outline, writing with a real pandoc 3.11 and typst render, automatic expansion).
 - Claude Code 2.1.296 on this Mac: version check and the signed-out state with an empty sign-in folder, and the generation flags are accepted (`tools: []`, `mcp_servers: []`). No answer from a signed-in account was checked.
 - Browser harness (scratch library, the real React UI and service, real OpenAlex, Europe PMC, PubMed, pandoc and typst; a stand-in model answered every AI call): six psychedelics papers went through every step to a 4-page PDF with a table of contents, numbered citations and Vancouver references; an automatic round adopted three OpenAlex papers within the 50% budget and rewrote only the section one of them was placed in.
-- Packaged app: strict signature verification passed for the DMG's app and for the bundle inside it (both 0.3.16), and the packaged smoke test passed on the extracted bundle (PDF reader chunks, threads, extraction, folder matching, archive, BibTeX and PDF folder export, backup, restore and permanent deletion with a restricted PATH). The packaged service and renderer contain the genealogy and Claude commands.
+- Packaged app: strict signature verification passed for the DMG's app and for the bundle inside it (both 0.3.16), and the packaged smoke test passed on the extracted bundle (PDF reader chunks, threads, extraction, folder matching, archive, BibTeX and PDF folder export, backup, restore and permanent deletion with a restricted PATH). The packaged service and renderer contain the genealogy and Claude commands and the surname citekey rule.
 - Not checked: a report written by a real model (Codex gpt-6.1 or Claude), and the installed app's own window.
 
-## Known issues
+## Known issue
 
-- Papers imported from OpenAlex get citekeys from the first author's given name (`Robin2014The`), which genealogy reports show in their Markdown. A fix for new papers is being worked on separately; existing keys will not change.
 - A "ResearchBunny quit unexpectedly" dialog was reported on quitting 0.3.7. Its cause is not known yet, and this release does not change the quit path.
 
 ## Installation
 
 - Not installed. `/Applications/ResearchBunny.app` is still 0.3.13.
 
-Artifacts: `out/electrobun/stable-macos-arm64-ResearchBunny.dmg` and `out/electrobun/stable-macos-arm64-ResearchBunny.app.tar.zst`, also copied to the main checkout's `out/electrobun`. Local validation logs are under `.qa/release-0.3.16/`.
+Artifacts, built from main at `81941b7`: `out/electrobun/stable-macos-arm64-ResearchBunny.dmg` and `out/electrobun/stable-macos-arm64-ResearchBunny.app.tar.zst`, also copied to the main checkout's `out/electrobun`. Local validation logs are under `.qa/release-0.3.16/`.
 
 Local ad-hoc signing on macOS Apple Silicon; no Developer ID signing or Apple notarization.
