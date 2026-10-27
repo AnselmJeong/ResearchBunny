@@ -115,7 +115,7 @@ export function GenealogySettingsForm({
       </label>
       <label className="check">
         <input type="checkbox" disabled={!value.fetchPdfs} checked={value.useBrowser} onChange={(e) => set("useBrowser", e.target.checked)} />
-        내려받을 때 Chrome도 사용
+        내려받을 때 앱 전용 Chrome도 사용
       </label>
       <div className="form-grid">
         <label className="field">

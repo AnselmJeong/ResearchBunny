@@ -4,6 +4,23 @@ import UniformTypeIdentifiers
 @_cdecl("researchbunny_dialog")
 public func researchbunnyDialog(_ input: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>? {
     let request = (try? JSONSerialization.jsonObject(with: Data(String(cString: input).utf8))) as? [String: Any] ?? [:]
+    if request["operation"] as? String == "activate" {
+        var activated = false
+        // Another app cannot take focus by itself on macOS 14+; only the active app can hand it over.
+        let handOver = {
+            guard NSApp.isActive, let pid = request["pid"] as? Int,
+                  let target = NSRunningApplication(processIdentifier: pid_t(pid)) else { return }
+            if #available(macOS 14.0, *) {
+                NSApp.yieldActivation(to: target)
+                activated = target.activate(from: NSRunningApplication.current, options: [])
+            } else {
+                activated = target.activate(options: [])
+            }
+        }
+        if Thread.isMainThread { handOver() } else { DispatchQueue.main.sync(execute: handOver) }
+        let result = try! JSONSerialization.data(withJSONObject: ["activated": activated])
+        return strdup(String(data: result, encoding: .utf8)!)
+    }
     var paths = [String]()
     let show = {
         let panel: NSSavePanel

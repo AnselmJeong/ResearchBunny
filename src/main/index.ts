@@ -31,8 +31,15 @@ const credentials = new Credentials(root());
 let libraryRoot = join(root(), "library");
 let window: BrowserWindow | null = null;
 const emit = (event: AppEvent) => {
+  if (event.type === "attention") attention(event.message, event.pid);
   if (window) hostRpc.send.event(event);
 };
+/** The app's Chrome needs the person: hand it focus if ResearchBunny is in front, else say so in a notification. */
+function attention(message: string, pid?: number) {
+  let activated: boolean;
+  try { activated = !!pid && dialog.activate(pid); } catch { activated = false; }
+  if (!activated) Utils.showNotification({ title: "ResearchBunny 전용 Chrome", body: message });
+}
 const service = new ServiceHost(
   join(resources, "runtime", "service.js"),
   join(resources, "runtime", "pdf-worker.cjs"),
@@ -77,6 +84,12 @@ async function command(name: Command, input: any): Promise<any> {
       if (result.canceled) return null;
       await rpc("rememberDownloadDirectory", {directory:result.filePaths[0]});
       return result.filePaths[0];
+    }
+    case "openChromeLogin": {
+      const { pid } = await rpc<{ pid?: number }>("openChromeLogin", {});
+      // The click came from this app, so it can hand focus to the login window.
+      if (pid) attention("앱 전용 Chrome에서 기관·출판사에 로그인하세요.", pid);
+      return;
     }
     case "chooseGenealogyFolder": {
       const result = await dialog.showOpenDialog(window!, {
@@ -275,6 +288,7 @@ const hostRpc = BrowserView.defineRPC<BunnyRPC>({
               "pdfExportPreview",
               "pdfDownloadPreview",
               "missingPdfs",
+              "openChromeLogin",
               "shelfStatus",
               "shelfMovePreview",
               "shelfRelated",
@@ -335,6 +349,7 @@ async function main() {
     }
   }
   await credentials.load();
+  await credentials.ensureBrowserKey().catch(() => {});
   await startService();
   ApplicationMenu.setApplicationMenu([
     {

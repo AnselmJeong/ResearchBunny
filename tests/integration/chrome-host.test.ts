@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ChromeHost } from "../../src/service/fulltext/chrome-host";
+import { Service } from "../../src/service/service";
 import { AppError, type AppEvent } from "../../src/shared/types";
 
 const fixture = resolve("tests/fixtures/chrome/cdp-pipe.ts");
@@ -149,4 +150,41 @@ test("an earlier app Chrome holding the profile is ended and replaced, but anoth
     assert.equal(other.exitCode, null);
     assert.doesNotThrow(() => process.kill(other.pid!, 0));
   } finally { other.kill("SIGKILL"); await rm(root, { recursive: true, force: true }); }
+});
+
+test("the login window opens normal and focused, marks the profile ready, and saves logins when it closes", async () => {
+  const key = randomBytes(32).toString("base64");
+  const { root, host, requests } = await setup(key);
+  const chrome = host();
+  try {
+    assert.equal(chrome.ready(), false);
+    const { pid } = await chrome.openLogin();
+    assert.equal(pid, chrome.pid);
+    assert.equal(chrome.ready(), true);
+    const created = (await requests()).find(r => r.method === "Target.createTarget").params;
+    assert.equal(created.newWindow, true);
+    assert.equal(created.windowState, undefined, "a window the person uses is not minimized");
+    assert(created.url.startsWith("data:text/html") && decodeURIComponent(created.url).includes("ResearchBunny 전용 Chrome"));
+    await cdpOf(chrome).send("Storage.setCookies", { cookies: [{ name: "sso", value: "secret", domain: "idp.example.edu", path: "/", secure: true, session: true }] });
+    await cdpOf(chrome).send("Target.closeTarget", { targetId: "target-1" });
+    for (let i = 0; i < 100 && !(await readFile(join(root, "chrome-session.bin")).catch(() => null)); i++) await settle();
+    assert((await readFile(join(root, "chrome-session.bin"))).length > 32, "closing the login window saves the session");
+  } finally { await chrome.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("the service reports the app Chrome's readiness and opens the login window even while a run is busy", async () => {
+  const { root, log } = await setup();
+  const service = new Service(join(root, "library"), resolve("dist/runtime/pdf-worker.cjs"), () => {});
+  service.chrome = new ChromeHost({ dataRoot: root, command: [process.execPath, fixture, "chrome", log], timeoutMs: 5000 });
+  const projectId = service.db.projects()[0].id;
+  try {
+    assert.deepEqual((await service.call("missingPdfs", { projectId, scope: "archive" })).chrome, { ready: false });
+    service.downloads.active.set("busy-run", new AbortController());
+    assert.equal(typeof (await service.call("openChromeLogin", {})).pid, "number");
+    service.downloads.active.delete("busy-run");
+    assert.deepEqual((await service.call("missingPdfs", { projectId, scope: "archive" })).chrome, { ready: true });
+    // App quit saves and ends the app's Chrome.
+    await service.call("shutdown", {});
+    assert.equal(service.chrome.pid, undefined);
+  } finally { await service.chrome.close(); service.downloads.stopRecoveryMonitor(); service.db.close(); await rm(root, { recursive: true, force: true }); }
 });

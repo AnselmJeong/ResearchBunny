@@ -227,6 +227,7 @@ export const schemas = {
   }),
   chooseBib: z.object({}),
   chooseDownloadDirectory: z.object({}),
+  openChromeLogin: z.object({}),
   choosePdfMatch: z.object({ projectId: id }),
   choosePdf: z.object({
     projectId: id,
@@ -425,6 +426,7 @@ export interface Outputs {
   importBib: ImportResult;
   chooseBib: ImportPreview | null;
   chooseDownloadDirectory: string | null;
+  openChromeLogin: void;
   choosePdfMatch: Run | null;
   choosePdf: Run | null;
   attachments: Attachment[];

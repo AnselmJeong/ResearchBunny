@@ -315,6 +315,7 @@ export function App() {
     () =>
       window.bunny.onEvent((event) => {
         if (event.type === "chat") return;
+        if (event.type === "attention") { flash(event.message); return; }
         if (event.type === "service-error")
           flash(event.message || "자료 서비스 오류", true);
         // Source probes and shelf indexing progress change status, not the list or graph.

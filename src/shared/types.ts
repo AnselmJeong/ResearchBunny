@@ -305,6 +305,8 @@ export interface MissingPdfs extends PdfDownloadPreview {
   items: MissingPdfItem[];
   /** The remembered Sci-Hub fallback settings. */
   sciHub?: { enabled: boolean; mirrors: string[] };
+  /** `ready` once the person has opened the app's Chrome to log in. */
+  chrome?: { ready: boolean };
 }
 export interface Attachment {
   id: string;

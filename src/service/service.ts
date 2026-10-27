@@ -463,7 +463,10 @@ export class Service {
       case "pdfDownloadPreview":
         return this.downloads.preview(args);
       case "missingPdfs":
-        return this.downloads.missing(args);
+        return { ...await this.downloads.missing(args), chrome: { ready: this.chrome.ready() } };
+      case "openChromeLogin":
+        // Not BUSY-gated: logging in while a run waits on a sign-in page is the point.
+        return this.chrome.openLogin();
       case "downloadPdfs":
         if (this.busy()) throw new AppError("BUSY", "진행 중인 작업을 완료하거나 취소하세요.");
         await this.shelfWritable();
