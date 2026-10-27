@@ -37,6 +37,7 @@ const service = new ServiceHost(
   join(resources, "runtime", "service.js"),
   join(resources, "runtime", "pdf-worker.cjs"),
   emit,
+  root(),
 );
 const rpc = service.call.bind(service);
 async function startService() {

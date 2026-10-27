@@ -21,6 +21,8 @@ export class ServiceHost {
     private entry: string,
     private pdfWorker: string,
     private emit: (event: AppEvent) => void,
+    /** App-state folder (Claude, Codex, the app's Chrome); QA builds pass their own. */
+    private dataRoot: string,
   ) {}
   get pid() {
     return this.child?.pid;
@@ -33,6 +35,8 @@ export class ServiceHost {
       execPath: process.execPath,
       stdio: ["ignore", "pipe", "pipe", "ipc"],
       serialization: "json",
+      // Build-time defines reach only the main bundle; the service learns the folder here.
+      env: { ...process.env, RESEARCHBUNNY_DATA_DIR: this.dataRoot },
     });
     this.child = child;
     child.stdout?.resume();
