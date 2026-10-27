@@ -455,7 +455,9 @@ export type AppEvent = {
   type: "changed" | "progress" | "service-error" | "shelf";
   runId?: string;
   message?: string;
-} | { type: "chat"; session: import("./chat").ChatSession } | { type: "genealogy"; id: string };
+} | { type: "chat"; session: import("./chat").ChatSession } | { type: "genealogy"; id: string }
+  /** The app's Chrome needs the person (robot check, login); `pid` lets main bring that Chrome forward. */
+  | { type: "attention"; message: string; pid?: number };
 export type Result<T> =
   | { ok: true; data: T }
   | { ok: false; error: { code: string; message: string; retryable: boolean } };
