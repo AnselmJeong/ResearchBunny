@@ -25,6 +25,7 @@ const TABLES = [
   "changes",
   "import_items",
   "export_records",
+  "genealogy_papers",
 ];
 export function mergeWorks(db: Library, keepId: string, removeId: string) {
   if (keepId === removeId)
@@ -73,6 +74,9 @@ export function mergeWorks(db: Library, keepId: string, removeId: string) {
         .prepare("INSERT OR IGNORE INTO collection_works VALUES(?,?)")
         .run(row.collection_id, keepId);
     db.db.prepare("DELETE FROM collection_works WHERE work_id=?").run(removeId);
+    // A genealogy keeps the paper and its card under the surviving record.
+    db.db.prepare("INSERT OR IGNORE INTO genealogy_papers(genealogy_id,work_id,data,card) SELECT genealogy_id,?,data,card FROM genealogy_papers WHERE work_id=?").run(keepId, removeId);
+    db.db.prepare("DELETE FROM genealogy_papers WHERE work_id=?").run(removeId);
     for (const a of db.attachments(removeId)) {
       const updated: Attachment = { ...a, workId: keepId };
       db.saveAttachment(updated);

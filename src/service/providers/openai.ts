@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { CodexClient } from "../codex/client";
+import type { ClaudeClient } from "../claude/client";
 import type { OllamaCloud } from "./ollama";
 import { cleanQueries, filterReasons } from "../../shared/domain";
 import type { Library } from "../db/database";
@@ -41,6 +42,7 @@ export type AIConfig = Pick<
   Settings,
   | "aiProvider"
   | "codexModel"
+  | "claudeModel"
   | "ollamaModel"
   | "model"
   | "aiEnabled"
@@ -54,6 +56,7 @@ export const DEFAULT_AI: AIConfig = {
   aiProvider: "ollama",
   ollamaModel: "gpt-oss:120b",
   codexModel: "",
+  claudeModel: "",
   model: "gpt-5.4-mini",
   aiEnabled: false,
   aiMaxInputTokens: 24000,
@@ -107,6 +110,7 @@ export class AIProvider {
     private fetcher: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch> = fetch,
     private codex?: Pick<CodexClient, "complete">,
     private ollama?: Pick<OllamaCloud, "complete">,
+    private claude?: Pick<ClaudeClient, "complete">,
   ) {}
   async structured(
     run: Run,
@@ -157,7 +161,7 @@ export class AIProvider {
       inputReserved: Number(run.ai?.inputReserved || 0) + estimatedInput,
       reservedUsd: Number(run.ai?.reservedUsd || 0) + maximumCost,
       provider: config.aiProvider,
-      model: config.aiProvider === "codex" ? config.codexModel : config.aiProvider === "ollama" ? config.ollamaModel : config.model,
+      model: config.aiProvider === "codex" ? config.codexModel : config.aiProvider === "claude" ? config.claudeModel : config.aiProvider === "ollama" ? config.ollamaModel : config.model,
       promptVersion: "researchbunny-1",
     };
     if (persistRun) this.db.saveRun(run);
@@ -181,6 +185,18 @@ export class AIProvider {
       } catch (error) {
         if (signal.aborted) throw error;
         throw new AppError("CODEX_PROVIDER", error instanceof Error ? error.message : "Codex 요청이 실패했습니다. 후보는 유지됩니다.");
+      }
+    }
+    if (config.aiProvider === "claude") {
+      if (!this.claude) throw new AppError("CLAUDE_UNAVAILABLE", "Claude 연결을 사용할 수 없습니다.");
+      try {
+        const text = await this.claude.complete({ model: config.claudeModel, instruction: instructions, input: serialized, outputSchema: schema, signal });
+        this.db.usage("claude", run.id);
+        try { return JSON.parse(text) as unknown; }
+        catch { throw new AppError("AI_FORMAT", "Claude 응답 형식이 올바르지 않습니다. 후보는 유지됩니다."); }
+      } catch (error) {
+        if (signal.aborted || error instanceof AppError) throw error;
+        throw new AppError("CLAUDE_PROVIDER", error instanceof Error ? error.message : "Claude 요청이 실패했습니다. 후보는 유지됩니다.");
       }
     }
     if (config.aiProvider !== "openai") throw new AppError("AI_PROVIDER", "AI 연결 설정을 확인하세요.");

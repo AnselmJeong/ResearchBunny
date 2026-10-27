@@ -139,17 +139,18 @@ test("downloads are stored in the inbox under the shelf name, registered without
   });
 });
 
-test("Chrome downloads move to the shelf: the original is removed once stored, for direct and recovered downloads", async () => {
+test("Chrome downloads move to the shelf, and a recovered download leaves the Downloads folder once stored", async () => {
   await fixture(async ({ service, shelf, root, projectId }) => {
     const downloads = join(root, "Downloads");
     await mkdir(downloads, { recursive: true });
     const direct = archived(service, projectId, { title: "Chrome retrieved paper on engines", authors: ["Ada Lovelace"], year: 2024 });
     service.downloads["engine"].retrieve = async () => { throw new AppError("NO_PDF", "no public PDF"); };
+    // The app's Chrome saves into the run's staging, never the person's Downloads.
     service.downloads["browser"] = {
-      async retrieve(_work, path, _signal, _progress, validate) {
-        const original = await pdf(join(downloads, "s41586-024-0001.pdf"), paper("Chrome retrieved paper on engines"));
-        await copyFile(original, path);
-        const candidate: RetrievedPdf = { sourceUrl: "https://publisher.example/s41586.pdf", doi: null, method: "chrome", requireIdentity: true, original };
+      async retrieve(_work, path, _signal, _progress, validate, { downloads: staging }) {
+        const saved = await pdf(join(staging, "guid"), paper("Chrome retrieved paper on engines"));
+        await copyFile(saved, path);
+        const candidate: RetrievedPdf = { sourceUrl: "https://publisher.example/s41586.pdf", doi: null, method: "chrome", requireIdentity: true };
         await validate(candidate);
         return candidate;
       },

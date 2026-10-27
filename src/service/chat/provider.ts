@@ -3,6 +3,7 @@ import { AppError } from "../../shared/types";
 import type { AIConfig } from "../providers/openai";
 import type { OllamaCloud, ModelMessage } from "../providers/ollama";
 import type { CodexClient } from "../codex/client";
+import type { ClaudeClient } from "../claude/client";
 import type { FetchLike } from "../search/web-search";
 
 export class ChatProvider {
@@ -11,6 +12,7 @@ export class ChatProvider {
     private codex: Pick<CodexClient, "stream">,
     private openaiKey: () => string | undefined,
     private fetcher: FetchLike = fetch,
+    private claude?: Pick<ClaudeClient, "stream">,
   ) {}
 
   async *stream(config: AIConfig, instruction: string, input: string, signal: AbortSignal): AsyncGenerator<string> {
@@ -19,6 +21,11 @@ export class ChatProvider {
     if (inputSize > config.aiMaxInputTokens) throw new AppError("BUDGET", "AI 입력량 상한을 넘었습니다. 새 대화를 시작하거나 설정에서 입력량 상한을 높여 주세요.");
     if (config.aiProvider === "codex") {
       yield* this.codex.stream({ model: config.codexModel, instruction, input, signal });
+      return;
+    }
+    if (config.aiProvider === "claude") {
+      if (!this.claude) throw new AppError("CLAUDE_UNAVAILABLE", "Claude 연결을 사용할 수 없습니다.");
+      yield* this.claude.stream({ model: config.claudeModel, instruction, input, signal });
       return;
     }
     const messages: ModelMessage[] = [{ role: "system", content: instruction }, { role: "user", content: input }];

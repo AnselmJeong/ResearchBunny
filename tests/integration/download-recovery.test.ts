@@ -1,13 +1,12 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { copyFile, mkdtemp, readFile, rm, utimes } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, utimes } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { Library } from "../../src/service/db/database";
 import { PdfDownloads } from "../../src/service/fulltext/jobs";
 import { FulltextEngine } from "../../src/service/fulltext/engine";
 import { LocalDownloads, matchesDownloadedPdf } from "../../src/service/fulltext/local-downloads";
-import { ChromeDownloads, type ChromeControl } from "../../src/service/fulltext/chrome";
 import { blankWork } from "../../src/shared/domain";
 import { AppError } from "../../src/shared/types";
 import { hashFile } from "../../src/service/interchange/pdf";
@@ -73,10 +72,36 @@ test("automatic recovery never reattaches a file to an item removed from the arc
   try{jobs.start({projectId,scope:"archive",useBrowser:true,downloadDirectory:root});await finish(jobs);db.mutate(projectId,[work.id],{screening:"trash"});await downloaded(root,"late.pdf");await jobs.recoverCompleted();assert.equal(db.attachments(work.id).length,0);assert.equal(db.state(projectId,work.id).screening,"trash");}
   finally{db.close();await rm(root,{recursive:true,force:true});}
 });
-test("a folder detection permission error is actionable and cannot silently watch a different directory", async () => {
-  let opened=false;const chrome:ChromeControl={async open(){opened=true;return {windowId:"1",tabId:"2"};},async probe(){throw Error("unused");},async navigate(){},async download(){},async close(){}};
-  const driver=new ChromeDownloads(chrome,async()=>{throw new AppError("CHROME_DIRECTORY","choose actual folder");});
-  await assert.rejects(driver.retrieve(blankWork({url:"https://papers.example.org/paper"}),"/unused",new AbortController().signal,()=>{},async()=>{}),error=>error instanceof AppError && error.code==="CHROME_DIRECTORY");
-  assert.equal(opened,false);
-  assert.equal((await readFile(fixture)).subarray(0,5).toString(),"%PDF-");
+test("a run without the browser still recovers a PDF the person saved later", async () => {
+  const root=await mkdtemp(join(tmpdir(),"rb-recovery-plain-")),db=new Library(join(root,"library"));
+  const projectId=db.projects()[0].id,work=db.upsert(blankWork({title,url:"https://papers.example.org/paper"})).work;db.mutate(projectId,[work.id],{screening:"included"});
+  const jobs=new PdfDownloads(db,worker,()=>{},new FulltextEngine(async()=>new Response("missing",{status:404}),async()=>{}));
+  try{
+    const run=jobs.start({projectId,scope:"archive",downloadDirectory:root});await finish(jobs);
+    assert.equal(db.run(run.id).download!.items[0].status,"failed");
+    await downloaded(root,"saved-by-hand.pdf");await jobs.recoverCompleted();
+    assert.equal(db.run(run.id).download!.items[0].status,"completed");assert.equal(db.attachments(work.id).length,1);
+  }finally{jobs.stopRecoveryMonitor();db.close();await rm(root,{recursive:true,force:true});}
+});
+test("a browser download that was another paper is attached to that paper at the end of the run", async () => {
+  const root=await mkdtemp(join(tmpdir(),"rb-recovery-aside-")),db=new Library(join(root,"library"));
+  const downloads=join(root,"Downloads");await mkdir(downloads);
+  const projectId=db.projects()[0].id;
+  const asked=db.upsert(blankWork({title:"The paper whose page offered the wrong PDF",url:"https://papers.example.org/a"})).work;
+  const offered=db.upsert(blankWork({title,url:"https://papers.example.org/b"})).work;
+  db.mutate(projectId,[asked.id,offered.id],{screening:"included",note:"keep"});
+  const jobs=new PdfDownloads(db,worker,()=>{},new FulltextEngine(async()=>new Response("missing",{status:404}),async()=>{}),{
+    async retrieve(work,_path,_signal,_progress,_validate,{rejected}){
+      // The driver moved a download that failed this paper's identity check into the run's set-aside folder.
+      if(work.id===asked.id){await mkdir(rejected!,{recursive:true});await copyFile(fixture,join(rejected!,"guid-1.pdf"));}
+      throw new AppError("CHROME_UNAVAILABLE","no PDF here");
+    },
+  });
+  try{
+    const run=jobs.start({projectId,scope:"archive",useBrowser:true,downloadDirectory:downloads});await finish(jobs);
+    const items=db.run(run.id).download!.items,item=(id:string)=>items.find(i=>i.workId===id)!;
+    assert.equal(item(asked.id).status,"failed");
+    assert.equal(item(offered.id).status,"completed",item(offered.id).message);
+    assert.equal(db.attachments(offered.id).length,1);assert.equal(db.state(projectId,offered.id).note,"keep");
+  }finally{jobs.stopRecoveryMonitor();db.close();await rm(root,{recursive:true,force:true});}
 });

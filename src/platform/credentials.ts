@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { native } from "./native";
 import { AppError } from "../shared/types";
@@ -10,6 +10,8 @@ const keysSchema = z.object({
   ollama: z.string().optional(),
   pubmed: z.string().optional(),
   tinyfish: z.string().optional(),
+  /** AES-256 key for the app Chrome's saved session cookies. */
+  browser: z.string().optional(),
 });
 export type Secrets = z.infer<typeof keysSchema> & {
   secureStorage?: boolean;
@@ -37,6 +39,14 @@ export class Credentials {
     } catch {
       this.secrets = { secureStorage: false };
     }
+  }
+  /** Creates the app Chrome's cookie key once; it never leaves the Keychain and the service. */
+  async ensureBrowserKey() {
+    // A pending credentials.json migration must still see an empty Keychain item.
+    if (process.env.RESEARCHBUNNY_TEST === "1" || !this.secrets.secureStorage || this.secrets.credentialMigrationRequired || this.secrets.browser) return;
+    const next = { ...keysSchema.parse(this.secrets), browser: randomBytes(32).toString("base64") };
+    await native({ operation: "write", account: this.account, value: JSON.stringify(next) });
+    this.secrets = { ...this.secrets, browser: next.browser };
   }
   async save(input: { openalexKey?: string; openaiKey?: string; ollamaKey?: string; pubmedKey?: string; tinyfishKey?: string }) {
     if ([input.openalexKey, input.openaiKey, input.ollamaKey, input.pubmedKey, input.tinyfishKey].every(key => key === undefined))

@@ -149,6 +149,27 @@ export function blankWork(input: Partial<Work> = {}): Work {
     ...input,
   };
 }
+/** Words that open a surname: "Ludwig van Beethoven" has the surname "van Beethoven". */
+export const PARTICLES = new Set(["van", "von", "de", "der", "den", "da", "di", "del", "della", "du", "le", "la", "dos", "das", "ter", "ten", "bin", "al"]);
+/** Leading title words a citekey passes over, so "The entropic brain" keys on "Entropic". */
+const KEY_SKIP = new Set("a an the of on in to for and from with toward towards".split(" "));
+/**
+ * The citekey a new work starts with: surname, year and first title word, as
+ * "CarhartHarris2014Entropic". The surname is the part before a comma
+ * ("Carhart-Harris, Robin"), otherwise the last word with the particles before
+ * it, written as they are ("Ludwig van Beethoven" → "vanBeethoven"). The first
+ * word is always a given name, so "Di Wu" keys on "Wu".
+ */
+export function citekeyFor(work: Pick<Work, "authors" | "year" | "title">): string {
+  const name = (work.authors[0] || "Anon").trim();
+  const parts = name.split(/\s+/).filter((p) => !/^(?:jr|sr|ii|iii|iv)\.?$/i.test(p));
+  let start = parts.length - 1;
+  while (start > 1 && PARTICLES.has(parts[start - 1].toLowerCase())) start--;
+  const family = name.includes(",") ? name.split(",")[0] : parts.slice(start).join("");
+  const words = work.title.match(/[A-Za-z]{3,}/g) || [];
+  const word = words.find((w) => !KEY_SKIP.has(w.toLowerCase())) || words[0];
+  return `${family.replace(/[^\p{L}\p{N}]/gu, "") || "Work"}${work.year || "nd"}${word ? word[0].toUpperCase() + word.slice(1) : "Paper"}`;
+}
 export function relatedness(
   candidates: Work[],
   anchors: Work[],

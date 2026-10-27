@@ -45,6 +45,7 @@ import {
   AlertCircle,
   LibraryBig,
   WifiOff,
+  GitBranch,
 } from "lucide-react";
 import type {
   Snapshot,
@@ -93,6 +94,8 @@ import { ImportResults } from "./components/ImportResults";
 import { DownloadDialog } from "./components/DownloadDialog";
 import { ShelfSortDialog } from "./components/ShelfSortDialog";
 import { Settings } from "./components/Settings";
+import { GenealogyWorkspace } from "./components/GenealogyWorkspace";
+import { GenealogyDialog } from "./components/GenealogyDialog";
 import {
   ImportDialog,
   WorkEditor,
@@ -140,6 +143,7 @@ type Dialog =
   | "bulk"
   | "deleteTrash"
   | "shelfSort"
+  | "genealogy"
   | null;
 function Bunny({ size = 27 }: { size?: number }) {
   return (
@@ -158,6 +162,7 @@ export function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null),
     [projectId, setProjectId] = useState(""),
     [scope, setScope] = useState<Scope>("archive"),
+    [genealogyId, setGenealogyId] = useState<string | null>(null),
     [scopeId, setScopeId] = useState("");
   const [query, setQuery] = useState(""),
     [localQuery, setLocalQuery] = useState(""),
@@ -310,10 +315,11 @@ export function App() {
     () =>
       window.bunny.onEvent((event) => {
         if (event.type === "chat") return;
+        if (event.type === "attention") { flash(event.message); return; }
         if (event.type === "service-error")
           flash(event.message || "자료 서비스 오류", true);
         // Source probes and shelf indexing progress change status, not the list or graph.
-        if (event.type === "progress" || event.type === "shelf") snapshotRefresh.current?.request();
+        if (event.type === "progress" || event.type === "shelf" || event.type === "genealogy") snapshotRefresh.current?.request();
         else refresh();
       }),
     [refresh, flash],
@@ -556,6 +562,7 @@ export function App() {
   ) => {
     readerRequest.current++;
     setReaderVisible(false);
+    setGenealogyId(null);
     setDialog((current) => (current === "settings" ? null : current));
     const key = viewKey({ scope: next, scopeId: id });
     if (key === viewKey(viewRef.current)) return;
@@ -877,7 +884,8 @@ export function App() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [selected, list, dialog, projectId, scope, snapshot, readerActive]);
-  const title =
+  const genealogy = genealogyId ? snapshot?.genealogies.find((g) => g.id === genealogyId) : undefined;
+  const title = genealogy ? genealogy.title :
     scope === "run"
       ? currentRun
         ? currentRun.import
@@ -941,6 +949,7 @@ export function App() {
         <ProjectSwitcher projects={snapshot.projects} projectId={projectId}
           onSelect={async id => {
             await persistNavigation();
+            setGenealogyId(null);
             setProjectId(id);
           }}
           onCreate={async (name, question) => {
@@ -1039,6 +1048,27 @@ export function App() {
           ) : null}
           </div>
           </details>
+          {snapshot.genealogies.length > 0 && (
+            <>
+              <div className="nav-label">계보 리포트</div>
+              {snapshot.genealogies.map((g) => (
+                <button
+                  key={g.id}
+                  className={!fullPage && genealogyId === g.id ? "active" : ""}
+                  data-help="컬렉션에서 만든 계보 리포트의 문헌, 목차, 원고를 봅니다."
+                  onClick={() => {
+                    setReaderVisible(false);
+                    setDialog((current) => (current === "settings" ? null : current));
+                    setGenealogyId(g.id);
+                  }}
+                >
+                  {g.job?.status === "running" ? <LoaderCircle size={16} className="spin" /> : <GitBranch size={16} />}
+                  <span className="ellipsis">{g.title}</span>
+                  <span className="nav-count">{g.papers}</span>
+                </button>
+              ))}
+            </>
+          )}
         </nav>
         <div className="sidebar-bottom">
           <button onClick={() => setDialog("import")}>
@@ -1182,7 +1212,18 @@ export function App() {
             }}
           />
         )}
-        {!fullPage && (
+        {!fullPage && genealogyId && (
+          <GenealogyWorkspace
+            key={genealogyId}
+            id={genealogyId}
+            onError={onError}
+            onDeleted={() => {
+              setGenealogyId(null);
+              refresh();
+            }}
+          />
+        )}
+        {!fullPage && !genealogyId && (
           <>
             <div className="seed-strip" hidden={!seeds.length}>
               <div>
@@ -1237,6 +1278,20 @@ export function App() {
                     </h1>
                   </div>
                   <div className="workspace-actions">
+                  {scope === "collection" && (
+                    <button
+                      className="secondary"
+                      data-help="이 컬렉션의 문헌으로 연구 질문의 계보 리포트를 만들거나 엽니다."
+                      onClick={() => {
+                        const existing = snapshot.genealogies.find((g) => g.collectionId === scopeId);
+                        if (existing) setGenealogyId(existing.id);
+                        else setDialog("genealogy");
+                      }}
+                    >
+                      <GitBranch size={15} />
+                      계보 리포트
+                    </button>
+                  )}
                   {(archiveScope || scope === "collection") && <button className="secondary" onClick={() => setDialog("download")} disabled={!snapshot.counts.archive}>
                     <Download size={15} /> PDF 원문 찾기
                   </button>}
@@ -2426,6 +2481,22 @@ export function App() {
           onClose={() => setDialog(null)}
           onError={onError}
           onDone={flash}
+        />
+      )}
+      {dialog === "genealogy" && scope === "collection" && snapshot.collections.some((c) => c.id === scopeId) && (
+        <GenealogyDialog
+          projectId={projectId}
+          collection={snapshot.collections.find((c) => c.id === scopeId)!}
+          settings={snapshot.settings}
+          question={currentProject?.question || snapshot.seeds?.question || ""}
+          onClose={() => setDialog(null)}
+          onError={onError}
+          onCreated={(created) => {
+            setDialog(null);
+            refresh();
+            setGenealogyId(created.id);
+            flash("계보 리포트를 만들었습니다. 시작을 누르면 자료 준비부터 진행합니다.");
+          }}
         />
       )}
       {dialog === "collection" && (

@@ -13,6 +13,7 @@ test("Bun service IPC survives process death and reopens the same committed libr
     resolve("dist/runtime/service.js"),
     resolve("dist/runtime/pdf-worker.cjs"),
     (event) => events.push(event),
+    root,
   );
   try {
     await host.start(join(root, "library"), {});

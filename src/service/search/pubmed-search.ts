@@ -208,3 +208,26 @@ export async function fetchPubMedByIds(
   if (!response.ok) throw new Error(`PubMed fetch error: HTTP ${response.status}`);
   return parsePubMedXml(await response.text()).slice(0, maxResults);
 }
+
+/** PubMed publication types ("Review", "Meta-Analysis", …) by PMID, 200 per request. */
+export async function fetchPublicationTypes(
+  ids: string[],
+  options: PubMedRequestOptions = {},
+): Promise<Map<string, string[]>> {
+  const types = new Map<string, string[]>();
+  const all = Array.from(new Set(ids.filter((id) => /^\d+$/.test(id))));
+  for (let i = 0; i < all.length; i += 200) {
+    const params = new URLSearchParams({ db: "pubmed", id: all.slice(i, i + 200).join(","), retmode: "json", tool: "ResearchBunny" });
+    addApiKey(params, options.apiKey);
+    await reserveRequest(options);
+    const response = await (options.fetchFn ?? fetch)(`${EUTILS_BASE}/esummary.fcgi?${params}`, {
+      headers: { "User-Agent": USER_AGENT },
+      signal: options.signal,
+    });
+    if (!response.ok) throw new Error(`PubMed summary error: HTTP ${response.status}`);
+    const payload = await response.json() as { result?: Record<string, { pubtype?: unknown }> };
+    for (const [uid, entry] of Object.entries(payload.result ?? {}))
+      if (uid !== "uids" && Array.isArray(entry?.pubtype)) types.set(uid, entry.pubtype.filter((t): t is string => typeof t === "string"));
+  }
+  return types;
+}

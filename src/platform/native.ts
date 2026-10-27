@@ -67,6 +67,10 @@ function nativeDialog(request: Record<string, unknown>): unknown {
 }
 const pathsResponse = z.object({ paths: z.array(z.string().min(1)) });
 export const dialog = {
+  /** Brings another app (the app's own Chrome) forward; only works while ResearchBunny is the active app. */
+  activate(pid: number) {
+    return z.object({ activated: z.boolean() }).parse(nativeDialog({ operation: "activate", pid })).activated;
+  },
   async showOpenDialog(
     _window: unknown,
     options: {

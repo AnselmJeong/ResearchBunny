@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm";
 import { chatScope, type ChatContextRef, type ChatThreadSummary, type ChatSession, type ChatMessage } from "../../shared/chat";
 import type { Settings, WorkView } from "../../shared/types";
 
-const providerNames = { ollama: "Ollama Cloud", codex: "Codex 구독", openai: "OpenAI API" };
+const providerNames = { ollama: "Ollama Cloud", codex: "Codex 구독", claude: "Claude 구독", openai: "OpenAI API" };
 
 function Reply({ message }: { message: ChatMessage }) {
   // Only backend-recorded retrieval links are actionable. Remote images and raw HTML never load.

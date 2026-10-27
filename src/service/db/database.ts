@@ -26,6 +26,7 @@ import {
   filterReasons,
   similarityEdges,
   wordMatcher,
+  citekeyFor,
 } from "../../shared/domain";
 import type { ShelfSearchResult } from "../../shared/shelf";
 import { citationWarnings, graphNodeIds } from "../../shared/graph";
@@ -102,6 +103,14 @@ export class Library {
       CREATE VIRTUAL TABLE IF NOT EXISTS shelf_fts USING fts5(work_id UNINDEXED,title,authors,abstract,venue,tokenize='unicode61 remove_diacritics 2');
       -- A side table instead of a projects column, so older apps still read and create projects.
       CREATE TABLE IF NOT EXISTS project_opens(project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,opened_at TEXT NOT NULL);
+      -- Genealogy reports are side tables too: older apps still open the library and ignore them.
+      CREATE TABLE IF NOT EXISTS genealogies(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,collection_id TEXT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS genealogy_papers(genealogy_id TEXT NOT NULL REFERENCES genealogies(id) ON DELETE CASCADE,work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,data TEXT NOT NULL,card TEXT,PRIMARY KEY(genealogy_id,work_id));
+      CREATE INDEX IF NOT EXISTS idx_genealogy_papers_work ON genealogy_papers(work_id);
+      CREATE TABLE IF NOT EXISTS genealogy_candidates(genealogy_id TEXT NOT NULL REFERENCES genealogies(id) ON DELETE CASCADE,id TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(genealogy_id,id));
+      CREATE TABLE IF NOT EXISTS genealogy_state(genealogy_id TEXT NOT NULL REFERENCES genealogies(id) ON DELETE CASCADE,key TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(genealogy_id,key));
+      -- Extracted reading text, keyed by attachment hash or PMCID, shared by every report.
+      CREATE TABLE IF NOT EXISTS genealogy_texts(key TEXT PRIMARY KEY,data TEXT NOT NULL,extracted_at TEXT NOT NULL);
       PRAGMA user_version=3;
     `);
     if (!this.projects().length) this.createProject("내 연구", "");
@@ -315,7 +324,7 @@ export class Library {
       }
       work = { ...work, ...work.edits } as Work;
       if (!work.citekey)
-        work.citekey = `${(work.authors[0] || "Anon").split(/[ ,]+/)[0].replace(/[^\p{L}\p{N}]/gu, "") || "Work"}${work.year || "nd"}${work.title.match(/[A-Za-z]{3,}/)?.[0] || "Paper"}`;
+        work.citekey = citekeyFor(work);
       const base = work.citekey.replace(/[^\p{L}\p{N}_:.-]/gu, "") || "Work";
       let key = base,
         n = 1;

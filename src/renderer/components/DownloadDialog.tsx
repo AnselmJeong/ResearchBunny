@@ -18,7 +18,9 @@ export function DownloadDialog({ projectId, selected, scope, scopeId, runs, busy
   const category = ["topic", "unclassified", "collection"].includes(scope);
   const [targetScope, setTargetScope] = useState<Input<"downloadPdfs">["scope"]>(selected.length ? "selected" : category ? scope as Input<"downloadPdfs">["scope"] : "archive");
   const [includeBooks, setIncludeBooks] = useState(false);
-  const [useBrowser, setUseBrowser] = useState(true);
+  // On by default only once the app's Chrome has been opened to log in.
+  const [useBrowser, setUseBrowser] = useState<boolean | null>(null);
+  const [chromeReady, setChromeReady] = useState<boolean | null>(null);
   const [downloadDirectory, setDownloadDirectory] = useState("");
   // Remembered by the service; null until the first status load brings them.
   const [useSciHub, setUseSciHub] = useState<boolean | null>(null);
@@ -48,6 +50,10 @@ export function DownloadDialog({ projectId, selected, scope, scopeId, runs, busy
         if (!valid) return;
         setQueue({ target: targetKey, data });
         if (data.downloadDirectory) setDownloadDirectory(current => current || data.downloadDirectory!);
+        if (data.chrome) {
+          setChromeReady(data.chrome.ready);
+          setUseBrowser(current => current ?? data.chrome!.ready);
+        }
         if (data.sciHub) {
           setUseSciHub(current => current ?? data.sciHub!.enabled);
           setMirrors(current => current ?? data.sciHub!.mirrors.join("\n"));
@@ -65,7 +71,7 @@ export function DownloadDialog({ projectId, selected, scope, scopeId, runs, busy
     try {
       // Retry the current unresolved set, rather than a historical run's inputs.
       const sciHub = useSciHub === null || mirrors === null ? {} : { useSciHub, sciHubMirrors: mirrors.split(/[\s,]+/).filter(Boolean) };
-      const result = await window.bunny.downloadPdfs({ projectId, scope: "selected", ids: remaining.items.slice(0, 1000).map(item => item.workId), includeBooks, useBrowser, downloadDirectory: downloadDirectory || undefined, ...sciHub });
+      const result = await window.bunny.downloadPdfs({ projectId, scope: "selected", ids: remaining.items.slice(0, 1000).map(item => item.workId), includeBooks, useBrowser: !!useBrowser, downloadDirectory: downloadDirectory || undefined, ...sciHub });
       setStarted(result);
       setRefresh(value => value + 1);
     } catch (error) { onError(error); } finally { setStarting(false); }
@@ -122,16 +128,17 @@ export function DownloadDialog({ projectId, selected, scope, scopeId, runs, busy
       <summary>자동 원문 찾기 설정</summary>
       <div className="download-options">
         <label className="check"><input type="checkbox" checked={includeBooks} onChange={e => setIncludeBooks(e.target.checked)} />책·챕터도 시도</label>
-        <label className="check"><input type="checkbox" checked={useBrowser} disabled={busy || pending} onChange={e => setUseBrowser(e.target.checked)} />로그인된 Chrome 사용</label>
+        <label className="check"><input type="checkbox" checked={!!useBrowser} disabled={busy || pending} onChange={e => setUseBrowser(e.target.checked)} />앱 전용 Chrome 사용</label>
         <label className="check"><input type="checkbox" checked={!!useSciHub} disabled={busy || pending || useSciHub === null} onChange={e => setUseSciHub(e.target.checked)} />다른 경로 실패 시 Sci-Hub 미러 사용</label>
       </div>
-      {useBrowser && <div className="inline-actions"><span className="subtle">Chrome 다운로드 폴더 · {downloadDirectory || "자동 감지"}</span><button disabled={busy || pending} onClick={() => void window.bunny.chooseDownloadDirectory({}).then(path => { if (path) setDownloadDirectory(path); }).catch(onError)}>폴더 선택</button></div>}
+      <div className="inline-actions"><span className="subtle">{chromeReady === false ? "전용 Chrome에 아직 로그인하지 않았습니다" : "전용 Chrome의 로그인은 평소 Chrome과 따로 저장됩니다"}</span><button disabled={pending} onClick={() => void window.bunny.openChromeLogin({}).then(() => { setChromeReady(true); setUseBrowser(true); }).catch(onError)}>전용 Chrome 열기(로그인)</button></div>
+      <div className="inline-actions"><span className="subtle">직접 받은 PDF 폴더 · {downloadDirectory || "자동 감지"}</span><button disabled={busy || pending} onClick={() => void window.bunny.chooseDownloadDirectory({}).then(path => { if (path) setDownloadDirectory(path); }).catch(onError)}>폴더 선택</button></div>
       {useSciHub && <label className="sci-hub-mirrors">Sci-Hub 미러 · 한 줄에 하나씩, 위에서부터 시도
         <textarea aria-label="Sci-Hub 미러 주소" rows={2} spellCheck={false} placeholder="https://sci-hub.kr" value={mirrors ?? ""} disabled={busy || pending} onChange={e => setMirrors(e.target.value)} />
       </label>}
       <p className="subtle">폴더와 하위 폴더에서 DOI·제목이 일치하는 본문 PDF만 기존 문헌에 연결합니다. 분류·노트·읽기 상태와 원본 파일을 유지합니다. 범위에는 화면의 검색·필터를 적용하지 않으며 숨겨진 선택도 포함합니다.</p>
-      <p className="subtle">{useBrowser ? "현재 Chrome 창의 로그인 상태로 원문을 열고 PDF를 내려받습니다. Chrome 제어 권한과 Chrome의 Apple Events JavaScript 허용이 필요합니다. 로그인·사람 인증은 Chrome에서 완료하세요. 논문별 최대 60초 후 공개 원문 보조 경로를 확인합니다." : "공개 원문과 출판사 PDF 주소를 확인합니다. 로그인·사람 인증이 필요한 자료는 원문 페이지에서 직접 내려받으세요."} 창을 닫아도 작업은 계속됩니다.</p>
-      {useSciHub && <p className="subtle">공개 원문·출판사{useBrowser ? "·Chrome" : ""} 경로가 모두 실패한 문헌만 <code>미러/https://doi.org/DOI</code> 주소에서 찾습니다. DOI가 없으면 Crossref에서 확인한 DOI를 씁니다. 미러가 로봇 확인을 요구하면 {useBrowser ? "Chrome 탭에서 직접 완료하세요. 30초 동안 기다린 뒤 다음 문헌으로 넘어갑니다." : "자동으로는 받을 수 없습니다. 로그인된 Chrome 사용을 함께 켜면 Chrome 탭에서 직접 완료할 수 있습니다."} 앱은 로봇 확인에 응답하지 않습니다.</p>}
+      <p className="subtle">{useBrowser ? "공개 원문을 먼저 확인하고, 받지 못한 문헌만 앱 전용 Chrome의 최소화된 창에서 열어 PDF를 받습니다. 평소 쓰시는 Chrome은 건드리지 않습니다. 기관·출판사 로그인은 '전용 Chrome 열기(로그인)'에서 한 번 해 두면 앱을 다시 열어도 이어집니다. 사람 인증이나 로그인이 필요할 때만 그 창을 띄웁니다. Chrome 단계는 논문별 최대 60초입니다." : "공개 원문과 출판사 PDF 주소를 확인합니다. 로그인·사람 인증이 필요한 자료는 원문 페이지에서 직접 내려받으세요."} 직접 받은 PDF는 위 폴더에서 찾아 자동으로 연결합니다. 창을 닫아도 작업은 계속됩니다.</p>
+      {useSciHub && <p className="subtle">공개 원문·출판사{useBrowser ? "·Chrome" : ""} 경로가 모두 실패한 문헌만 <code>미러/https://doi.org/DOI</code> 주소에서 찾습니다. DOI가 없으면 Crossref에서 확인한 DOI를 씁니다. 미러가 로봇 확인을 요구하면 {useBrowser ? "앱 전용 Chrome 창이 뜨면 그 창에서 직접 완료하세요. 30초 동안 기다린 뒤 다음 문헌으로 넘어갑니다." : "자동으로는 받을 수 없습니다. 앱 전용 Chrome 사용을 함께 켜면 그 창에서 직접 완료할 수 있습니다."} 앱은 로봇 확인에 응답하지 않습니다.</p>}
       {remaining && remaining.eligible > 1000 && <p className="subtle">한 번에 최대 1,000편을 시도합니다. 완료 후 남은 문헌을 다시 시도할 수 있습니다.</p>}
     </details>
   </Modal>;

@@ -5,10 +5,16 @@ import { OllamaCloud } from "./providers/ollama";
 import { searchPubMedIds } from "./search/pubmed-search";
 import { searchWebWithTinyFish } from "./search/web-search";
 import { CodexClient } from "./codex/client";
+import { ClaudeClient } from "./claude/client";
+import { GenealogyAI } from "./genealogy/llm";
+import { GenealogyEngine } from "./genealogy/engine";
+import { GenealogyStore } from "./genealogy/store";
+import { genealogyTools } from "./genealogy/tools";
+import { defaultGenealogySettings } from "../shared/genealogy";
 import { version } from "../../package.json";
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile, rename, stat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import type {
   AppEvent,
   ImportPreview,
@@ -32,6 +38,8 @@ import { deleteTrashedWorks, settledUi, trashTargets } from "./db/trash";
 import { deleteProject } from "./db/projects";
 import { ArchiveClassifier, classificationSnapshot } from "./archive-classification";
 import { PdfDownloads } from "./fulltext/jobs";
+import { ChromeDownloads } from "./fulltext/chrome";
+import { ChromeHost } from "./fulltext/chrome-host";
 import { planPdfExport, pdfExportTargets, previewPdfExport, exportPdfFolders } from "./interchange/pdf-export";
 import { schemas, type TrashDeletion } from "../shared/contracts";
 import { Shelf } from "./shelf/indexer";
@@ -46,6 +54,7 @@ export class Service {
   oa: OpenAlex;
   ai: AIProvider;
   codex: CodexClient;
+  claude: ClaudeClient;
   ollama: OllamaCloud;
   chat: ArticleChat;
   reader: PdfReader;
@@ -53,16 +62,21 @@ export class Service {
   links: Links;
   pdf: PdfImports;
   downloads: PdfDownloads;
+  /** The app's own Chrome for downloads that need a login; never the person's browser. */
+  chrome: ChromeHost;
   classifier: ArchiveClassifier;
   shelf: Shelf;
   shelfQueries: ShelfQueries;
   sorter: ShelfSorter;
+  genealogy: GenealogyEngine;
   secrets: {
     openalex?: string;
     openai?: string;
     ollama?: string;
     pubmed?: string;
     tinyfish?: string;
+    /** Base64 key for the app Chrome's saved session cookies. */
+    browser?: string;
     secureStorage?: boolean;
     credentialMigrationRequired?: boolean;
   } = {};
@@ -73,8 +87,10 @@ export class Service {
     workerPath: string,
     private emit: (event: AppEvent) => void,
     codex = new CodexClient(),
+    claude = new ClaudeClient(),
   ) {
     this.codex = codex;
+    this.claude = claude;
     this.db = new Library(root);
     this.oa = new OpenAlex(this.db, () => this.secrets.openalex);
     this.ollama = new OllamaCloud(() => this.secrets.ollama);
@@ -82,7 +98,7 @@ export class Service {
     this.shelf = new Shelf(this.db, this.oa, workerPath, emit, () => this.secrets);
     this.shelfQueries = new ShelfQueries(this.db, this.shelf);
     this.db.shelfHints = (works) => this.shelfQueries.hints(works);
-    this.chat = new ArticleChat(this.db, () => this.settings(), () => this.secrets, new ChatProvider(this.ollama, this.codex, () => this.secrets.openai), emit, (query, keys, signal) => this.evidence(query, keys, signal), (projectId, workId, attachmentId, signal) => this.reader.context({ projectId, workId, attachmentId }, signal));
+    this.chat = new ArticleChat(this.db, () => this.settings(), () => this.secrets, new ChatProvider(this.ollama, this.codex, () => this.secrets.openai, fetch, this.claude), emit, (query, keys, signal) => this.evidence(query, keys, signal), (projectId, workId, attachmentId, signal) => this.reader.context({ projectId, workId, attachmentId }, signal));
     this.ai = new AIProvider(
       this.db,
       () => this.secrets.openai,
@@ -90,6 +106,7 @@ export class Service {
       fetch,
       this.codex,
       this.ollama,
+      this.claude,
     );
     this.discovery = new Discovery(this.db, this.oa, emit, this.ai, new LinkedDiscoveries(this.db), {
       enabled: () => !!this.shelf.root(),
@@ -107,7 +124,9 @@ export class Service {
       },
     });
     this.pdf = new PdfImports(this.db, this.oa, workerPath, emit);
-    this.downloads = new PdfDownloads(this.db, workerPath, emit);
+    // The profile sits with the app's state, not in the library (which may be on an external disk or restored).
+    this.chrome = new ChromeHost({ dataRoot: process.env.RESEARCHBUNNY_DATA_DIR || dirname(root), cookieKey: () => this.secrets.browser, emit });
+    this.downloads = new PdfDownloads(this.db, workerPath, emit, undefined, new ChromeDownloads(this.chrome));
     // With a shelf, every PDF the app obtains is stored in its inbox; there is no second store.
     const inbox = {
       configured: () => !!this.shelf.root(),
@@ -121,6 +140,19 @@ export class Service {
     this.pdf.shelf = inbox;
     this.classifier = new ArchiveClassifier(this.db, this.ai, emit);
     this.sorter = new ShelfSorter(this.db, this.shelf, this.shelfQueries, this.ai, emit);
+    this.genealogy = new GenealogyEngine({
+      db: this.db,
+      store: new GenealogyStore(this.db),
+      ai: new GenealogyAI(this.db, { codex: this.codex, claude: this.claude, ollama: this.ollama }),
+      oa: this.oa,
+      downloads: this.downloads,
+      workerPath,
+      emit,
+      pubmedKey: () => this.secrets.pubmed,
+      shelfWritable: () => this.shelfWritable().then(() => true, () => false),
+      busy: () => this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || !!this.sorter.active,
+      tools: genealogyTools,
+    });
   }
   /** Downloads and imports are stored in the shelf inbox: refuse to start while a configured shelf is offline. */
   /**
@@ -200,7 +232,7 @@ export class Service {
     return this.ai.seedQueries(question, run, AbortSignal.timeout(120000), false);
   }
   busy() {
-    return this.chat.active.size > 0 || this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0 || !!this.sorter.active;
+    return this.chat.active.size > 0 || this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0 || !!this.sorter.active || this.genealogy.active.size > 0;
   }
   settings(): Settings {
     const saved = this.db.pref<Partial<AIConfig>>("ai");
@@ -248,6 +280,7 @@ export class Service {
           counts: this.db.counts(projectId),
           settings: this.settings(),
           shelf: this.shelf.summary(projectId),
+          genealogies: this.genealogy.store.list(projectId),
           ui: settledUi(this.db, projectId),
         };
       }
@@ -430,7 +463,10 @@ export class Service {
       case "pdfDownloadPreview":
         return this.downloads.preview(args);
       case "missingPdfs":
-        return this.downloads.missing(args);
+        return { ...await this.downloads.missing(args), chrome: { ready: this.chrome.ready() } };
+      case "openChromeLogin":
+        // Not BUSY-gated: logging in while a run waits on a sign-in page is the point.
+        return this.chrome.openLogin();
       case "downloadPdfs":
         if (this.busy()) throw new AppError("BUSY", "진행 중인 작업을 완료하거나 취소하세요.");
         await this.shelfWritable();
@@ -514,11 +550,60 @@ export class Service {
           throw new AppError("CODEX_CONNECTION", error instanceof Error ? error.message : "Codex 연결에 실패했습니다.");
         }
       }
+      case "genealogies": return this.genealogy.store.list(schemas.genealogies.parse(args).projectId);
+      case "genealogyCreate": {
+        const p = schemas.genealogyCreate.parse(args);
+        const project = this.db.project(p.projectId);
+        const seed = this.db.seedHistory(p.projectId)[0];
+        const settings = { ...defaultGenealogySettings(this.settings(), project.question || seed?.question || ""), ...p.settings };
+        return this.genealogy.create({ projectId: p.projectId, collectionId: p.collectionId, title: p.title, settings, workspace: p.workspace });
+      }
+      case "genealogyView": return this.genealogy.view(schemas.genealogyView.parse(args).id);
+      case "genealogyUpdate": { const p = schemas.genealogyUpdate.parse(args); return this.genealogy.update(p.id, p); }
+      case "genealogyType": { const p = schemas.genealogyType.parse(args); return this.genealogy.setType(p.id, p.workId, p.type); }
+      case "genealogyStart": {
+        const p = schemas.genealogyStart.parse(args);
+        if (this.genealogy.active.size === 0 && (this.discovery.active.size || this.pdf.active.size || this.downloads.active.size || this.sorter.active))
+          throw new AppError("BUSY", "진행 중인 탐색·가져오기·원문 확보·정리 작업이 끝난 뒤 실행하세요.");
+        return this.genealogy.start(p.id, p.step, p.auto);
+      }
+      case "genealogyCancel": return this.genealogy.cancel(schemas.genealogyCancel.parse(args).id);
+      case "genealogyCandidate": { const p = schemas.genealogyCandidate.parse(args); return this.genealogy.decide(p.id, p.candidateId, p.action); }
+      case "genealogyRemovePaper": { const p = schemas.genealogyRemovePaper.parse(args); return this.genealogy.removeAdded(p.id, p.workId); }
+      case "genealogyOutlineSave": { const p = schemas.genealogyOutlineSave.parse(args); return this.genealogy.editOutline(p.id, p.markdown); }
+      case "genealogyApprove": return this.genealogy.approve(schemas.genealogyApprove.parse(args).id);
+      case "genealogyChapter": { const p = schemas.genealogyChapter.parse(args); return this.genealogy.chapter(p.id, p.file); }
+      case "genealogyRewrite": {
+        const p = schemas.genealogyRewrite.parse(args);
+        if (this.genealogy.active.size === 0 && (this.discovery.active.size || this.pdf.active.size || this.downloads.active.size || this.sorter.active))
+          throw new AppError("BUSY", "진행 중인 탐색·가져오기·원문 확보·정리 작업이 끝난 뒤 실행하세요.");
+        return this.genealogy.rewrite(p.id, p.uid);
+      }
+      case "genealogyOutputPath": { const p = schemas.genealogyOpenOutput.parse(args); return this.genealogy.output(p.id, p.kind); }
+      case "genealogyDelete": return this.genealogy.remove(schemas.genealogyDelete.parse(args).id);
+      case "genealogyWorkspace": return this.genealogy.store.get(schemas.genealogyReveal.parse(args).id).workspace;
+      case "claudeStatus": return this.claude.status();
+      case "claudeModels":
+      case "claudeLogin":
+      case "claudeCancelLogin":
+      case "claudeLogout": {
+        try {
+          if (command === "claudeModels") return await this.claude.models();
+          if (command === "claudeLogin") return await this.claude.login();
+          if (command === "claudeCancelLogin") return await this.claude.cancelLogin();
+          if (this.busy()) throw new AppError("BUSY", "AI 작업을 취소한 뒤 로그아웃하세요.");
+          return await this.claude.logout();
+        } catch (error) {
+          if (error instanceof AppError) throw error;
+          throw new AppError("CLAUDE_CONNECTION", error instanceof Error ? error.message : "Claude 연결에 실패했습니다.");
+        }
+      }
       case "saveSettings": {
         const {
           model,
           aiProvider,
           codexModel,
+          claudeModel,
           ollamaModel,
           aiEnabled,
           aiMaxInputTokens,
@@ -531,6 +616,7 @@ export class Service {
           model,
           aiProvider: aiProvider ?? this.settings().aiProvider,
           codexModel,
+          claudeModel: claudeModel ?? "",
           ollamaModel: ollamaModel ?? this.settings().ollamaModel,
           aiEnabled,
           aiMaxInputTokens,
@@ -713,6 +799,8 @@ export class Service {
         this.sorter.cancel();
         this.chat.close();
         this.codex.close();
+        this.claude.close();
+        this.genealogy.close();
         for (const control of [
           ...this.discovery.active.values(),
           ...this.pdf.active.values(),
@@ -720,6 +808,8 @@ export class Service {
           ...this.classifier.active.values(),
         ])
           control.abort();
+        // Saves the app Chrome's logins and ends it; bounded so quitting never hangs on Chrome.
+        await Promise.race([this.chrome.close().catch(() => {}), Bun.sleep(2500)]);
         return;
       default:
         throw new AppError("UNKNOWN_COMMAND", "허용되지 않은 작업입니다.");

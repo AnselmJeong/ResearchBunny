@@ -269,8 +269,9 @@ export interface Run {
     useBrowser?: boolean;
     /** Sci-Hub mirrors are tried after every other route fails. */
     useSciHub?: boolean;
+    /** False for unattended runs: the app's Chrome never shows its window or waits for a person. */
+    interactive?: boolean;
     downloadDirectory?: string;
-    observedDirectories?: string[];
   };
 }
 export type PdfDownloadScope = "archive" | "selected" | "topic" | "unclassified" | "collection";
@@ -304,6 +305,8 @@ export interface MissingPdfs extends PdfDownloadPreview {
   items: MissingPdfItem[];
   /** The remembered Sci-Hub fallback settings. */
   sciHub?: { enabled: boolean; mirrors: string[] };
+  /** `ready` once the person has opened the app's Chrome to log in. */
+  chrome?: { ready: boolean };
 }
 export interface Attachment {
   id: string;
@@ -350,9 +353,11 @@ export interface Settings {
   tinyfishConfigured: boolean;
   secureStorage: boolean | null;
   credentialMigrationRequired?: boolean;
-  aiProvider: "ollama" | "codex" | "openai";
+  aiProvider: "ollama" | "codex" | "openai" | "claude";
   ollamaModel: string;
   codexModel: string;
+  /** A Claude Code model alias or name; empty uses the account default. */
+  claudeModel: string;
   model: string;
   aiEnabled: boolean;
   aiMaxInputTokens: number;
@@ -380,6 +385,7 @@ export interface Snapshot {
   counts: Record<string, number>;
   settings: Settings;
   shelf: import("./shelf").ShelfSummary;
+  genealogies: import("./genealogy").GenealogySummary[];
   ui: Record<string, unknown>;
 }
 export interface ListResult {
@@ -452,7 +458,9 @@ export type AppEvent = {
   type: "changed" | "progress" | "service-error" | "shelf";
   runId?: string;
   message?: string;
-} | { type: "chat"; session: import("./chat").ChatSession };
+} | { type: "chat"; session: import("./chat").ChatSession } | { type: "genealogy"; id: string }
+  /** The app's Chrome needs the person (robot check, login); `pid` lets main bring that Chrome forward. */
+  | { type: "attention"; message: string; pid?: number };
 export type Result<T> =
   | { ok: true; data: T }
   | { ok: false; error: { code: string; message: string; retryable: boolean } };

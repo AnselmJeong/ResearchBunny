@@ -1,5 +1,7 @@
 import { z } from "zod";
 import type { CodexStatus, CodexModel } from "./codex";
+import type { ClaudeStatus } from "./claude";
+import type { Genealogy, GenealogySummary, GenealogyView, Outline } from "./genealogy";
 import type { ChatSession, ChatThreadSummary } from "./chat";
 import type { ShelfAdoptResult, ShelfMovePreview, ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo, ShelfSortResult, ShelfSortView } from "./shelf";
 import type {
@@ -101,6 +103,23 @@ const state = z
     reason: z.string().max(2000).optional(),
   })
   .strict();
+const route = z.object({ provider: z.enum(["codex", "claude", "ollama"]), model: z.string().trim().max(120) });
+export const genealogySettingsSchema = z.object({
+  question: z.string().max(4000),
+  reader: z.string().trim().max(300),
+  expansion: z.enum(["off", "suggest", "auto"]),
+  perRound: z.number().int().min(1).max(50),
+  rounds: z.number().int().min(0).max(10),
+  growth: z.number().min(0).max(5),
+  routes: z.object({ light: route, cards: route, write: route }),
+  pauseAtOutline: z.boolean(),
+  fetchPdfs: z.boolean(),
+  useBrowser: z.boolean(),
+  maxCalls: z.number().int().min(10).max(5000),
+  concurrency: z.number().int().min(1).max(8),
+  csl: z.string().max(4096),
+});
+const genealogyStep = z.enum(["prepare", "cards", "gaps", "outline", "write", "check", "render"]);
 export const schemas = {
   snapshot: z.object({ projectId: id.optional() }),
   classifyArchive: z.object({ projectId: id }),
@@ -208,6 +227,7 @@ export const schemas = {
   }),
   chooseBib: z.object({}),
   chooseDownloadDirectory: z.object({}),
+  openChromeLogin: z.object({}),
   choosePdfMatch: z.object({ projectId: id }),
   choosePdf: z.object({
     projectId: id,
@@ -251,6 +271,34 @@ export const schemas = {
   codexLogin: z.object({}),
   codexCancelLogin: z.object({}),
   codexLogout: z.object({}),
+  claudeStatus: z.object({}),
+  claudeModels: z.object({}),
+  claudeLogin: z.object({}),
+  claudeCancelLogin: z.object({}),
+  claudeLogout: z.object({}),
+  genealogies: z.object({ projectId: id }),
+  genealogyCreate: z.object({
+    projectId: id,
+    collectionId: id,
+    title: z.string().trim().min(1).max(200),
+    settings: genealogySettingsSchema.partial().default({}),
+    workspace: z.string().min(1).max(4096).optional(),
+  }),
+  genealogyView: z.object({ id }),
+  genealogyUpdate: z.object({ id, title: z.string().trim().min(1).max(200).optional(), settings: genealogySettingsSchema.partial().optional() }),
+  genealogyType: z.object({ id, workId: id, type: z.enum(["R", "M", "O", "P"]) }),
+  genealogyStart: z.object({ id, step: z.union([genealogyStep, z.literal("continue")]), auto: z.boolean().default(true) }),
+  genealogyCancel: z.object({ id }),
+  genealogyCandidate: z.object({ id, candidateId: z.string().min(1).max(200), action: z.enum(["accept", "reject", "reset"]) }),
+  genealogyRemovePaper: z.object({ id, workId: id }),
+  genealogyOutlineSave: z.object({ id, markdown: z.string().max(2_000_000).optional() }),
+  genealogyApprove: z.object({ id }),
+  genealogyChapter: z.object({ id, file: z.string().min(1).max(300) }),
+  genealogyRewrite: z.object({ id, uid: id }),
+  genealogyOpenOutput: z.object({ id, kind: z.enum(["epub", "pdf", "markdown", "bib"]) }),
+  genealogyDelete: z.object({ id }),
+  genealogyReveal: z.object({ id }),
+  chooseGenealogyFolder: z.object({}),
   ollamaModels: z.object({}),
   chatSession: z.object(chatTarget),
   chatSend: z.object({ ...chatTarget, requestId: id, message: z.string().trim().min(1).max(8000), searchEnabled: z.boolean() }),
@@ -260,9 +308,10 @@ export const schemas = {
   chatOpenSource: z.object({ ...chatTarget, messageId: id, index: z.number().int().min(0).max(20) }),
   saveSettings: z.object({
     linkedDiscoveries: z.boolean().optional(),
-    aiProvider: z.enum(["ollama", "codex", "openai"]).optional(),
+    aiProvider: z.enum(["ollama", "codex", "openai", "claude"]).optional(),
     ollamaModel: z.string().trim().min(1).max(120).optional(),
     codexModel: z.string().trim().max(120).default(""),
+    claudeModel: z.string().trim().max(120).default(""),
     openalexKey: z.string().max(1000).optional(),
     openaiKey: z.string().max(1000).optional(),
     ollamaKey: z.string().max(1000).optional(),
@@ -377,6 +426,7 @@ export interface Outputs {
   importBib: ImportResult;
   chooseBib: ImportPreview | null;
   chooseDownloadDirectory: string | null;
+  openChromeLogin: void;
   choosePdfMatch: Run | null;
   choosePdf: Run | null;
   attachments: Attachment[];
@@ -398,6 +448,28 @@ export interface Outputs {
   codexLogin: void;
   codexCancelLogin: void;
   codexLogout: void;
+  claudeStatus: ClaudeStatus;
+  claudeModels: string[];
+  claudeLogin: void;
+  claudeCancelLogin: void;
+  claudeLogout: void;
+  genealogies: GenealogySummary[];
+  genealogyCreate: Genealogy;
+  genealogyView: GenealogyView;
+  genealogyUpdate: Genealogy;
+  genealogyType: void;
+  genealogyStart: Genealogy;
+  genealogyCancel: void;
+  genealogyCandidate: void;
+  genealogyRemovePaper: void;
+  genealogyOutlineSave: Outline | null;
+  genealogyApprove: void;
+  genealogyChapter: string | null;
+  genealogyRewrite: Genealogy;
+  genealogyOpenOutput: void;
+  genealogyDelete: void;
+  genealogyReveal: void;
+  chooseGenealogyFolder: string | null;
   ollamaModels: string[];
   chatSession: ChatSession;
   chatThreads: ChatThreadSummary[];
