@@ -435,25 +435,24 @@ export class PdfDownloads {
           };
           const validate = (candidate: RetrievedPdf) => this.validate(work, path, itemSignal, candidate);
           let retrieved: RetrievedPdf | undefined;
-          let chromeFailure = browserError;
-          if (run.download!.useBrowser && !browserError) {
-            try { retrieved = await this.browser.retrieve(work, path, itemSignal, progress, validate, run.download!.downloadDirectory); }
+          let failure: unknown;
+          // Public copies need no browser; Chrome opens only the papers they leave.
+          try { retrieved = await this.engine.retrieve(work, path, itemSignal, progress, validate); }
+          catch (error) { itemSignal.throwIfAborted(); failure = error; }
+          if (!retrieved && run.download!.useBrowser) {
+            if (browserError) failure = browserError;
+            else try { retrieved = await this.browser.retrieve(work, path, itemSignal, progress, validate, run.download!.downloadDirectory); }
             catch (error) {
               itemSignal.throwIfAborted();
-              chromeFailure = error instanceof AppError ? error : new AppError("CHROME_TIMEOUT", "Chrome 원문 확보 시간이 초과되었습니다.");
+              const chromeFailure = error instanceof AppError ? error : new AppError("CHROME_TIMEOUT", "Chrome 원문 확보 시간이 초과되었습니다.");
+              failure = chromeFailure;
               // Only settings that affect every paper disable Chrome for the run.
               // A closed tab, slow page or command failure must not poison later items.
               if (["CHROME_PERMISSION", "CHROME_JAVASCRIPT", "CHROME_DIRECTORY"].includes(chromeFailure.code)) {
                 browserError = chromeFailure;
                 this.emit({type:"service-error", message:chromeFailure.message});
               }
-              progress("공개 원문 보조 경로 확인");
             }
-          }
-          let failure: unknown;
-          if (!retrieved) {
-            try { retrieved = await this.engine.retrieve(work, path, itemSignal, progress, validate); }
-            catch (error) { itemSignal.throwIfAborted(); failure = chromeFailure || error; }
           }
           const mirrors = run.download!.useSciHub ? this.sciHub().mirrors : [];
           if (!retrieved && mirrors.length) {
@@ -490,6 +489,7 @@ export class PdfDownloads {
       run.status = signal.aborted ? "cancelled" : "failed";
       if (current?.status === "running") { current.status = "pending"; current.message = "중단됨 · 재개 가능"; }
     } finally {
+      await this.browser.release?.().catch(() => {});
       await rm(join(this.db.root, "downloads", id), { recursive: true, force: true }).catch(() => {});
       this.summarize(run);
       this.save(run, "changed");

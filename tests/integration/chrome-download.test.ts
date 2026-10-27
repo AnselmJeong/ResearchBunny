@@ -63,20 +63,26 @@ test("unrelated new downloads require identity and browser timeouts close only t
   } finally { await rm(root, {recursive:true, force:true}); }
 });
 
-test("browser permission failures are shown once per run and public retrieval continues for later papers", async () => {
+test("public copies come before Chrome, permission failures are shown once, and the run releases the browser", async () => {
   const root = await mkdtemp(join(tmpdir(), "researchbunny-chrome-job-"));
   const db = new Library(join(root, "library"));
   const projectId = db.projects()[0].id;
-  for (let i = 0; i < 2; i++) { const w = db.upsert(blankWork({title:`Browser fallback ${i}`, oaUrl:`https://papers.example.org/${i}.pdf`})).work; db.mutate(projectId, [w.id], {screening:"included"}); }
-  let browserCalls = 0, warnings = 0;
-  const jobs = new PdfDownloads(db, worker, event => { if (event.type === "service-error") warnings++; }, new FulltextEngine(async () => new Response(pdf), async () => {}), {
+  const papers = [0, 1, 2].map(i => db.upsert(blankWork({title:`Browser fallback ${i}`, oaUrl:`https://papers.example.org/${i}.pdf`})).work);
+  db.mutate(projectId, papers.map(w => w.id), {screening:"included"});
+  let browserCalls = 0, warnings = 0, released = 0;
+  // Only the first paper has a public copy.
+  const engine = new FulltextEngine(async url => url.endsWith("/0.pdf") ? new Response(pdf) : new Response("missing", {status:404}), async () => {});
+  const jobs = new PdfDownloads(db, worker, event => { if (event.type === "service-error") warnings++; }, engine, {
     async retrieve() { browserCalls++; throw new AppError("CHROME_PERMISSION", "Permission required"); },
+    async release() { released++; },
   });
   try {
     const run = jobs.start({projectId, scope:"archive", useBrowser:true, downloadDirectory:root});
     for (let i = 0; i < 4000 && jobs.active.size; i++) await Bun.sleep(5);
-    assert.equal(jobs.active.size, 0); assert.equal(browserCalls, 1); assert.equal(warnings, 1);
-    assert(db.run(run.id).download!.items.every(item => item.status === "completed"));
+    assert.equal(jobs.active.size, 0); assert.equal(browserCalls, 1); assert.equal(warnings, 1); assert.equal(released, 1);
+    const items = db.run(run.id).download!.items, item = (i: number) => items.find(it => it.workId === papers[i].id)!;
+    assert.equal(item(0).status, "completed"); assert.equal(item(0).retrievalMethod, "http");
+    for (const i of [1, 2]) { assert.equal(item(i).status, "failed"); assert.equal(item(i).errorCode, "CHROME_PERMISSION"); }
     assert.equal(db.run(run.id).download!.useBrowser, true);
   } finally {
       for (const control of jobs.active.values()) control.abort();
@@ -147,7 +153,7 @@ test("skipping one browser item advances the batch and cancellation is distinct"
   const projectId = db.projects()[0].id;
   for (let i = 0; i < 2; i++) { const w = db.upsert(blankWork({title:`Browser skip ${i}`, url:`https://papers.example.org/${i}`})).work; db.mutate(projectId, [w.id], {screening:"included"}); }
   let calls = 0;
-  const jobs = new PdfDownloads(db, worker, () => {}, new FulltextEngine(async () => { throw Error("HTTP must not be used"); }, async () => {}), {
+  const jobs = new PdfDownloads(db, worker, () => {}, new FulltextEngine(async () => new Response("missing", {status:404}), async () => {}), {
     async retrieve(_work, path, signal, _progress, validate) {
       if (++calls === 1) { await new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), {once:true})); throw Error("unreachable"); }
       await writeFile(path, pdf); const candidate = {sourceUrl:"https://papers.example.org/real.pdf", doi:null}; await validate(candidate); return candidate;
@@ -155,7 +161,8 @@ test("skipping one browser item advances the batch and cancellation is distinct"
   });
   try {
     const run = jobs.start({projectId, scope:"archive", useBrowser:true, downloadDirectory:root});
-    for (let i = 0; i < 100 && !calls; i++) await Bun.sleep(5);
+    // The public route runs first; skip once the paper has reached Chrome.
+    for (let i = 0; i < 4000 && !calls; i++) await Bun.sleep(5);
     jobs.control(run.id, "skip");
     for (let i = 0; i < 4000 && jobs.active.size; i++) await Bun.sleep(5);
     assert.equal(jobs.active.size, 0); assert.equal(calls, 2);

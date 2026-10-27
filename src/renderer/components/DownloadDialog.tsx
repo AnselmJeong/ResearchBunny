@@ -130,7 +130,7 @@ export function DownloadDialog({ projectId, selected, scope, scopeId, runs, busy
         <textarea aria-label="Sci-Hub 미러 주소" rows={2} spellCheck={false} placeholder="https://sci-hub.kr" value={mirrors ?? ""} disabled={busy || pending} onChange={e => setMirrors(e.target.value)} />
       </label>}
       <p className="subtle">폴더와 하위 폴더에서 DOI·제목이 일치하는 본문 PDF만 기존 문헌에 연결합니다. 분류·노트·읽기 상태와 원본 파일을 유지합니다. 범위에는 화면의 검색·필터를 적용하지 않으며 숨겨진 선택도 포함합니다.</p>
-      <p className="subtle">{useBrowser ? "현재 Chrome 창의 로그인 상태로 원문을 열고 PDF를 내려받습니다. Chrome 제어 권한과 Chrome의 Apple Events JavaScript 허용이 필요합니다. 로그인·사람 인증은 Chrome에서 완료하세요. 논문별 최대 60초 후 공개 원문 보조 경로를 확인합니다." : "공개 원문과 출판사 PDF 주소를 확인합니다. 로그인·사람 인증이 필요한 자료는 원문 페이지에서 직접 내려받으세요."} 창을 닫아도 작업은 계속됩니다.</p>
+      <p className="subtle">{useBrowser ? "공개 원문을 먼저 확인하고, 받지 못한 문헌만 현재 Chrome 창의 로그인 상태로 열어 PDF를 내려받습니다. Chrome 제어 권한과 Chrome의 Apple Events JavaScript 허용이 필요합니다. 로그인·사람 인증은 Chrome에서 완료하세요. Chrome 단계는 논문별 최대 60초입니다." : "공개 원문과 출판사 PDF 주소를 확인합니다. 로그인·사람 인증이 필요한 자료는 원문 페이지에서 직접 내려받으세요."} 창을 닫아도 작업은 계속됩니다.</p>
       {useSciHub && <p className="subtle">공개 원문·출판사{useBrowser ? "·Chrome" : ""} 경로가 모두 실패한 문헌만 <code>미러/https://doi.org/DOI</code> 주소에서 찾습니다. DOI가 없으면 Crossref에서 확인한 DOI를 씁니다. 미러가 로봇 확인을 요구하면 {useBrowser ? "Chrome 탭에서 직접 완료하세요. 30초 동안 기다린 뒤 다음 문헌으로 넘어갑니다." : "자동으로는 받을 수 없습니다. 로그인된 Chrome 사용을 함께 켜면 Chrome 탭에서 직접 완료할 수 있습니다."} 앱은 로봇 확인에 응답하지 않습니다.</p>}
       {remaining && remaining.eligible > 1000 && <p className="subtle">한 번에 최대 1,000편을 시도합니다. 완료 후 남은 문헌을 다시 시도할 수 있습니다.</p>}
     </details>

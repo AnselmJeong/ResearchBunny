@@ -204,6 +204,8 @@ export interface BrowserRetrieval {
   /** `start` opens another page than the paper's own, e.g. a Sci-Hub mirror's page for its DOI. */
   retrieve(work: Work, path: string, signal: AbortSignal, progress: (message: string) => void,
     validate: (candidate: RetrievedPdf) => Promise<void>, directory?: string, start?: string): Promise<RetrievedPdf>;
+  /** Ends the run's browser session. */
+  release?(): Promise<void>;
 }
 export class ChromeDownloads implements BrowserRetrieval {
   constructor(private chrome: ChromeControl = new SystemChrome(), private directories = chromeDownloadDirectories,
