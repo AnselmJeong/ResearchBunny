@@ -720,7 +720,7 @@ test("full-text jobs look in the shelf before Chrome, the download folder and th
       if (!tried.length) linkedBeforeNetwork = service.db.attachments(variant.id).length === 1;
       tried.push(work.id);
     };
-    service.downloads["browser"].retrieve = async (work) => { attempt(work); throw new AppError("CHROME_TIMEOUT", "no browser in tests"); };
+    service.downloads["browser"]!.retrieve = async (work) => { attempt(work); throw new AppError("CHROME_TIMEOUT", "no browser in tests"); };
     service.downloads["engine"].retrieve = async (work) => { attempt(work); throw new AppError("FULLTEXT_UNAVAILABLE", "no network in tests"); };
     // The NAS is unmounted: Smith's linked shelf PDF cannot be verified.
     await rename(dir, `${dir}-unmounted`);

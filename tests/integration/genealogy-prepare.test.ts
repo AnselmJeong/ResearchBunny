@@ -170,7 +170,7 @@ test("missing PDFs go to the archive's full-text job and the job waits for it", 
   engine.start(g.id, "prepare", false);
   const done = await settle(engine, g.id);
   expect(done.job?.status).toBe("completed");
-  expect(started).toEqual([{ projectId: f.projectId, scope: "selected", ids: [w.id], includeBooks: false, useBrowser: false, useSciHub: true }]);
+  expect(started).toEqual([{ projectId: f.projectId, scope: "selected", ids: [w.id], includeBooks: false, useBrowser: false, interactive: false, useSciHub: true }]);
 });
 
 test("a spent subscription pauses the job instead of failing it", async () => {

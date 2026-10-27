@@ -5,7 +5,8 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { Library } from "../../src/service/db/database";
 import { PdfDownloads } from "../../src/service/fulltext/jobs";
-import { ChromeDownloads, type BrowserRetrieval, type ChromeControl } from "../../src/service/fulltext/chrome";
+import { ChromeDownloads, type BrowserRetrieval } from "../../src/service/fulltext/chrome";
+import type { BrowserDownload, BrowserTab } from "../../src/service/fulltext/chrome-host";
 import { FulltextEngine, SciHubError, sciHubChallenge, sciHubMirrors, sciHubUrl, type DownloadFetch } from "../../src/service/fulltext/engine";
 import { blankWork } from "../../src/shared/domain";
 import { AppError } from "../../src/shared/types";
@@ -121,7 +122,7 @@ test("a robot check over HTTP opens the mirror page in Chrome for the person, an
   db.mutate(projectId, papers.map(p => p.id), { screening: "included" });
   const starts: (string | undefined)[] = [];
   const browser: BrowserRetrieval = {
-    async retrieve(work, path, _signal, _progress, validate, _directory, start) {
+    async retrieve(work, path, _signal, _progress, validate, { start }) {
       starts.push(start);
       // The publisher page fails in Chrome; the person passes the check on the first paper only.
       if (!start) throw new AppError("CHROME_UNAVAILABLE", "로그인된 Chrome에서도 PDF를 확보하지 못했습니다.");
@@ -149,19 +150,29 @@ test("a robot check over HTTP opens the mirror page in Chrome for the person, an
 
 test("the Chrome driver opens the given mirror page instead of the paper's own page", async () => {
   const root = await mkdtemp(join(tmpdir(), "rb-scihub-chrome-"));
-  const opened: string[] = [], tab = { windowId: "7", tabId: "42" };
+  const opened: string[] = [], found: BrowserDownload[] = [];
   const page = "https://sci-hub.kr/https://doi.org/10.1017/S1092852900013754";
-  const chrome: ChromeControl = {
-    async open(url) { opened.push(url); return tab; },
-    async probe() { return { url: page, ready: "complete", challenge: false, links: ["https://sci-hub.kr/storage/2024/drevets2008.pdf"], state: "done" }; },
-    async navigate() { throw new Error("the same-origin storage PDF uses the page session"); },
-    async download(_tab, url, filename) { opened.push(url); await writeFile(join(root, filename), pdf); },
-    async close() {},
+  let directory = "";
+  const tab: BrowserTab = {
+    async collect(path) { directory = path; },
+    downloads: () => found,
+    async navigate(url) { opened.push(url); },
+    async evaluate<T>(expression: string) {
+      const filename = /a\.download = "([^"]+)"/.exec(expression)?.[1];
+      if (!filename) return JSON.stringify({ url: page, ready: "complete", challenge: false, login: false, links: ["https://sci-hub.kr/storage/2024/drevets2008.pdf"] }) as T;
+      // The storage PDF is same-origin, so the page fetches it with its own session.
+      opened.push("fetch");
+      await writeFile(join(directory, "guid"), pdf);
+      found.push({ guid: "guid", url: "blob:https://sci-hub.kr/x", suggestedFilename: filename, state: "completed", path: join(directory, "guid") });
+      return "started" as T;
+    },
+    async reveal() { throw new Error("no robot check here"); }, async reset() {}, async close() {},
   };
   try {
-    const result = await new ChromeDownloads(chrome, async () => [root], 2000, 10)
-      .retrieve(blankWork({ ...work, url: "https://www.cambridge.org/core/article" }), join(root, "saved.part"), new AbortController().signal, () => {}, async () => {}, undefined, page);
-    assert.deepEqual(opened, [page, "https://sci-hub.kr/storage/2024/drevets2008.pdf"]);
+    const result = await new ChromeDownloads({ tab: async () => tab, idle: async () => {} }, { pollMs: 5 })
+      .retrieve(blankWork({ ...work, url: "https://www.cambridge.org/core/article" }), join(root, "saved.part"), new AbortController().signal, () => {}, async () => {}, { downloads: root, start: page });
+    assert.deepEqual(opened, [page, "fetch"]);
     assert.equal(result.method, "chrome");
+    assert.equal(result.sourceUrl, "https://sci-hub.kr/storage/2024/drevets2008.pdf");
   } finally { await rm(root, { recursive: true, force: true }); }
 });

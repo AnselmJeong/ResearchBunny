@@ -269,6 +269,8 @@ export interface Run {
     useBrowser?: boolean;
     /** Sci-Hub mirrors are tried after every other route fails. */
     useSciHub?: boolean;
+    /** False for unattended runs: the app's Chrome never shows its window or waits for a person. */
+    interactive?: boolean;
     downloadDirectory?: string;
     observedDirectories?: string[];
   };

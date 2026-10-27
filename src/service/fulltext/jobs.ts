@@ -4,7 +4,7 @@ import { isAbsolute, join } from "node:path";
 import type { Library } from "../db/database";
 import { extractPdf, hashFile, verifyPdf, hasValidPdf } from "../interchange/pdf";
 import { cleanDoi, DEFAULT_SCIHUB_MIRRORS, FulltextEngine, isBook, SciHubError, sciHubMirrors } from "./engine";
-import { ChromeDownloads, chromeDownloadDirectories, type BrowserRetrieval } from "./chrome";
+import { chromeDownloadDirectories, type BrowserRetrieval, type RetrievalOptions } from "./chrome";
 import { LocalDownloads, isAuxiliaryPdf } from "./local-downloads";
 import type { RetrievedPdf } from "./engine";
 import { titleSimilarity } from "../../shared/domain";
@@ -21,6 +21,8 @@ export interface DownloadTarget {
   /** Try Sci-Hub mirrors after every other route fails; remembered with the mirror list. */
   useSciHub?: boolean;
   sciHubMirrors?: string[];
+  /** False when nobody is watching (e.g. a genealogy report): Chrome never shows its window. */
+  interactive?: boolean;
 }
 export interface ShelfLinker {
   /** Shelf files holding the paper; `own` is the paper's own (already linked) shelf file. */
@@ -48,7 +50,7 @@ export class PdfDownloads {
     private workerPath: string,
     private emit: (event: AppEvent) => void,
     private engine = new FulltextEngine(),
-    private browser: BrowserRetrieval = new ChromeDownloads(),
+    private browser?: BrowserRetrieval,
   ) { this.local = new LocalDownloads(workerPath); }
   rememberDirectory(directory: string) {
     if (typeof directory !== 'string' || !isAbsolute(directory)) throw new AppError('CHROME_DIRECTORY', '다운로드 폴더의 절대 경로가 필요합니다.');
@@ -113,7 +115,7 @@ export class PdfDownloads {
     });
     await this.syncHistory();
   }
-  /** Store the verified PDF in the shelf inbox; the browser's original download is then removed. */
+  /** Store the verified PDF in the shelf inbox; a recovered download's original is then removed. */
   private async store(run: Run, item: PdfDownloadItem, work: Work, path: string, hash: string, signal: AbortSignal, retrieved: RetrievedPdf, downloadedPath?: string) {
     if (!this.isArchived(run.projectId, work.id)) { item.status = 'skipped'; item.message = '확보 중 아카이브에서 제거됨'; return; }
     const attachment = await this.shelf!.deposit(path, work.id, {hash, signal, fields:{
@@ -127,7 +129,7 @@ export class PdfDownloads {
       delete item.errorCode;
       this.save(run, 'changed');
     });
-    const original = downloadedPath || retrieved.original;
+    const original = downloadedPath;
     // Remove the download only while it still holds the bytes now on the shelf.
     if (original && await hashFile(original).catch(() => null) === hash) await rm(original, {force:true}).catch(() => {});
     await this.syncHistory();
@@ -313,7 +315,7 @@ export class PdfDownloads {
       status: "queued", createdAt: now(), updatedAt: now(), calls: 0, maxCalls: 0,
       maxCandidates: works.length, total: works.length, count: 0, message: "원문 확보 준비",
       tasks: [], rankingVersion: "fulltext-v1",
-      download: { includeBooks: !!target.includeBooks, useBrowser: !!target.useBrowser, useSciHub: !!target.useSciHub, downloadDirectory: target.downloadDirectory, items: works.map(w => ({ workId: w.id, title: w.title, status: "pending", message: "대기 중" })) },
+      download: { includeBooks: !!target.includeBooks, useBrowser: !!target.useBrowser, useSciHub: !!target.useSciHub, ...(target.interactive === false ? { interactive: false } : {}), downloadDirectory: target.downloadDirectory, items: works.map(w => ({ workId: w.id, title: w.title, status: "pending", message: "대기 중" })) },
     };
     this.db.saveRun(run);
     void this.execute(run.id);
@@ -368,15 +370,15 @@ export class PdfDownloads {
   }
   /** Sci-Hub over HTTP, then in Chrome when a person can finish what stopped it, such as a robot check. */
   private async retrieveSciHub(work: Work, mirrors: string[], path: string, signal: AbortSignal, progress: (message: string) => void,
-    validate: (candidate: RetrievedPdf) => Promise<void>, run: Run, chromeDisabled: boolean): Promise<RetrievedPdf> {
+    validate: (candidate: RetrievedPdf) => Promise<void>, browse: ((start: string) => RetrievalOptions) | null): Promise<RetrievedPdf> {
     try { return await this.engine.sciHub(work, mirrors, path, signal, progress, validate); }
     catch (error) {
       signal.throwIfAborted();
-      if (!(error instanceof SciHubError) || !error.page || !run.download!.useBrowser || chromeDisabled) throw error;
+      if (!(error instanceof SciHubError) || !error.page || !browse || !this.browser) throw error;
       const mirror = new URL(error.page).hostname;
       // Nothing answers the check for the person: Chrome waits while they complete it in the tab.
-      progress('Chrome에서 Sci-Hub 미러 열기 · 로봇 확인이 나오면 Chrome에서 직접 완료하세요');
-      try { return { ...await this.browser.retrieve(work, path, signal, progress, validate, run.download!.downloadDirectory, error.page), mirror }; }
+      progress('앱 전용 Chrome에서 Sci-Hub 미러 열기 · 로봇 확인이 나오면 그 창에서 직접 완료하세요');
+      try { return { ...await this.browser.retrieve(work, path, signal, progress, validate, browse(error.page)), mirror }; }
       catch (chrome) {
         signal.throwIfAborted();
         throw chrome instanceof AppError ? new SciHubError(chrome.code, `Sci-Hub(${mirror}) · ${chrome.message}`) : error;
@@ -439,16 +441,20 @@ export class PdfDownloads {
           // Public copies need no browser; Chrome opens only the papers they leave.
           try { retrieved = await this.engine.retrieve(work, path, itemSignal, progress, validate); }
           catch (error) { itemSignal.throwIfAborted(); failure = error; }
-          if (!retrieved && run.download!.useBrowser) {
+          // Each browser attempt saves into a folder of its own inside the run's staging.
+          const browse = (start?: string): RetrievalOptions => ({ downloads: join(staging, "chrome", randomUUID()), rejected: join(staging, "chrome-rejected"),
+            interactive: run.download!.interactive !== false, ...(start ? { start } : {}) });
+          const browser = run.download!.useBrowser ? this.browser : undefined;
+          if (!retrieved && browser) {
             if (browserError) failure = browserError;
-            else try { retrieved = await this.browser.retrieve(work, path, itemSignal, progress, validate, run.download!.downloadDirectory); }
+            else try { retrieved = await browser.retrieve(work, path, itemSignal, progress, validate, browse()); }
             catch (error) {
               itemSignal.throwIfAborted();
               const chromeFailure = error instanceof AppError ? error : new AppError("CHROME_TIMEOUT", "Chrome 원문 확보 시간이 초과되었습니다.");
               failure = chromeFailure;
-              // Only settings that affect every paper disable Chrome for the run.
-              // A closed tab, slow page or command failure must not poison later items.
-              if (["CHROME_PERMISSION", "CHROME_JAVASCRIPT", "CHROME_DIRECTORY"].includes(chromeFailure.code)) {
+              // Only a Chrome that cannot run at all disables it for the run.
+              // A closed window, slow page or failed command must not poison later items.
+              if (["CHROME_MISSING", "CHROME_LAUNCH"].includes(chromeFailure.code)) {
                 browserError = chromeFailure;
                 this.emit({type:"service-error", message:chromeFailure.message});
               }
@@ -456,7 +462,7 @@ export class PdfDownloads {
           }
           const mirrors = run.download!.useSciHub ? this.sciHub().mirrors : [];
           if (!retrieved && mirrors.length) {
-            try { retrieved = await this.retrieveSciHub(work, mirrors, path, itemSignal, progress, validate, run, !!browserError); }
+            try { retrieved = await this.retrieveSciHub(work, mirrors, path, itemSignal, progress, validate, browser && !browserError ? browse : null); }
             catch (error) {
               itemSignal.throwIfAborted();
               const earlier = failure instanceof AppError ? failure.message : '공개 원문·출판사 경로에서 PDF를 확보하지 못했습니다.';
@@ -489,7 +495,7 @@ export class PdfDownloads {
       run.status = signal.aborted ? "cancelled" : "failed";
       if (current?.status === "running") { current.status = "pending"; current.message = "중단됨 · 재개 가능"; }
     } finally {
-      await this.browser.release?.().catch(() => {});
+      await this.browser?.release?.().catch(() => {});
       await rm(join(this.db.root, "downloads", id), { recursive: true, force: true }).catch(() => {});
       this.summarize(run);
       this.save(run, "changed");

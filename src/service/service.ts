@@ -14,7 +14,7 @@ import { defaultGenealogySettings } from "../shared/genealogy";
 import { version } from "../../package.json";
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile, rename, stat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import type {
   AppEvent,
   ImportPreview,
@@ -38,6 +38,8 @@ import { deleteTrashedWorks, settledUi, trashTargets } from "./db/trash";
 import { deleteProject } from "./db/projects";
 import { ArchiveClassifier, classificationSnapshot } from "./archive-classification";
 import { PdfDownloads } from "./fulltext/jobs";
+import { ChromeDownloads } from "./fulltext/chrome";
+import { ChromeHost } from "./fulltext/chrome-host";
 import { planPdfExport, pdfExportTargets, previewPdfExport, exportPdfFolders } from "./interchange/pdf-export";
 import { schemas, type TrashDeletion } from "../shared/contracts";
 import { Shelf } from "./shelf/indexer";
@@ -60,6 +62,8 @@ export class Service {
   links: Links;
   pdf: PdfImports;
   downloads: PdfDownloads;
+  /** The app's own Chrome for downloads that need a login; never the person's browser. */
+  chrome: ChromeHost;
   classifier: ArchiveClassifier;
   shelf: Shelf;
   shelfQueries: ShelfQueries;
@@ -71,6 +75,8 @@ export class Service {
     ollama?: string;
     pubmed?: string;
     tinyfish?: string;
+    /** Base64 key for the app Chrome's saved session cookies. */
+    browser?: string;
     secureStorage?: boolean;
     credentialMigrationRequired?: boolean;
   } = {};
@@ -118,7 +124,9 @@ export class Service {
       },
     });
     this.pdf = new PdfImports(this.db, this.oa, workerPath, emit);
-    this.downloads = new PdfDownloads(this.db, workerPath, emit);
+    // The profile sits with the app's state, not in the library (which may be on an external disk or restored).
+    this.chrome = new ChromeHost({ dataRoot: process.env.RESEARCHBUNNY_DATA_DIR || dirname(root), cookieKey: () => this.secrets.browser, emit });
+    this.downloads = new PdfDownloads(this.db, workerPath, emit, undefined, new ChromeDownloads(this.chrome));
     // With a shelf, every PDF the app obtains is stored in its inbox; there is no second store.
     const inbox = {
       configured: () => !!this.shelf.root(),
@@ -797,6 +805,8 @@ export class Service {
           ...this.classifier.active.values(),
         ])
           control.abort();
+        // Saves the app Chrome's logins and ends it; bounded so quitting never hangs on Chrome.
+        await Promise.race([this.chrome.close().catch(() => {}), Bun.sleep(2500)]);
         return;
       default:
         throw new AppError("UNKNOWN_COMMAND", "허용되지 않은 작업입니다.");

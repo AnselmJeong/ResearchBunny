@@ -434,6 +434,8 @@ export class GenealogyEngine {
       ids: need,
       includeBooks: false,
       useBrowser: g.settings.useBrowser,
+      // Nobody watches a report being built, so Chrome never shows a robot check.
+      interactive: false,
       useSciHub: sciHub.enabled,
     });
     this.progress(g, { message: `PDF 원문 확보 · ${need.length}편`, done: 0, total: need.length });

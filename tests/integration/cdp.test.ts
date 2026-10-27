@@ -24,8 +24,9 @@ test("CDP over the pipe matches replies to requests, routes session events, and 
     const [version, created] = await Promise.all([cdp.send("Browser.getVersion"), cdp.send("Target.createTarget", { url: "about:blank" })]);
     assert.equal(version.product, "FakeChrome/1.0");
     assert.equal(created.targetId, "target-1");
+    // Only the raised event: the fake also announces the target it created, possibly after this subscribes.
     const events: unknown[] = [];
-    const stop = cdp.on(event => events.push(event));
+    const stop = cdp.on(event => { if (event.method === "Page.loadEventFired") events.push(event); });
     await cdp.send("Test.emit", { method: "Page.loadEventFired", params: { timestamp: 1 }, sessionId: "session-target-1" });
     await cdp.send("Browser.getVersion");
     assert.deepEqual(events, [{ method: "Page.loadEventFired", params: { timestamp: 1 }, sessionId: "session-target-1" }]);

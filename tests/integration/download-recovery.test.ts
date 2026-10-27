@@ -1,13 +1,12 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { copyFile, mkdtemp, readFile, rm, utimes } from "node:fs/promises";
+import { copyFile, mkdtemp, rm, utimes } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { Library } from "../../src/service/db/database";
 import { PdfDownloads } from "../../src/service/fulltext/jobs";
 import { FulltextEngine } from "../../src/service/fulltext/engine";
 import { LocalDownloads, matchesDownloadedPdf } from "../../src/service/fulltext/local-downloads";
-import { ChromeDownloads, type ChromeControl } from "../../src/service/fulltext/chrome";
 import { blankWork } from "../../src/shared/domain";
 import { AppError } from "../../src/shared/types";
 import { hashFile } from "../../src/service/interchange/pdf";
@@ -72,11 +71,4 @@ test("automatic recovery never reattaches a file to an item removed from the arc
   const jobs=new PdfDownloads(db,worker,()=>{},new FulltextEngine(async()=>new Response("missing",{status:404}),async()=>{}),{async retrieve(){throw new AppError("CHROME_CONTROL","lost tab");}});
   try{jobs.start({projectId,scope:"archive",useBrowser:true,downloadDirectory:root});await finish(jobs);db.mutate(projectId,[work.id],{screening:"trash"});await downloaded(root,"late.pdf");await jobs.recoverCompleted();assert.equal(db.attachments(work.id).length,0);assert.equal(db.state(projectId,work.id).screening,"trash");}
   finally{db.close();await rm(root,{recursive:true,force:true});}
-});
-test("a folder detection permission error is actionable and cannot silently watch a different directory", async () => {
-  let opened=false;const chrome:ChromeControl={async open(){opened=true;return {windowId:"1",tabId:"2"};},async probe(){throw Error("unused");},async navigate(){},async download(){},async close(){}};
-  const driver=new ChromeDownloads(chrome,async()=>{throw new AppError("CHROME_DIRECTORY","choose actual folder");});
-  await assert.rejects(driver.retrieve(blankWork({url:"https://papers.example.org/paper"}),"/unused",new AbortController().signal,()=>{},async()=>{}),error=>error instanceof AppError && error.code==="CHROME_DIRECTORY");
-  assert.equal(opened,false);
-  assert.equal((await readFile(fixture)).subarray(0,5).toString(),"%PDF-");
 });

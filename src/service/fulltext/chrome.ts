@@ -1,73 +1,18 @@
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { copyFile, lstat, readFile, readdir } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, readdir, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { AppError, type Work } from "../../shared/types";
-import { cleanDoi, publicUrl, publisherPdfUrls, untilAborted, type RetrievedPdf } from "./engine";
+import { cleanDoi, publicUrl, publisherPdfUrls, type RetrievedPdf } from "./engine";
+import type { BrowserHost, BrowserTab } from "./chrome-host";
 
-export type ChromeTab = { windowId: string; tabId: string };
 const probeSchema = z.object({
-  url: z.string(), ready: z.string(), challenge: z.boolean(), links: z.array(z.string()),
+  url: z.string(), ready: z.string(), challenge: z.boolean(), login: z.boolean(), links: z.array(z.string()),
   state: z.string().optional(), contentType: z.string().optional(),
 });
 export type ChromeProbe = z.infer<typeof probeSchema>;
-export interface ChromeControl {
-  open(url: string, signal: AbortSignal): Promise<ChromeTab>;
-  probe(tab: ChromeTab, signal: AbortSignal): Promise<ChromeProbe>;
-  navigate(tab: ChromeTab, url: string, signal: AbortSignal): Promise<void>;
-  download(tab: ChromeTab, url: string, filename: string, signal: AbortSignal): Promise<void>;
-  close(tab: ChromeTab): Promise<void>;
-}
-// Adapted from bib-dl's ChromeAppleScript and _ChromeAutoDownloader. Commands
-// target only the tab created by this job; scripts and URLs are argv, never shell text.
-const APPLESCRIPT = `on run argv
-  set op to item 1 of argv
-  tell application "Google Chrome"
-    if op is "open" then
-      if (count of windows) is 0 then make new window
-      set w to front window
-      tell w to set t to make new tab with properties {URL:"about:blank"}
-      set ownedIds to ((id of w) as text) & "," & ((id of t) as text)
-      set URL of t to item 2 of argv
-      activate
-      return ownedIds
-    end if
-    set ownedTabId to (item 3 of argv) as integer
-    set t to missing value
-    try
-      set t to tab id ownedTabId of window id ((item 2 of argv) as integer)
-      get id of t
-    on error number -1728
-      set t to missing value
-    end try
-    -- A user can move our tab to another window while signing in.
-    if t is missing value then
-      repeat with w in windows
-        try
-          set t to tab id ownedTabId of w
-          get id of t
-          exit repeat
-        on error number -1728
-          set t to missing value
-        end try
-      end repeat
-    end if
-    if t is missing value then error "ResearchBunny task tab is closed" number -1728
-    if op is "navigate" then
-      set URL of t to item 4 of argv
-    else if op is "js" then
-      return execute t javascript (item 4 of argv)
-    else if op is "info" then
-      return (URL of t) & linefeed & (title of t) & linefeed & ((loading of t) as text)
-    else if op is "close" then
-      close t
-    end if
-  end tell
-  return ""
-end run`;
 const PROBE_JS = `(() => {
   const links = [];
   const add = value => { try { const u = new URL(value, location.href); if (/^https?:$/.test(u.protocol) && !u.username && !u.password && !links.includes(u.href)) links.push(u.href); } catch {} };
@@ -79,11 +24,14 @@ const PROBE_JS = `(() => {
   for (const el of document.querySelectorAll('object[data], embed[src], iframe[src]')) { const src = el.getAttribute('data') || el.getAttribute('src') || ''; if (el.type === 'application/pdf' || /\\.pdf(?:[?#]|$)/i.test(src)) add(src); }
   // Sci-Hub's robot check is an ALTCHA form; its article page has one too, but alongside the PDF.
   const challenge = /just a moment|verify you are human|checking your browser|security check|사람인지 확인|로봇 확인|^ddos-guard$/i.test(document.title) || !!document.querySelector('iframe[src*="challenges.cloudflare.com"], #challenge-running') || (!links.length && !!document.querySelector('altcha-widget'));
-  if (!challenge && !links.length && !window.__researchbunnyMenu && document.readyState === 'complete') {
+  // An institution or publisher sign-in page: a visible password field on a login-looking address or title.
+  const password = [...document.querySelectorAll('input[type="password"]')].some(el => el.offsetParent !== null);
+  const login = !challenge && !links.length && password && (/shibboleth|openathens|ezproxy|saml|wayf|\\/idp\\/|\\/cas\\/|log-?in|sign-?in|auth/i.test(location.href) || /log ?in|sign ?in|로그인|institution|기관/i.test(document.title));
+  if (!challenge && !login && !links.length && !window.__researchbunnyMenu && document.readyState === 'complete') {
     const menu = [...document.querySelectorAll('button, [role="button"], summary, a[aria-haspopup]')].find(el => /^(download|download pdf|pdf|다운로드)$/i.test((el.textContent || '').trim()));
     if (menu) { window.__researchbunnyMenu = true; menu.click(); }
   }
-  return JSON.stringify({url:location.href, ready:document.readyState, challenge, links:links.slice(0, 10), state:window.__researchbunnyDownload?.state, contentType:document.contentType});
+  return JSON.stringify({url:location.href, ready:document.readyState, challenge, login, links:links.slice(0, 10), state:window.__researchbunnyDownload?.state, contentType:document.contentType});
 })()`;
 export function browserFetchScript(url: string, filename: string) {
   return `(() => {
@@ -108,57 +56,6 @@ export function browserFetchScript(url: string, filename: string) {
     })().catch(() => { state.state = 'error'; }).finally(() => clearTimeout(timer));
     return 'started';
   })()`;
-}
-export function chromeControlError(stderr: string, timedOut = false) {
-  const number = /\((-\d+)\)\s*$/.exec(stderr.trim())?.[1];
-  const detail = number ? ` (Apple Events ${number})` : '';
-  if (number === '-1743' || /not authorized|not permitted|허용되지|권한/i.test(stderr))
-    return new AppError('CHROME_PERMISSION', 'Chrome 제어 권한이 필요합니다. macOS 개인정보 보호 및 보안 → 자동화에서 ResearchBunny의 Chrome 제어를 허용하세요.');
-  if (/Allow JavaScript from Apple Events|JavaScript.*(?:turned off|disabled|비활성|꺼져)|Apple Events.*(?:JavaScript.*허용|꺼져)/i.test(stderr))
-    return new AppError('CHROME_JAVASCRIPT', 'Chrome의 보기 → 개발자 → Apple Events의 JavaScript 허용이 필요합니다. 설정 후 재시도하세요.');
-  if (number === '-1728' || number === '-1719')
-    return new AppError('CHROME_TAB_CLOSED', 'Chrome 작업 탭이 닫혔거나 사라졌습니다. 다음 문헌은 새 탭에서 계속 시도합니다.' + detail, true);
-  if (timedOut || number === '-1712')
-    return new AppError('CHROME_TIMEOUT', 'Chrome 응답 대기 시간이 초과되었습니다. 다음 문헌은 새 탭에서 계속 시도합니다.' + detail, true);
-  return new AppError('CHROME_CONTROL', 'Chrome 탭 제어 중 오류가 발생했습니다. 다음 문헌은 새 탭에서 계속 시도합니다.' + detail, true);
-}
-function script(args: string[], signal?: AbortSignal, timeout = 10000): Promise<string> {
-  signal?.throwIfAborted();
-  return new Promise((resolve, reject) => {
-    const child = spawn('/usr/bin/osascript', ['-', ...args], { stdio: ['pipe', 'pipe', 'pipe'], signal, timeout });
-    let stdout = '', stderr = '';
-    child.stdout.setEncoding('utf8').on('data', (value: string) => { stdout += value; if (stdout.length > 1_000_000) child.kill(); });
-    child.stderr.setEncoding('utf8').on('data', (value: string) => { stderr = (stderr + value).slice(-4096); });
-    child.once('error', reject);
-    child.once('close', code => {
-      if (signal?.aborted) { reject(signal.reason); return; }
-      if (code === 0) resolve(stdout.trim());
-      else reject(chromeControlError(stderr, child.killed));
-    });
-    child.stdin.on('error', () => {});
-    child.stdin.end(APPLESCRIPT);
-  });
-}
-export class SystemChrome implements ChromeControl {
-  async open(url: string, signal: AbortSignal) {
-    const value = await script(['open', url], signal);
-    const match = /^(\d+),(\d+)$/.exec(value);
-    if (!match) throw new AppError('CHROME_CONTROL', 'Chrome 작업 탭을 만들지 못했습니다.');
-    return { windowId: match[1], tabId: match[2] };
-  }
-  async probe(tab: ChromeTab, signal: AbortSignal) {
-    const args = [tab.windowId, tab.tabId];
-    const info = (await script(['info', ...args], signal)).split('\n');
-    const data = probeSchema.parse(JSON.parse(await script(['js', ...args, PROBE_JS], signal)));
-    // Chrome's built-in PDF viewer has an extension origin, but the tab's URL
-    // remains the publisher URL and is the source recorded with the attachment.
-    data.url = info[0];
-    if (info.at(-1) === 'true') data.ready = 'loading';
-    return data;
-  }
-  async navigate(tab: ChromeTab, url: string, signal: AbortSignal) { await script(['navigate', tab.windowId, tab.tabId, url], signal); }
-  async download(tab: ChromeTab, url: string, filename: string, signal: AbortSignal) { await script(['js', tab.windowId, tab.tabId, browserFetchScript(url, filename)], signal); }
-  async close(tab: ChromeTab) { await script(['close', tab.windowId, tab.tabId], undefined, 3000).catch(() => {}); }
 }
 export async function chromeDownloadDirectories(home = homedir()) {
   const root = join(home, 'Library/Application Support/Google/Chrome');
@@ -201,71 +98,111 @@ export async function downloadedPdfs(directories: string[]) {
   return files;
 }
 export interface BrowserRetrieval {
-  /** `start` opens another page than the paper's own, e.g. a Sci-Hub mirror's page for its DOI. */
   retrieve(work: Work, path: string, signal: AbortSignal, progress: (message: string) => void,
-    validate: (candidate: RetrievedPdf) => Promise<void>, directory?: string, start?: string): Promise<RetrievedPdf>;
+    validate: (candidate: RetrievedPdf) => Promise<void>, options: RetrievalOptions): Promise<RetrievedPdf>;
   /** Ends the run's browser session. */
   release?(): Promise<void>;
 }
+export type RetrievalOptions = {
+  /** Where this paper's browser downloads are saved. */
+  downloads: string;
+  /** Downloads that turned out to be another paper go here as `.pdf`, for the run's other papers. */
+  rejected?: string;
+  /** Opens another page than the paper's own, e.g. a Sci-Hub mirror's page for its DOI. */
+  start?: string;
+  /** False for unattended runs: the window is never shown and nobody is waited for. */
+  interactive?: boolean;
+};
+type Timing = { budgetMs: number; pollMs: number; autoMs: number; challengeMs: number; loginMs: number };
+const TIMING: Timing = { budgetMs: 60_000, pollMs: 1000, autoMs: 5000, challengeMs: 30_000, loginMs: 90_000 };
+/** Retrieval in the app's own Chrome: one minimized tab for the run, downloads saved straight into staging. */
 export class ChromeDownloads implements BrowserRetrieval {
-  constructor(private chrome: ChromeControl = new SystemChrome(), private directories = chromeDownloadDirectories,
-    private budgetMs = 60000, private pollMs = 1000) {}
+  private tab: BrowserTab | null = null;
+  private timing: Timing;
+  constructor(private host: BrowserHost, timing: Partial<Timing> = {}) { this.timing = { ...TIMING, ...timing }; }
+  async release() {
+    const tab = this.tab;
+    this.tab = null;
+    await tab?.close();
+    await this.host.idle();
+  }
   async retrieve(work: Work, path: string, signal: AbortSignal, progress: (message: string) => void,
-    validate: (candidate: RetrievedPdf) => Promise<void>, directory?: string, start?: string) {
+    validate: (candidate: RetrievedPdf) => Promise<void>, { downloads, rejected, start, interactive = true }: RetrievalOptions) {
+    const { budgetMs, pollMs, autoMs, challengeMs, loginMs } = this.timing;
     const doi = cleanDoi(work.doi);
     const initial = start ? publicUrl(start) : publicUrl(work.url) || (doi ? `https://doi.org/${encodeURI(doi)}` : publicUrl(work.oaUrl));
     if (!initial) throw new AppError('CHROME_NO_URL', 'Chrome에서 열 원문 주소가 없습니다.');
-    const itemSignal = AbortSignal.any([signal, AbortSignal.timeout(this.budgetMs)]);
-    progress('Chrome 다운로드 폴더 확인');
-    const dirs = directory ? [directory] : await untilAborted(this.directories(), AbortSignal.any([itemSignal, AbortSignal.timeout(2000)]))
-      .catch(error => {
-        itemSignal.throwIfAborted();
-        if (error instanceof AppError) throw error;
-        throw new AppError('CHROME_DIRECTORY', 'Chrome 저장 폴더 자동 감지가 지연됐습니다. 원문 찾기에서 실제 다운로드 폴더를 한 번 선택하세요.');
-      });
-    progress('Chrome 저장 폴더 · ' + dirs.join(' · '));
-    const baseline = await untilAborted(downloadedPdfs(dirs), itemSignal);
+    // Waiting for the person extends the deadline; the hard stop bounds even that.
+    const itemSignal = AbortSignal.any([signal, AbortSignal.timeout(budgetMs + loginMs)]);
+    let deadline = Date.now() + budgetMs;
+    progress(start ? `앱 전용 Chrome에서 열기 · ${new URL(initial).hostname}` : '앱 전용 Chrome에서 원문 열기');
+    const tab = this.tab = await this.host.tab(itemSignal);
     const filename = `researchbunny-${randomUUID()}.pdf`;
-    const tried = new Set<string>(), rejected = new Set<string>();
-    let previousFiles = new Map<string, FileStamp>();
+    const tried = new Set<string>(), handled = new Set<string>();
     let lastUrl = '', stableSince = Date.now(), pending: string | null = null;
-    let exhaustedSince = 0, challengeSince = 0, downloadedSince = 0;
-    progress(start ? `Chrome에서 열기 · ${new URL(initial).hostname}` : '로그인된 Chrome에서 원문 열기');
-    const tab = await this.chrome.open(initial, itemSignal);
+    let exhaustedSince = 0, waitingSince = 0, fetchedSince = 0, asked = false, probeErrors = 0;
     try {
+      await tab.collect(downloads, itemSignal);
+      await tab.navigate(initial, itemSignal);
       while (true) {
         itemSignal.throwIfAborted();
-        const files = await untilAborted(downloadedPdfs(dirs), itemSignal);
-        for (const [file, stamp] of files) {
-          const before = baseline.get(file), previous = previousFiles.get(file);
-          if ((before?.mtime === stamp.mtime && before.size === stamp.size) || rejected.has(file) || previous?.size !== stamp.size || previous.mtime !== stamp.mtime) continue;
-          const candidate: RetrievedPdf = {sourceUrl:pending || publicUrl(lastUrl) || initial, doi, method:"chrome", requireIdentity:!file.endsWith(filename), original:file};
-          await copyFile(file, path); // The original stays until the verified copy is stored.
+        if (Date.now() > deadline) throw new AppError('CHROME_TIMEOUT', '앱 전용 Chrome에서 시간 안에 PDF를 받지 못했습니다. 재시도하거나 원문 페이지에서 직접 받으세요.', true);
+        for (const download of tab.downloads()) {
+          if (download.state !== 'completed' || handled.has(download.guid)) continue;
+          handled.add(download.guid);
+          const ours = download.suggestedFilename === filename;
+          const candidate: RetrievedPdf = {sourceUrl:publicUrl(download.url) || pending || publicUrl(lastUrl) || initial, doi, method:"chrome", requireIdentity:!ours};
+          await copyFile(download.path, path);
           try { await validate(candidate); return candidate; }
-          catch (error) { itemSignal.throwIfAborted(); rejected.add(file); if (file.endsWith(filename)) throw error; }
+          catch (error) {
+            itemSignal.throwIfAborted();
+            if (rejected) await mkdir(rejected, {recursive:true}).then(() => rename(download.path, join(rejected, `${download.guid}.pdf`))).catch(() => {});
+            if (ours) throw error;
+          }
         }
-        previousFiles = files;
-        const info = await this.chrome.probe(tab, itemSignal);
-        // Chrome may still expose the new tab's blank page before navigation commits.
-        if (!lastUrl && info.url === 'about:blank') {
-          await delay(this.pollMs, undefined, {signal:itemSignal});
+        if (tab.downloads().some(download => download.state === 'inProgress')) {
+          progress('앱 전용 Chrome에서 PDF 내려받는 중');
+          await delay(pollMs, undefined, {signal:itemSignal});
+          continue;
+        }
+        let info: ChromeProbe;
+        try { info = probeSchema.parse(JSON.parse(await tab.evaluate<string>(PROBE_JS, itemSignal))); probeErrors = 0; }
+        catch (error) {
+          itemSignal.throwIfAborted();
+          // A page mid-navigation has no context to evaluate in; only a page that never answers fails.
+          if (!(error instanceof AppError) || error.code === 'CHROME_CLOSED' || ++probeErrors > 5) throw error;
+          await delay(pollMs, undefined, {signal:itemSignal});
           continue;
         }
         const current = publicUrl(info.url);
         if (!current) throw new AppError('CHROME_URL', 'Chrome의 원문 주소를 확인할 수 없습니다.');
         if (current !== lastUrl) { lastUrl = current; stableSince = Date.now(); exhaustedSince = 0; }
-        if (info.challenge) {
-          if (!challengeSince) { challengeSince = Date.now(); progress('Chrome에서 사람 인증을 완료하세요 · 30초 후 다음 문헌으로 이동'); }
-          if (Date.now() - challengeSince > 30000) throw new AppError('CHROME_CHALLENGE', 'Chrome 사람 인증 대기 시간이 초과되어 다음 문헌으로 넘어갑니다.');
-        } else if (info.ready !== 'loading' && Date.now() - stableSince >= Math.min(3000, this.pollMs * 3)) {
-          challengeSince = 0;
+        if (info.challenge || info.login) {
+          waitingSince ||= Date.now();
+          const waited = Date.now() - waitingSince, wait = info.login ? loginMs : challengeMs;
+          // Many robot checks clear by themselves within seconds; the window stays down for those.
+          if (!interactive && waited > autoMs)
+            throw info.login ? new AppError('CHROME_LOGIN', '로그인이 필요한 페이지입니다. PDF 원문 찾기의 "전용 Chrome 열기(로그인)"에서 로그인한 뒤 재시도하세요.')
+              : new AppError('CHROME_CHALLENGE', '사람 인증(로봇 확인)이 필요한 페이지라 넘어갔습니다. PDF 원문 찾기에서 재시도하면 확인 창을 띄웁니다.');
+          if (interactive && !asked && waited > (info.login ? 0 : autoMs)) {
+            asked = true;
+            const message = info.login ? '앱 전용 Chrome에서 기관·출판사 로그인을 완료하세요' : '앱 전용 Chrome에서 사람 인증을 완료하세요';
+            progress(`${message} · ${Math.round(wait / 1000)}초 후 다음 문헌으로 이동`);
+            deadline = Math.max(deadline, Date.now() + wait + 15_000);
+            await tab.reveal(message, itemSignal);
+          }
+          if (asked && waited > wait + (info.login ? 0 : autoMs))
+            throw new AppError(info.login ? 'CHROME_LOGIN' : 'CHROME_CHALLENGE', info.login ? '로그인 대기 시간이 지나 다음 문헌으로 넘어갑니다. 로그인 후 재시도하세요.' : '사람 인증 대기 시간이 지나 다음 문헌으로 넘어갑니다.');
+        } else if (info.ready !== 'loading' && Date.now() - stableSince >= Math.min(3000, pollMs * 3)) {
+          waitingSince = 0;
           if (pending) {
             if (info.state === 'done') {
-              if (!downloadedSince) { downloadedSince = Date.now(); progress('Chrome 다운로드 완료 대기 · 저장 창이 열렸다면 저장하세요'); }
-              if (Date.now() - downloadedSince > 20000) throw new AppError('CHROME_DOWNLOAD', 'Chrome에서 파일 저장을 완료하지 못했습니다. 다운로드 차단 또는 저장 위치를 확인하세요.');
+              // The page handed the PDF to Chrome; its download events finish the job.
+              fetchedSince ||= Date.now();
+              if (Date.now() - fetchedSince > 20_000) throw new AppError('CHROME_DOWNLOAD', '앱 전용 Chrome에서 파일 저장을 완료하지 못했습니다.');
             } else if (info.state !== 'running') {
-              const url = pending; pending = null;
-              if (info.state === 'error' && current !== url) { await this.chrome.navigate(tab, url, itemSignal); stableSince = Date.now(); }
+              const url = pending; pending = null; fetchedSince = 0;
+              if (info.state === 'error' && current !== url) { await tab.navigate(url, itemSignal); stableSince = Date.now(); }
             }
           } else {
             const candidates = [...info.links.flatMap(url => /wiley\.com\/doi\/e?pdf\//.test(url) ? [url.replace(/\/doi\/e?pdf\//, '/doi/pdfdirect/'), url] : [url]), ...publisherPdfUrls(current)];
@@ -275,17 +212,17 @@ export class ChromeDownloads implements BrowserRetrieval {
               tried.add(next); exhaustedSince = 0;
               progress(`Chrome PDF 다운로드 · ${new URL(next).hostname}`);
               if (new URL(next).origin === new URL(current).origin && !/(?:^|\.)(?:sciencedirect|elsevier)\.com$/.test(new URL(next).hostname)) {
-                pending = next; await this.chrome.download(tab, next, filename, itemSignal);
-              } else { await this.chrome.navigate(tab, next, itemSignal); stableSince = Date.now(); }
+                pending = next; await tab.evaluate(browserFetchScript(next, filename), itemSignal);
+              } else { await tab.navigate(next, itemSignal); stableSince = Date.now(); }
             } else {
-              if (!exhaustedSince) { exhaustedSince = Date.now(); progress('Chrome에서 PDF를 직접 내려받을 수 있습니다 · 5초 후 다음 문헌으로 이동'); }
-              if (Date.now() - exhaustedSince > 5000) throw new AppError('CHROME_UNAVAILABLE', '로그인된 Chrome에서도 PDF를 확보하지 못했습니다. 원문 페이지에서 직접 내려받거나 재시도하세요.');
+              if (!exhaustedSince) { exhaustedSince = Date.now(); progress('Chrome에서 PDF 링크를 찾지 못했습니다 · 5초 후 다음 문헌으로 이동'); }
+              if (Date.now() - exhaustedSince > 5000) throw new AppError('CHROME_UNAVAILABLE', '앱 전용 Chrome에서도 PDF를 확보하지 못했습니다. 원문 페이지에서 직접 내려받거나 재시도하세요.');
             }
           }
         }
-        await delay(this.pollMs, undefined, {signal:itemSignal});
+        await delay(pollMs, undefined, {signal:itemSignal});
       }
     } catch (error) { itemSignal.throwIfAborted(); throw error; }
-    finally { await this.chrome.close(tab); }
+    finally { await tab.reset().catch(() => {}); }
   }
 }
