@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { copyFile, lstat, mkdir, readFile, readdir, rename } from "node:fs/promises";
-import { homedir } from "node:os";
+import { copyFile, mkdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
@@ -56,46 +55,6 @@ export function browserFetchScript(url: string, filename: string) {
     })().catch(() => { state.state = 'error'; }).finally(() => clearTimeout(timer));
     return 'started';
   })()`;
-}
-export async function chromeDownloadDirectories(home = homedir()) {
-  const root = join(home, 'Library/Application Support/Google/Chrome');
-  const directories = new Set([join(home, 'Downloads')]);
-  try {
-    const state = JSON.parse(await readFile(join(root, 'Local State'), 'utf8'));
-    for (const profile of Object.keys(state.profile?.info_cache || {})) {
-      if (!/^(Default|Profile \d+)$/.test(profile)) continue;
-      try {
-        const prefs = JSON.parse(await readFile(join(root, profile, 'Preferences'), 'utf8'));
-        if (typeof prefs.download?.default_directory === 'string' && prefs.download.default_directory.startsWith('/')) directories.add(prefs.download.default_directory);
-      } catch (error) {
-        if (['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code || '')) throw error;
-        // A profile may have been removed.
-      }
-    }
-  } catch (error) {
-    if (['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code || ''))
-      throw new AppError('CHROME_DIRECTORY', 'Chrome 저장 폴더를 자동 감지할 권한이 없습니다. 원문 찾기에서 실제 다운로드 폴더를 한 번 선택하세요. 이후 자동으로 기억합니다.');
-    if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code || ''))
-      throw new AppError('CHROME_DIRECTORY', 'Chrome 저장 폴더 설정을 읽지 못했습니다. 원문 찾기에서 실제 다운로드 폴더를 한 번 선택하세요. 이후 자동으로 기억합니다.');
-  }
-  return [...directories];
-}
-type FileStamp = { size: number; mtime: number };
-export async function downloadedPdfs(directories: string[]) {
-  const files = new Map<string, FileStamp>();
-  let readable = false;
-  for (const directory of directories) {
-    const names = await readdir(directory).catch(() => null);
-    if (!names) continue;
-    readable = true;
-    for (const name of names) {
-      if (!name.toLowerCase().endsWith('.pdf')) continue;
-      const path = join(directory, name), info = await lstat(path).catch(() => null);
-      if (info?.isFile() && info.size > 0 && info.size <= 150 * 1024 * 1024) files.set(path, {size:info.size, mtime:info.mtimeMs});
-    }
-  }
-  if (!readable) throw new AppError('CHROME_DIRECTORY', 'Chrome 다운로드 폴더에 접근하지 못했습니다. 원문 찾기의 폴더 선택에서 Chrome의 저장 폴더를 지정하세요.');
-  return files;
 }
 export interface BrowserRetrieval {
   retrieve(work: Work, path: string, signal: AbortSignal, progress: (message: string) => void,

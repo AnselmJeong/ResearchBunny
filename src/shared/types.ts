@@ -272,7 +272,6 @@ export interface Run {
     /** False for unattended runs: the app's Chrome never shows its window or waits for a person. */
     interactive?: boolean;
     downloadDirectory?: string;
-    observedDirectories?: string[];
   };
 }
 export type PdfDownloadScope = "archive" | "selected" | "topic" | "unclassified" | "collection";

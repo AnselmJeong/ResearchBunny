@@ -4,8 +4,8 @@ import { isAbsolute, join } from "node:path";
 import type { Library } from "../db/database";
 import { extractPdf, hashFile, verifyPdf, hasValidPdf } from "../interchange/pdf";
 import { cleanDoi, DEFAULT_SCIHUB_MIRRORS, FulltextEngine, isBook, SciHubError, sciHubMirrors } from "./engine";
-import { chromeDownloadDirectories, type BrowserRetrieval, type RetrievalOptions } from "./chrome";
-import { LocalDownloads, isAuxiliaryPdf } from "./local-downloads";
+import type { BrowserRetrieval, RetrievalOptions } from "./chrome";
+import { LocalDownloads, downloadDirectories, isAuxiliaryPdf } from "./local-downloads";
 import type { RetrievedPdf } from "./engine";
 import { titleSimilarity } from "../../shared/domain";
 import { AppError, DEFAULT_FILTERS, now, type AppEvent, type Attachment, type MissingPdfs, type PdfDownloadItem, type PdfDownloadPreview, type PdfDownloadScope, type Run, type Work } from "../../shared/types";
@@ -53,7 +53,7 @@ export class PdfDownloads {
     private browser?: BrowserRetrieval,
   ) { this.local = new LocalDownloads(workerPath); }
   rememberDirectory(directory: string) {
-    if (typeof directory !== 'string' || !isAbsolute(directory)) throw new AppError('CHROME_DIRECTORY', '다운로드 폴더의 절대 경로가 필요합니다.');
+    if (typeof directory !== 'string' || !isAbsolute(directory)) throw new AppError('DOWNLOAD_DIRECTORY', '다운로드 폴더의 절대 경로가 필요합니다.');
     this.db.pref('pdfDownloadDirectory', directory);
   }
   sciHub(): { enabled: boolean; mirrors: string[] } {
@@ -74,8 +74,7 @@ export class PdfDownloads {
   stopRecoveryMonitor() { this.stopping = true; clearInterval(this.recoveryTimer); this.recoveryTimer = undefined; }
   private async directories(run: Run) {
     const directory = run.download!.downloadDirectory || this.db.pref<string>('pdfDownloadDirectory');
-    const directories = directory ? [directory] : await chromeDownloadDirectories();
-    run.download!.observedDirectories = directories;
+    const directories = directory ? [directory] : await downloadDirectories();
     if (directory) run.download!.downloadDirectory = directory;
     return directories;
   }
@@ -134,14 +133,17 @@ export class PdfDownloads {
     if (original && await hashFile(original).catch(() => null) === hash) await rm(original, {force:true}).catch(() => {});
     await this.syncHistory();
   }
-  private async reconcile(run: Run, staging: string, signal: AbortSignal) {
-    if (!run.download!.useBrowser) return 0;
+  /**
+   * Attach PDFs the person saved themselves (their Downloads), and browser downloads set aside
+   * as another paper's (`extra`), to the run's unfinished papers.
+   */
+  private async reconcile(run: Run, staging: string, signal: AbortSignal, extra: string[] = []) {
     const targets = run.download!.items.filter(item => this.isArchived(run.projectId, item.workId)).map(item => this.db.get(item.workId));
     const needed = run.download!.items.filter(item => ['pending', 'failed'].includes(item.status) && targets.some(w => w.id === item.workId));
     if (!needed.length) return 0;
     let recovered = 0;
-    const directories = await this.directories(run);
-    await this.local.scan(directories, signal);
+    const directories = [...await this.directories(run), ...extra];
+    await this.local.scan(directories, signal, extra);
     for (const item of needed) {
       signal.throwIfAborted();
       const work = this.db.get(item.workId);
@@ -171,8 +173,8 @@ export class PdfDownloads {
     if (this.active.size || this.stopping) return;
     await this.syncHistory();
     for (const run of this.db.runs()) {
-      if (!run.download?.useBrowser) continue;
-      if (!['completed', 'failed'].includes(run.status) || !run.download.items.some(i => i.status === 'failed' || i.status === 'pending')) continue;
+      // Every download run, with or without the browser: the person may have saved the PDF themselves.
+      if (!run.download || !['completed', 'failed'].includes(run.status) || !run.download.items.some(i => i.status === 'failed' || i.status === 'pending')) continue;
       const control = new AbortController();
       this.active.set(run.id, control);
       const staging = join(this.db.root, 'downloads', run.id);
@@ -487,9 +489,9 @@ export class PdfDownloads {
           this.currentItems.delete(id);
           await rm(path, { force: true });
           this.save(run, "progress");
-          await this.reconcile(run, staging, signal).catch(() => { signal.throwIfAborted(); });
         }
       }
+      await this.reconcile(run, staging, signal, [join(staging, "chrome-rejected")]).catch(() => { signal.throwIfAborted(); });
       run.status = "completed";
     } catch {
       run.status = signal.aborted ? "cancelled" : "failed";

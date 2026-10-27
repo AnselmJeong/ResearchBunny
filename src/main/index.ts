@@ -71,7 +71,7 @@ async function command(name: Command, input: any): Promise<any> {
     }
     case "chooseDownloadDirectory": {
       const result = await dialog.showOpenDialog(window!, {
-        title: "Chrome이 PDF를 저장하는 다운로드 폴더 선택",
+        title: "직접 내려받은 PDF가 저장되는 다운로드 폴더 선택",
         properties: ["openDirectory"],
       });
       if (result.canceled) return null;
