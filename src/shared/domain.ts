@@ -9,6 +9,28 @@ export function normalizeDoi(value: unknown): string | null {
     .toLowerCase();
   return /^10\.\d{4,9}\/\S+$/.test(doi) ? doi : null;
 }
+const ARXIV_ID = String.raw`(\d{4}\.\d{4,5}|[a-z]+(?:-[a-z]+)?(?:\.[a-z]{2})?\/\d{7})(?!\d)`;
+/** Drop an old-style subject class (`math.GT/0309136` → `math/0309136`); new ids must start with YYMM. */
+function arxivId(raw: string): string | null {
+  const id = raw.toLowerCase().replace(/^([a-z-]+)\.[a-z]{2}\//, "$1/");
+  const month = /^\d{2}(\d{2})\./.exec(id)?.[1];
+  return month && (+month < 1 || +month > 12) ? null : id;
+}
+/** `arXiv:2610.27099v1`, `2610.27099`, an arxiv.org link or `hep-th/9901001`, without the version. */
+export function normalizeArxiv(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = value.trim().match(new RegExp(String.raw`^(?:arxiv:\s*|(?:https?:\/\/)?(?:www\.|export\.)?arxiv\.org\/(?:abs|pdf)\/)?${ARXIV_ID}(?:v\d+)?(?:\.pdf)?\/?$`, "i"));
+  return match ? arxivId(match[1]) : null;
+}
+/** arXiv registers a DataCite DOI for every paper, the pre-2022 ones included. */
+export const arxivDoi = (id: string) => `10.48550/arxiv.${id}`;
+/** DOIs of arXiv ids printed in PDF text: the page-1 stamp `arXiv:2610.27099v1 [cs.LG] …` or an arxiv.org link. */
+export function arxivDoisIn(text: string): string[] {
+  const ids = [...text.matchAll(new RegExp(String.raw`(?:\barxiv:\s*|arxiv\.org\/(?:abs|pdf)\/)${ARXIV_ID}`, "gi"))]
+    .map((m) => arxivId(m[1]))
+    .filter((id): id is string => !!id);
+  return [...new Set(ids)].map(arxivDoi);
+}
 /** True when a link only resolves `doi`; OpenAlex often reports the DOI link as the landing page. */
 export function isDoiLink(url: string | null | undefined, doi: string | null | undefined): boolean {
   if (!url || !doi) return false;

@@ -1,4 +1,5 @@
 import type { OpenAlex } from "../providers/openalex";
+import { fetchDoiRecord } from "../providers/doi-org";
 import { fetchPubMedByIds } from "../search/pubmed-search";
 import type { FetchLike } from "../search/web-search";
 import { AppError, type Work } from "../../shared/types";
@@ -77,7 +78,14 @@ export class ShelfResolver {
       this.reserve(1);
       try {
         const page = await this.oa.page({ filter: `doi:${chunk.join("|")}`, per_page: "50" }, signal, onCall);
-        for (const work of page.works) if (work.doi) found.set(work.doi, work);
+        for (const work of page.works) {
+          if (work.doi) found.set(work.doi, work);
+          // A preprint merged into its journal record keeps the arXiv/bioRxiv DOI only on a location.
+          for (const l of Array.isArray(work.raw.locations) ? (work.raw.locations as { doi?: unknown }[]) : []) {
+            const doi = normalizeDoi(l?.doi);
+            if (doi && chunk.includes(doi) && !found.has(doi)) found.set(doi, work);
+          }
+        }
       } catch (error) {
         // A malformed DOI can fail a whole batch; title search still covers those files.
         if (signal.aborted || !(error instanceof AppError) || !["PROVIDER", "PROVIDER_SCHEMA", "NOT_FOUND"].includes(error.code)) throw error;
@@ -105,11 +113,12 @@ export class ShelfResolver {
     const best = ranked[0];
     const candidates = ranked.slice(0, 3).filter((r) => r.similarity >= 0.4).map((r) => candidate(r.work, r.similarity));
     if (!best) return { kind: "none", candidates, note: "제목 검색 결과 없음" };
-    const author = input.firstAuthor ? authorMatches(input.firstAuthor, best.work.authors[0]) : null;
+    // Filenames often name a co-author, and preprint and journal versions can order authors differently.
+    const author = input.firstAuthor ? best.work.authors.some((a) => authorMatches(input.firstAuthor, a)) : null;
     if (best.similarity >= 0.9 && (author === true || (author === null && best.similarity >= 0.97)))
       return { kind: "accept", work: best.work, method: "title", similarity: best.similarity };
     if (best.similarity >= 0.75)
-      return { kind: "review", candidates, note: best.similarity >= 0.9 ? "제목은 일치하지만 첫 저자가 다름" : "제목 유사도 0.75–0.9" };
+      return { kind: "review", candidates, note: best.similarity >= 0.9 ? "제목은 일치하지만 파일명 저자가 저자 목록에 없음" : "제목 유사도 0.75–0.9" };
     return { kind: "none", candidates, note: "일치하는 서지를 찾지 못함" };
   }
 
@@ -150,9 +159,15 @@ export class ShelfResolver {
     return result;
   }
 
+  /** The DOI's registration agency, for a paper OpenAlex has not indexed yet. */
+  doiRecord(doi: string, signal: AbortSignal): Promise<Work> {
+    return fetchDoiRecord(doi, signal, this.fetcher);
+  }
+
   /** Fill missing OpenAlex abstracts from PubMed `efetch`, 50 PMIDs per request. */
   async abstracts(works: Work[], signal: AbortSignal) {
-    const byPmid = new Map(works.map((w) => [pmidOf(w)!, w]));
+    // Manual lookups pass arXiv records too, which have no PMID to ask PubMed about.
+    const byPmid = new Map(works.filter((w) => pmidOf(w)).map((w) => [pmidOf(w)!, w]));
     const ids = [...byPmid.keys()];
     for (let i = 0; i < ids.length; i += 50) {
       signal.throwIfAborted();

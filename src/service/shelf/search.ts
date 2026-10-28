@@ -1,7 +1,7 @@
 import type { Library } from "../db/database";
 import type { Shelf } from "./indexer";
 import { embedInput } from "./indexer";
-import { normalizeDoi, normalizeOpenAlex, normalizePmid, titleSimilarity, tokens } from "../../shared/domain";
+import { arxivDoi, normalizeArxiv, normalizeDoi, normalizeOpenAlex, normalizePmid, titleSimilarity, tokens } from "../../shared/domain";
 import type { ShelfMembership, Work } from "../../shared/types";
 import { authorMatches, titleKey, type ShelfFileInfo, type ShelfHit, type ShelfRelated, type ShelfRelatedItem, type ShelfSearchResult } from "../../shared/shelf";
 
@@ -70,7 +70,7 @@ export class ShelfQueries {
   async search(query: string, opts: { limit: number; folderIds?: string[]; signal?: AbortSignal }): Promise<ShelfSearchResult> {
     const signal = opts.signal || AbortSignal.timeout(15000);
     const allowed = opts.folderIds?.length ? new Set(opts.folderIds.flatMap((id) => this.db.shelfScope(id))) : this.shelfWorks(false);
-    const identifier = normalizeOpenAlex(query) ? ["openalex", normalizeOpenAlex(query)!] : normalizeDoi(query) ? ["doi", normalizeDoi(query)!] : normalizePmid(query) ? ["pmid", normalizePmid(query)!] : null;
+    const identifier = normalizeOpenAlex(query) ? ["openalex", normalizeOpenAlex(query)!] : normalizeDoi(query) ? ["doi", normalizeDoi(query)!] : normalizeArxiv(query) ? ["doi", arxivDoi(normalizeArxiv(query)!)] : normalizePmid(query) ? ["pmid", normalizePmid(query)!] : null;
     if (identifier) {
       const id = this.db.findIdentifier(identifier[0], identifier[1]);
       const hits = id && allowed.has(id) ? [id] : [];

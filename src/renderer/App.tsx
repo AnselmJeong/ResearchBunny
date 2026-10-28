@@ -1365,7 +1365,7 @@ export function App() {
                       <input
                         ref={searchInput}
                         aria-label="OpenAlex에서 논문 검색"
-                        placeholder="연구 주제, 제목, DOI, PMID로 논문 찾기"
+                        placeholder="연구 주제, 제목, DOI, arXiv, PMID로 논문 찾기"
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                       />
