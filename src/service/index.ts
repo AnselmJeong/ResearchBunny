@@ -14,7 +14,8 @@ process.on("message", async (message: unknown) => {
     const data = await service.call(command, args);
     if (command === "shutdown") {
       const deadline = Date.now() + 3000;
-      while ((service.busy() || service.shelf.active) && Date.now() < deadline) await Bun.sleep(25);
+      while ((service.busy() || service.shelf.active || service.passages.active) && Date.now() < deadline) await Bun.sleep(25);
+      service.passageStore.close();
       service.db.close();
     }
     port.postMessage({ id, result: { ok: true, data } });
@@ -41,7 +42,8 @@ process.once("disconnect", async () => {
   try {
     await service.call("shutdown", {});
     const deadline = Date.now() + 3000;
-    while ((service.busy() || service.shelf.active) && Date.now() < deadline) await Bun.sleep(25);
+    while ((service.busy() || service.shelf.active || service.passages.active) && Date.now() < deadline) await Bun.sleep(25);
+    service.passageStore.close();
     service.db.close();
   } finally {
     process.exit(0);

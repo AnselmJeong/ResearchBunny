@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ArrowRight, FolderOpen, FolderSync, LibraryBig, LoaderCircle, Pause, Play, RefreshCw } from "lucide-react";
 import { DEFAULT_EMBED_MODEL, DEFAULT_OLLAMA_URL, DEFAULT_SHELF_EXCLUDE, isLoopbackUrl, type ShelfAdoptResult, type ShelfMovePreview, type ShelfStatusResult } from "../../shared/shelf";
 import type { Input } from "../../shared/contracts";
+import type { PassageStatus } from "../../shared/passages";
 
 const STATUS_LABELS: [keyof ShelfStatusResult["summary"]["counts"]["statuses"], string][] = [
   ["ok", "확인됨"], ["review", "확인 필요"], ["provisional", "파일명 서지"], ["auxiliary", "보충자료"], ["failed", "실패"], ["missing", "사라짐"], ["hidden", "앱에서 뺌"],
@@ -23,6 +24,50 @@ function moveSummary(move: ShelfMovePreview) {
     move.links ? `프로젝트 논문 ${n(move.links)}편은 이전 위치의 PDF에 계속 연결됩니다.` : "",
     "파일은 옮기거나 지우지 않습니다. 앞으로 앱이 받는 PDF는 새 위치의 맨 위 폴더(수신함)에 저장합니다.",
   ].filter(Boolean);
+}
+
+/** The passage index: PDFs split into passages and passages embedded, with its own pause. */
+function PassageIndexStatus({ onError }: { onError: (error: unknown) => void }) {
+  const [status, setStatus] = useState<PassageStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = () => window.bunny.passageStatus({}).then(setStatus);
+  useEffect(() => {
+    void load().catch(onError);
+    // Progress events carry the job; counts of scans and failures are reloaded when a pass ends.
+    return window.bunny.onEvent((event) => {
+      if (event.type !== "passages") return;
+      setStatus((current) => current && { ...current, job: event.job });
+      if (event.job.state !== "running") void load().catch(() => {});
+    });
+  }, []);
+  const control = async (action: Input<"passageControl">["action"]) => {
+    setBusy(true);
+    try { await window.bunny.passageControl({ action }); await load(); } catch (error) { onError(error); } finally { setBusy(false); }
+  };
+  if (!status) return null;
+  const { job } = status;
+  const running = job.state === "running";
+  const left = job.passages.total - job.passages.done;
+  return <div className="passage-index" role="group" aria-label="본문 구절 색인">
+    <h4>본문 구절 색인</h4>
+    <p className="subtle" role="status">
+      {running && <LoaderCircle size={13} className="spin" />} {job.message || (job.docs.total ? `PDF ${job.docs.done.toLocaleString()}/${job.docs.total.toLocaleString()}편 색인됨` : "대기 중")}
+      {running && job.rate ? ` · 초당 ${job.rate}구절 · 남은 시간 약 ${Math.max(1, Math.round(left / job.rate / 60)).toLocaleString()}분` : ""}
+    </p>
+    <dl className="shelf-counts">
+      <div><dt>PDF</dt><dd>{job.docs.done.toLocaleString()} / {job.docs.total.toLocaleString()}</dd></div>
+      <div><dt>구절 임베딩</dt><dd>{job.passages.done.toLocaleString()} / {job.passages.total.toLocaleString()}</dd></div>
+      <div><dt>텍스트 없음(스캔)</dt><dd>{status.empty.toLocaleString()}</dd></div>
+      <div><dt>읽기 실패</dt><dd>{status.failed.toLocaleString()}</dd></div>
+    </dl>
+    <div className="stack-actions">
+      {job.state === "paused"
+        ? <button disabled={busy} onClick={() => void control("resume")}><Play size={14} />본문 색인 재개</button>
+        : <button disabled={busy} onClick={() => void control("pause")}><Pause size={14} />본문 색인 일시정지</button>}
+      <button disabled={busy || running || job.state === "paused"} onClick={() => void control("run")}><RefreshCw size={14} />지금 이어서 색인</button>
+    </div>
+    <p className="subtle">PDF 본문을 문단 단위 구절로 나눠 이 Mac의 Ollama로 임베딩합니다. 서고 스캔이 끝날 때마다 새 PDF를 이어서 색인하며, 색인 파일(<code>passages.sqlite</code>)은 지워도 다시 만들 수 있습니다.</p>
+  </div>;
 }
 
 export function ShelfSettings({ onError, onChanged }: { onError: (error: unknown) => void; onChanged: () => void }) {
@@ -174,7 +219,8 @@ export function ShelfSettings({ onError, onChanged }: { onError: (error: unknown
         <summary>실패 {status.failures.length}건</summary>
         <ul className="shelf-failures">{status.failures.map((f) => <li key={f.fileId}><strong>{f.path}</strong><span className="subtle"> · {f.reason}</span></li>)}</ul>
       </details>}
+      <PassageIndexStatus onError={onError} />
     </>}
-    <p className="subtle">임베딩과 검색어는 이 Mac의 Ollama에서만 처리합니다. 서지 확인에는 DOI와 제목만 OpenAlex·PubMed에 보내고, PDF 본문은 보내지 않습니다.</p>
+    <p className="subtle">임베딩과 검색어는 이 Mac의 Ollama에서만 처리합니다. 서지 확인에는 DOI와 제목만 OpenAlex·PubMed에 보냅니다. AI 답변과 보고서는 근거가 되는 논문 본문을 연결된 AI(Codex·Claude 등)에 보냅니다.</p>
   </section>;
 }

@@ -137,6 +137,45 @@ export function extractPdf(
     });
   });
 }
+const pdfLineSchema = z.object({ t: z.string(), x: z.number(), y: z.number(), w: z.number(), h: z.number() });
+const pdfLinesSchema = z.object({
+  pages: z.array(z.object({ width: z.number(), height: z.number(), lines: z.array(pdfLineSchema) })),
+  total: z.number(),
+});
+export type PdfLine = z.infer<typeof pdfLineSchema>;
+export type PdfLines = z.infer<typeof pdfLinesSchema>;
+/** Every page's text lines with position and size, for passage indexing; null when the PDF cannot be read. */
+export function extractPdfLines(path: string, workerPath: string, signal: AbortSignal): Promise<PdfLines | null> {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const worker = fork(workerPath, [path, "passages"], {
+      execPath: process.execPath,
+      execArgv: [],
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+      serialization: "json",
+    });
+    let settled = false;
+    const done = (result: PdfLines | null, error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      worker.kill();
+      if (error) reject(error);
+      else resolve(result);
+    };
+    // Books over SMB take a while; a stuck parser must not hold the queue.
+    const timer = setTimeout(() => done(null), 180000);
+    const abort = () => done(null, new AppError("CANCELLED", "취소되었습니다."));
+    signal.addEventListener("abort", abort, { once: true });
+    worker.once("message", (data) => {
+      const parsed = pdfLinesSchema.safeParse(data);
+      done(parsed.success ? parsed.data : null);
+    });
+    worker.once("error", () => done(null));
+    worker.once("exit", () => done(null));
+  });
+}
 export class PdfImports {
   active = new Map<string, AbortController>();
   /** Set by the service when a shelf exists: copies go to its inbox instead of the app's folder. */

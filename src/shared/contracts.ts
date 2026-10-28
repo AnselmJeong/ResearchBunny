@@ -3,6 +3,7 @@ import type { CodexStatus, CodexModel } from "./codex";
 import type { ClaudeStatus } from "./claude";
 import type { Genealogy, GenealogySummary, GenealogyView, Outline } from "./genealogy";
 import type { ChatSession, ChatThreadSummary } from "./chat";
+import type { PassageSearchResult, PassageStatus } from "./passages";
 import type { ShelfAdoptResult, ShelfMovePreview, ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo, ShelfSortResult, ShelfSortView } from "./shelf";
 import type {
   Snapshot,
@@ -363,6 +364,10 @@ export const schemas = {
   shelfAdopt: z.object({}),
   shelfRelated: z.object({ projectId: id, workId: id, limit: z.number().int().min(1).max(50).default(10), otherFoldersOnly: z.boolean().default(false) }),
   shelfSearch: z.object({ projectId: id, query: z.string().trim().min(1).max(2000), limit: z.number().int().min(1).max(200).default(30) }),
+  /** Passages of shelf PDFs for a question or keywords, within a shelf folder (default: the whole shelf). */
+  passageSearch: z.object({ projectId: id, query: z.string().trim().min(1).max(2000), folderId: id.optional(), limit: z.number().int().min(1).max(100).default(40) }),
+  passageStatus: z.object({}),
+  passageControl: z.object({ action: z.enum(["pause", "resume", "run"]) }),
   /** One paper's references, citing papers or related papers, listed in the inspector. Nothing joins the project until it is saved. */
   workLinks: z.object({
     projectId: id,
@@ -491,6 +496,9 @@ export interface Outputs {
   shelfAdopt: ShelfAdoptResult;
   shelfRelated: ShelfRelated;
   shelfSearch: ShelfSearchResult;
+  passageSearch: PassageSearchResult;
+  passageStatus: PassageStatus;
+  passageControl: void;
   workLinks: WorkLinks;
   shelfFile: ShelfFileDetails;
   shelfResolve: ShelfFileDetails;

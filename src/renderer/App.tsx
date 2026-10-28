@@ -96,6 +96,7 @@ import { ShelfSortDialog } from "./components/ShelfSortDialog";
 import { Settings } from "./components/Settings";
 import { GenealogyWorkspace } from "./components/GenealogyWorkspace";
 import { GenealogyDialog } from "./components/GenealogyDialog";
+import { PassageResults } from "./components/PassageResults";
 import {
   ImportDialog,
   WorkEditor,
@@ -174,7 +175,11 @@ export function App() {
     [searchSort, setSearchSort] = useState<"relevance" | "citations" | "year">(
       "relevance",
     ),
-    [semantic, setSemantic] = useState(false);
+    [semantic, setSemantic] = useState(false),
+    // The shelf search lists papers or the passages of their PDFs; the choice is remembered.
+    [shelfMode, setShelfMode] = useState<"papers" | "passages">(() => {
+      try { return localStorage.getItem("researchbunny.shelfMode") === "passages" ? "passages" : "papers"; } catch { return "papers"; }
+    });
   const [filters, setFilters] = useState<FilterValues>({ ...DEFAULT_FILTERS }),
     [filtersOpen, setFiltersOpen] = useState(false),
     [limit, setLimit] = useState(50);
@@ -189,7 +194,7 @@ export function App() {
     [positions, setPositions] = useState<
       Record<string, { x: number; y: number }>
     >({});
-  const [reader, setReader] = useState<{ projectId: string; work: WorkView; attachmentId: string; attachments: Attachment[] } | null>(null);
+  const [reader, setReader] = useState<{ projectId: string; work: WorkView; attachmentId: string; attachments: Attachment[]; jump?: { page: number; at: number } } | null>(null);
   const [readerVisible, setReaderVisible] = useState(false);
   const readerRequest = useRef(0);
   const readerActive = readerVisible && reader?.projectId === projectId && reader.work.id === inspectorId;
@@ -598,6 +603,11 @@ export function App() {
   const trail = scope === "run" ? runPath(snapshot?.runs || [], scopeId) : [];
   // In the shelf the list query is a ranked search, not a word filter.
   const shelfSearch = scope === "shelf" && !!localQuery.trim();
+  const passageMode = shelfSearch && shelfMode === "passages";
+  const chooseShelfMode = (mode: "papers" | "passages") => {
+    setShelfMode(mode);
+    try { localStorage.setItem("researchbunny.shelfMode", mode); } catch { /* Optional preference. */ }
+  };
   // Elsewhere, outside a run's results, it keeps the papers holding every word.
   const wordSearch = scope !== "shelf" && scope !== "run" && !!localQuery.trim();
   const shelfScopeAll = (scopeId || SHELF_ALL) === SHELF_ALL;
@@ -608,7 +618,7 @@ export function App() {
     setInspectorId(id);
     setInspectorOpen(true);
   };
-  const openArticle = async (id: string, attachmentId?: string) => {
+  const openArticle = async (id: string, attachmentId?: string, page?: number) => {
     inspect(id);
     const request = readerRequest.current;
     const [work, attachments] = await Promise.all([
@@ -618,7 +628,7 @@ export function App() {
     if (request !== readerRequest.current || projectRef.current !== projectId) return;
     setInspected(work);
     const attachment = attachments.find(a => a.id === attachmentId) || attachments.find(a => a.exists) || attachments[0];
-    if (attachment) { setReader({ projectId, work, attachmentId: attachment.id, attachments }); setReaderVisible(true); }
+    if (attachment) { setReader({ projectId, work, attachmentId: attachment.id, attachments, ...(page ? { jump: { page, at: Date.now() } } : {}) }); setReaderVisible(true); }
   };
   const task = async (fn: () => Promise<unknown>, message?: string) => {
     setBusy(true);
@@ -1780,13 +1790,19 @@ export function App() {
                 {shelfSearch && (
                   <div className="search-status" role="status">
                     <span>
-                      {loading
+                      {passageMode
+                        ? `‘${localQuery.trim()}’ 관련 본문 구절 · 관련도순`
+                        : loading
                         ? "서고에서 찾는 중…"
                         : `‘${localQuery.trim()}’ 관련 ${list.total.toLocaleString()}편${sort === "rank" ? " · 관련도순" : ""}`}
-                      {!loading && list.search && !list.search.semantic && !list.search.identifier &&
+                      {!passageMode && !loading && list.search && !list.search.semantic && !list.search.identifier &&
                         " · Ollama를 쓸 수 없어 검색어가 들어 있는 논문만 찾았습니다."}
                     </span>
                     <span className="search-status-actions">
+                      <span className="segmented" role="group" aria-label="검색 결과 단위">
+                        <button aria-pressed={!passageMode} onClick={() => chooseShelfMode("papers")}>논문</button>
+                        <button aria-pressed={passageMode} onClick={() => chooseShelfMode("passages")}>본문 구절</button>
+                      </span>
                       {!shelfScopeAll && (
                         <button className="text-button" onClick={() => {
                           const q = localQuery;
@@ -1875,7 +1891,16 @@ export function App() {
                   </details>
                 )}
                 <div className="results-area">
-                  {loading && !list.works.length ? (
+                  {passageMode ? (
+                    <PassageResults
+                      projectId={projectId}
+                      query={localQuery.trim()}
+                      folderId={shelfScopeAll ? undefined : scopeId}
+                      onOpen={(workId, attachmentId, page) => void openArticle(workId, attachmentId, page).catch(onError)}
+                      onInspect={inspect}
+                      onError={onError}
+                    />
+                  ) : loading && !list.works.length ? (
                     <div className="results-loading">
                       <LoaderCircle size={24} className="spin" />
                       <span>문헌을 불러오는 중…</span>
@@ -2261,7 +2286,7 @@ export function App() {
                   </div>
                 </div>
               </main>
-              {reader?.projectId === projectId && <Suspense fallback={<div className="reader-loading">원문 뷰어 준비 중…</div>}><ArticleReader key={`${projectId}:${reader.attachmentId}`} projectId={projectId} work={reader.work} attachmentId={reader.attachmentId} visible={!!readerActive} onBrowse={() => setReaderVisible(false)} /></Suspense>}
+              {reader?.projectId === projectId && <Suspense fallback={<div className="reader-loading">원문 뷰어 준비 중…</div>}><ArticleReader key={`${projectId}:${reader.attachmentId}`} projectId={projectId} work={reader.work} attachmentId={reader.attachmentId} jump={reader.jump} visible={!!readerActive} onBrowse={() => setReaderVisible(false)} /></Suspense>}
               {inspectorOpen && (
                 <ResizableInspector>
                 <RightPane
