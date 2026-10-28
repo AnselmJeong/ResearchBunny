@@ -23,12 +23,20 @@ Library schema stays at 3. An older app ignores `passages.sqlite`.
 - Chunk quality on 16 real shelf PDFs: about 3.15 passages and 3,650 characters per page.
 - Real shelf, read only except `passages.sqlite`: English and Korean questions (lithium relapse, not-just-right experiences in OCD, accelerated TMS, BDNF Val66Met, ketamine, 도파민 보상 예측 오류, 강박장애의 불완전감) returned the expected papers' Results and Discussion passages. A search takes 70–260 ms including the query embedding.
 - Browser harness (scratch library of four generated papers, the real React UI and service): passage results, opening the reader at a passage's page and moving to another page in the open PDF, and the settings status.
-- Not checked: the installed app's own window with the real shelf.
+- Packaged app: the DMG's checksum is valid and strict signature verification passed for the DMG's app and for the bundle inside the `.tar.zst` (both 0.3.18). The packaged smoke test passed on the extracted bundle with a restricted PATH (PDF reader chunks, threads, extraction, folder matching, archive, BibTeX and PDF folder export, backup, restore and permanent deletion). The packaged service contains `passageSearch` and `passages.sqlite`, the renderer the **본문 구절** toggle, and the packaged PDF worker split a 23-page review from a library backup into 26 passages under its numbered sections.
+- Not checked: the installed app's own window with the real shelf. The shelf volume (`/Volumes/LIBRARY`) was not mounted at installation time.
 
 ## Known issues
 
 - The first passage search after launch takes about 2.5 s while the in-memory sign bits load, and the service does not answer other requests during that time.
 - 36 PDFs could not be read (encrypted, damaged or timed out) and 3 scans have no text layer; they have no passages.
 - A "ResearchBunny quit unexpectedly" dialog was reported on quitting 0.3.7, cause not yet known. Quitting now also waits for a running passage pass to stop.
+
+## Installation
+
+- Backed up the previous app and a consistent SQLite snapshot under `~/Library/Application Support/ResearchBunny/app-backups/20261028-194918-passages-0.3.18` (integrity ok, schema 3, **12,232 works**, **9,075 attachments**, **9,110 shelf files**, 6 projects, matching the live library), with a clone of `passages.sqlite` (quick check ok, **417,730 passages and vectors**). The replaced 0.3.17 bundle is kept there as `ResearchBunny-0.3.17-installed.app` (signature verified).
+- Replaced `/Applications/ResearchBunny.app` with version **0.3.18** (bundle hash `wan4fobiw6dt`); all **242 files** match the package and strict signature verification passed. The app was not running and was not launched. On its first launch with the shelf mounted, the passage pass finds every PDF already indexed and only continues with new ones.
+
+Artifacts, built from main at `5a11a42` (PR #2): `out/electrobun/stable-macos-arm64-ResearchBunny.dmg` (SHA-256 `13015db6…f9460da8`) and `out/electrobun/stable-macos-arm64-ResearchBunny.app.tar.zst` (`f89e3895…ffaf85bb8`), also copied to the main checkout's `out/electrobun`. Local validation logs are under `.qa/release-0.3.18/`.
 
 Local ad-hoc signing on macOS Apple Silicon; no Developer ID signing or Apple notarization.
