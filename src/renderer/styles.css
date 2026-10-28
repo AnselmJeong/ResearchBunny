@@ -1025,6 +1025,8 @@ small {
   transition: background 0.1s;
   min-height: 102px;
   align-items: start;
+  /* WebKit keeps an `auto` row at its tallest height after the window widens; min-content is recomputed. */
+  grid-auto-rows: min-content;
 }
 .paper-row > input {
   margin-top: 5px;
