@@ -4,7 +4,7 @@ import type { ClaudeStatus } from "./claude";
 import type { Genealogy, GenealogySummary, GenealogyView, Outline } from "./genealogy";
 import type { ChatSession, ChatThreadSummary } from "./chat";
 import type { PassageSearchResult, PassageStatus } from "./passages";
-import type { ShelfAdoptResult, ShelfMovePreview, ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo, ShelfSortResult, ShelfSortView } from "./shelf";
+import type { ShelfAdoptResult, ShelfMovePreview, ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo, ShelfSortResult, ShelfSortView, ShelfLeafList } from "./shelf";
 import type {
   Snapshot,
   ListResult,
@@ -30,6 +30,8 @@ import type {
   WorkLinks,
 } from "./types";
 const id = z.string().min(1).max(160);
+/** A leaf to add while filing; the service checks the name and the domain against the shelf. */
+const newLeaf = z.object({ domain: z.string().max(500), name: z.string().max(500), def: z.string().max(2000).default("") });
 const chatContext = z.discriminatedUnion("kind", [z.object({ kind: z.literal("abstract") }).strict(), z.object({ kind: z.literal("pdf-fulltext"), attachmentId: id }).strict()]);
 const chatTarget = { projectId: id, workId: id, context: chatContext.optional(), threadId: id.optional() };
 const pdfTarget = { projectId: id, workId: id, attachmentId: id };
@@ -386,7 +388,26 @@ export const schemas = {
   shelfSortState: z.object({}),
   shelfSortStart: z.object({ uncategorized: z.boolean().default(false) }),
   shelfSortCancel: z.object({}),
-  shelfSortApply: z.object({ items: z.array(z.object({ fileId: id, target: z.string().trim().min(1).max(1000) })).min(1).max(10000) }),
+  shelfSortApply: z.object({
+    items: z.array(z.object({ fileId: id, target: z.string().trim().min(1).max(1000) })).min(1).max(10000),
+    /** New leaves some items go to, made before anything moves. */
+    create: z.array(newLeaf).max(100).default([]),
+  }),
+  /** Folders to file papers into by hand: the taxonomy's domains and leaves. */
+  shelfLeaves: z.object({}),
+  /** File 미분류 papers into a leaf the user picked, or into a new leaf made first. No AI decides. */
+  shelfFileInto: z.object({
+    workIds: z.array(id).min(1).max(10000),
+    target: z.string().trim().min(1).max(1000).optional(),
+    create: newLeaf.optional(),
+  }).refine((p) => !p.target !== !p.create, { message: "target 또는 create 중 하나만 지정하세요." }),
+  /** An AI draft of a new leaf's one-line definition from the papers about to go there. */
+  shelfLeafDraft: z.object({
+    workIds: z.array(id).max(200).default([]),
+    fileIds: z.array(id).max(200).default([]),
+    domain: z.string().max(500),
+    name: z.string().trim().min(1).max(500),
+  }),
   duplicates: z.object({ workId: id }),
   merge: z.object({ keepId: id, removeId: id }),
   undoMerge: z.object({}),
@@ -508,6 +529,9 @@ export interface Outputs {
   shelfSortStart: ShelfSortView;
   shelfSortCancel: void;
   shelfSortApply: ShelfSortResult;
+  shelfLeaves: ShelfLeafList;
+  shelfFileInto: ShelfSortResult;
+  shelfLeafDraft: { def: string };
   duplicates: WorkView[];
   merge: void;
   undoMerge: boolean;

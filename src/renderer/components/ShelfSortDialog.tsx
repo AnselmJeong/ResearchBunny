@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { FolderInput, LoaderCircle, RefreshCw, Square, TriangleAlert } from "lucide-react";
+import { FolderInput, FolderPlus, LoaderCircle, RefreshCw, Square, TriangleAlert } from "lucide-react";
 import { Modal } from "./Modal";
-import { SHELF_DUPLICATED, SHELF_UNCATEGORIZED, type ShelfSortItem, type ShelfSortResult, type ShelfSortView } from "../../shared/shelf";
+import { NewLeafFields, blankLeaf, newLeafProblem, toNewLeaf, type LeafDraft } from "./ShelfFileDialog";
+import { SHELF_DUPLICATED, SHELF_UNCATEGORIZED, leafPath, type ShelfLeafList, type ShelfNewLeaf, type ShelfSortItem, type ShelfSortResult, type ShelfSortView } from "../../shared/shelf";
 
 type Choice = { target: string; checked: boolean };
+/** The select's "새 폴더…" entry; never a folder path, whose segments are never empty. */
+const NEW_FOLDER = "//new-folder";
 type View = "all" | "review" | "duplicates";
 const SPECIAL: Record<string, string> = { [SHELF_UNCATEGORIZED]: "미분류 (_uncategorized)", [SHELF_DUPLICATED]: "중복 (_duplicated)" };
 const CONFIDENCE = { high: "AI 확신 높음", medium: "AI 확신 보통", low: "AI 확신 낮음" };
@@ -34,6 +37,10 @@ export function ShelfSortDialog({ aiEnabled, uncategorized, onClose, onError, on
   const [view, setView] = useState<View>("all");
   const [applying, setApplying] = useState(false);
   const [result, setResult] = useState<ShelfSortResult | null>(null);
+  // New folders named in this window: made when the papers going there are moved.
+  const [planned, setPlanned] = useState<ShelfNewLeaf[]>([]);
+  const [creating, setCreating] = useState<{ fileId: string; leaf: LeafDraft } | null>(null);
+  const [leafList, setLeafList] = useState<ShelfLeafList | null>(null);
   const load = useCallback(() => window.bunny.shelfSortState({}).then((next) => {
     setState(next);
     setResume((decided) => decided ?? (next.job.status === "running" || next.current));
@@ -75,9 +82,28 @@ export function ShelfSortDialog({ aiEnabled, uncategorized, onClose, onError, on
   const shown = items.filter((item) => view === "all" || (view === "review" ? needsReview(item) : item.source === "duplicate"));
   const domains = useMemo(() => {
     const groups = new Map<string, { path: string; name: string; def: string }[]>();
-    for (const leaf of proposal?.leaves || []) groups.set(leaf.domain || "서고", [...(groups.get(leaf.domain || "서고") || []), leaf]);
+    const add = (domain: string, leaf: { path: string; name: string; def: string }) => groups.set(domain || "서고", [...(groups.get(domain || "서고") || []), leaf]);
+    for (const leaf of proposal?.leaves || []) add(leaf.domain, leaf);
+    for (const leaf of planned) add(leaf.domain, { path: leafPath(leaf), name: `${leaf.name} (새 폴더)`, def: leaf.def });
     return [...groups];
-  }, [proposal]);
+  }, [proposal, planned]);
+  // The new folder's domain starts as the one the row is headed for.
+  const newFolder = async (item: ShelfSortItem) => {
+    try {
+      const list = leafList ?? await window.bunny.shelfLeaves({});
+      setLeafList(list);
+      const guess = [choice(item).target, item.target, item.votes[0]?.path].find((path) => path && !SPECIAL[path]);
+      const domain = list.domains.find((d) => guess?.startsWith(d.name + "/"))?.name ?? list.domains[0]?.name ?? "";
+      setCreating({ fileId: item.fileId, leaf: blankLeaf(domain) });
+    } catch (error) { onError(error); }
+  };
+  const confirmNew = (item: ShelfSortItem) => {
+    if (!creating) return;
+    const leaf = toNewLeaf(creating.leaf);
+    setPlanned((current) => [...current, leaf]);
+    pick(item, leafPath(leaf));
+    setCreating(null);
+  };
 
   const start = async () => {
     setResult(null);
@@ -90,7 +116,15 @@ export function ShelfSortDialog({ aiEnabled, uncategorized, onClose, onError, on
     if (!selected.length) return;
     setApplying(true);
     try {
-      setResult(await window.bunny.shelfSortApply({ items: selected.map((item) => ({ fileId: item.fileId, target: choice(item).target })) }));
+      const targets = new Set(selected.map((item) => choice(item).target));
+      const next = await window.bunny.shelfSortApply({
+        items: selected.map((item) => ({ fileId: item.fileId, target: choice(item).target })),
+        create: planned.filter((leaf) => targets.has(leafPath(leaf))),
+      });
+      // Folders made now are ordinary leaves of the saved proposal from here on.
+      setPlanned((current) => current.filter((leaf) => !next.created?.includes(leafPath(leaf))));
+      setLeafList(null);
+      setResult(next);
       setView("all");
       await load();
     } catch (error) { onError(error); } finally { setApplying(false); }
@@ -128,7 +162,7 @@ export function ShelfSortDialog({ aiEnabled, uncategorized, onClose, onError, on
       </div>
       {result && <div className="shelf-sort-result" role="status">
         <strong>{(result.moved + result.uncategorized + result.duplicated).toLocaleString()}편을 옮겼습니다.</strong>
-        <span className="subtle"> 분류 {result.moved} · 미분류 {result.uncategorized} · 중복 {result.duplicated}{result.ledger ? " · move_log.jsonl·intake 로그·index.json 갱신" : ""}</span>
+        <span className="subtle"> 분류 {result.moved} · 미분류 {result.uncategorized} · 중복 {result.duplicated}{result.created?.length ? ` · 새 폴더 ${result.created.join(", ")}` : ""}{result.ledger ? " · move_log.jsonl·intake 로그·index.json 갱신" : ""}</span>
         {!!result.skipped.length && <ul>{result.skipped.map((s) => <li key={s.relPath + s.reason} className="danger">{s.relPath} · {s.reason}</li>)}</ul>}
       </div>}
       {!!proposal?.waiting.length && !running && <p className="subtle">색인 대기 {proposal.waiting.length}편은 이번 제안에서 빠졌습니다.</p>}
@@ -171,7 +205,8 @@ export function ShelfSortDialog({ aiEnabled, uncategorized, onClose, onError, on
                     onClick={() => pick(item, vote.path)}>{label(vote.path)} {percent(vote.share)}</button>)}
                 </span>}
               </div>
-              <select aria-label={`${item.title} 옮길 폴더`} value={c.target} onChange={(e) => pick(item, e.target.value)}>
+              <select aria-label={`${item.title} 옮길 폴더`} value={c.target}
+                onChange={(e) => e.target.value === NEW_FOLDER ? void newFolder(item) : pick(item, e.target.value)}>
                 <option value="">그대로 두기</option>
                 {domains.map(([domain, leaves]) => <optgroup key={domain} label={domain}>
                   {leaves.map((leaf) => <option key={leaf.path} value={leaf.path} title={leaf.def}>{leaf.name}</option>)}
@@ -179,7 +214,20 @@ export function ShelfSortDialog({ aiEnabled, uncategorized, onClose, onError, on
                 <optgroup label="특수 폴더">
                   {Object.entries(SPECIAL).map(([path, text]) => <option key={path} value={path}>{text}</option>)}
                 </optgroup>
+                <optgroup label="새 폴더">
+                  <option value={NEW_FOLDER}>새 폴더…</option>
+                </optgroup>
               </select>
+              {creating?.fileId === item.fileId && leafList && <div className="shelf-sort-new-leaf">
+                <NewLeafFields list={leafList} value={creating.leaf} pending={planned} papers={{ fileIds: [item.fileId] }} aiEnabled={aiEnabled} onError={onError}
+                  onChange={(leaf) => setCreating({ fileId: item.fileId, leaf })} />
+                <div className="shelf-sort-new-leaf-actions">
+                  <button onClick={() => setCreating(null)}>취소</button>
+                  <button className="primary" disabled={!!newLeafProblem(leafList, creating.leaf, planned)} onClick={() => confirmNew(item)}>
+                    <FolderPlus size={14} />이 폴더로 정하기
+                  </button>
+                </div>
+              </div>}
             </li>;
           })}
         </ul>

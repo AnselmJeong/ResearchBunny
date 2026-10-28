@@ -78,7 +78,7 @@ export function ShelfTree({ shelf, scope, scopeId, navigate, onSetup }: {
         <Inbox size={15} /><span className="topic-name">수신함</span><span className="nav-count">{shelf.inbox.toLocaleString()}</span>
       </button>}
       {shelf.uncategorized && <button className={active(shelf.uncategorized.id) ? "active" : ""} aria-current={active(shelf.uncategorized.id) ? "page" : undefined}
-        data-help="서고의 _uncategorized 폴더입니다. 수신함 정리에서 맞는 폴더가 없던 PDF가 모이며 수신함에는 세지 않습니다. 수신함 정리에서 '미분류도 다시 판정'을 켜면 다시 제안받습니다." onClick={() => navigate("shelf", shelf.uncategorized!.id)}>
+        data-help="서고의 _uncategorized 폴더입니다. 수신함 정리에서 맞는 폴더가 없던 PDF가 모이며 수신함에는 세지 않습니다. 목록에서 '폴더로 보내기'로 직접 폴더를 고르거나 새 폴더를 만들 수 있고, 수신함 정리에서 '미분류도 다시 판정'을 켜면 다시 제안받습니다." onClick={() => navigate("shelf", shelf.uncategorized!.id)}>
         <FolderDot size={15} /><span className="topic-name">미분류</span><span className="nav-count">{shelf.uncategorized.count.toLocaleString()}</span>
       </button>}
       {(children.get(null) || []).map((folder) => branch(folder, 0))}

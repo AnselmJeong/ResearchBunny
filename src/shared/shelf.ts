@@ -26,6 +26,37 @@ export interface ShelfSortLeaf {
   name: string;
   def: string;
 }
+/** A leaf the user names while filing: created in an existing domain, with an optional one-line definition. */
+export interface ShelfNewLeaf {
+  /** An existing domain; "" for the shelf's top level when the shelf has no taxonomy.json. */
+  domain: string;
+  name: string;
+  def: string;
+}
+/** Destinations for filing by hand: every domain (empty ones too) with its leaves. */
+export interface ShelfLeafList {
+  taxonomy: "file" | "folders";
+  domains: { name: string; leaves: (ShelfSortLeaf & { missing: boolean })[] }[];
+}
+export const leafPath = (leaf: Pick<ShelfNewLeaf, "domain" | "name">) => (leaf.domain ? `${leaf.domain}/${leaf.name}` : leaf.name);
+/** How macOS and SMB shares compare folder names: Unicode-normalised and case-insensitive. */
+export const folderKey = (name: string) => name.normalize("NFC").toLowerCase();
+/**
+ * Why a new leaf name is refused, or null: one path segment that is not a hidden (`.`)
+ * or system (`_`) folder, has no character a NAS share refuses, and is not already a
+ * folder of the domain (`siblings`), compared as the file system compares names.
+ */
+export function leafNameProblem(name: string, siblings: string[]): string | null {
+  if (!name.trim()) return "폴더 이름을 입력하세요.";
+  if (name !== name.trim()) return "이름 앞뒤의 공백을 지우세요.";
+  if (/[/\\]/.test(name)) return "이름에 / 나 \\ 를 쓸 수 없습니다.";
+  if (name.startsWith(".") || name.startsWith("_")) return "이름은 . 이나 _ 로 시작할 수 없습니다. 숨김 폴더나 시스템 폴더가 됩니다.";
+  // eslint-disable-next-line no-control-regex
+  if (/[:*?"<>|\u0000-\u001f\u007f]/.test(name) || name.endsWith(".")) return "이름에 : * ? \" < > | 나 제어 문자를 쓸 수 없고, 이름이 . 으로 끝날 수 없습니다.";
+  if (name.length > 120) return "이름은 120자까지 쓸 수 있습니다.";
+  if (siblings.some((s) => folderKey(s) === folderKey(name))) return "이 도메인에 같은 이름의 폴더가 이미 있습니다.";
+  return null;
+}
 export interface ShelfSortVote {
   path: string;
   /** Share of the similarity-weighted neighbour vote, 0–1. */
@@ -92,6 +123,8 @@ export interface ShelfSortResult {
   skipped: { relPath: string; reason: string }[];
   /** The moves went to move_log.jsonl and logs/, and index.json was rebuilt. */
   ledger: boolean;
+  /** Leaves this call added (their paths), before any file moved. */
+  created?: string[];
 }
 
 // Retrieval prompts from the EmbeddingGemma 2 model card

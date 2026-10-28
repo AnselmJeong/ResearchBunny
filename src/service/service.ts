@@ -828,8 +828,16 @@ export class Service {
       case "shelfSortCancel":
         this.sorter.cancel();
         return;
-      case "shelfSortApply":
-        return this.sorter.apply(schemas.shelfSortApply.parse(args).items);
+      case "shelfSortApply": {
+        const p = schemas.shelfSortApply.parse(args);
+        return this.sorter.apply(p.items, p.create);
+      }
+      case "shelfLeaves":
+        return this.sorter.leaves();
+      case "shelfFileInto":
+        return this.sorter.fileInto(schemas.shelfFileInto.parse(args));
+      case "shelfLeafDraft":
+        return this.sorter.draftDefinition(schemas.shelfLeafDraft.parse(args));
       case "shutdown":
         this.downloads.stopRecoveryMonitor();
         this.shelf.stop();

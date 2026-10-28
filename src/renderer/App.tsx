@@ -21,6 +21,7 @@ import {
   FileText,
   Folder,
   FolderInput,
+  FolderOutput,
   Inbox,
   List,
   LoaderCircle,
@@ -94,6 +95,7 @@ import { GroupSelection } from "./components/GroupSelection";
 import { ImportResults } from "./components/ImportResults";
 import { DownloadDialog } from "./components/DownloadDialog";
 import { ShelfSortDialog } from "./components/ShelfSortDialog";
+import { ShelfFileDialog } from "./components/ShelfFileDialog";
 import { Settings } from "./components/Settings";
 import { GenealogyWorkspace } from "./components/GenealogyWorkspace";
 import { GenealogyDialog } from "./components/GenealogyDialog";
@@ -145,6 +147,7 @@ type Dialog =
   | "bulk"
   | "deleteTrash"
   | "shelfSort"
+  | "shelfFile"
   | "genealogy"
   | null;
 function Bunny({ size = 27 }: { size?: number }) {
@@ -188,6 +191,8 @@ export function App() {
   useEffect(() => setSearchDraft(localQuery), [localQuery]);
   const [list, setList] = useState<ListResult>(EMPTY),
     [selected, setSelected] = useState<string[]>([]),
+    /** The 미분류 papers 폴더로 보내기 is filing. */
+    [filing, setFiling] = useState<string[]>([]),
     [inspectorId, setInspectorId] = useState<string | null>(null),
     [inspected, setInspected] = useState<WorkView | null>(null),
     [inspectorOpen, setInspectorOpen] = useState(true);
@@ -524,6 +529,11 @@ export function App() {
   const classification = snapshot?.classification;
   const classifying = classification?.job?.status === "running";
   const archiveScope = ARCHIVE_SCOPES.includes(scope);
+  const uncategorizedScope = scope === "shelf" && !!snapshot?.shelf.uncategorized && scopeId === snapshot.shelf.uncategorized.id;
+  const fileInto = (ids: string[]) => {
+    setFiling(ids);
+    setDialog("shelfFile");
+  };
   const active = snapshot?.runs.find(
     (r) => r.status === "running" || r.status === "queued",
   );
@@ -1641,6 +1651,16 @@ export function App() {
                     onBasis={setBasis}
                     shelf={snapshot.shelf.configured}
                   />
+                  {uncategorizedScope && (
+                    <button
+                      disabled={busy || !selected.length || !snapshot.shelf.online}
+                      data-help="선택한 미분류 논문을 고른 폴더로 옮깁니다. AI 판정 없이 바로 옮기며, 그 자리에서 새 폴더를 만들 수도 있습니다."
+                      onClick={() => fileInto(selected)}
+                    >
+                      <FolderOutput size={14} />
+                      폴더로 보내기…
+                    </button>
+                  )}
                   {archiveScope ? (
                     <button
                       disabled={busy || !selected.length}
@@ -2174,6 +2194,17 @@ export function App() {
                                   <Bookmark size={17} />
                                 )}
                               </button>
+                              {uncategorizedScope && (
+                                <button
+                                  className="icon-button file-row"
+                                  aria-label={`${w.title} 폴더로 보내기`}
+                                  title="폴더로 보내기"
+                                  disabled={!snapshot.shelf.online}
+                                  onClick={() => fileInto([w.id])}
+                                >
+                                  <FolderOutput size={15} />
+                                </button>
+                              )}
                               {w.attachmentCount > 0 && (
                                 <button
                                   className="icon-button read-row"
@@ -2465,6 +2496,14 @@ export function App() {
       {dialog === "shelfSort" && <ShelfSortDialog aiEnabled={snapshot.settings.aiEnabled}
         uncategorized={scope === "shelf" && scopeId === snapshot.shelf.uncategorized?.id}
         onClose={() => setDialog(null)} onError={onError} onSettings={() => setDialog("settings")} />}
+      {dialog === "shelfFile" && <ShelfFileDialog aiEnabled={snapshot.settings.aiEnabled}
+        papers={filing.map((id) => ({ id, title: list.works.find((w) => w.id === id)?.title }))}
+        onClose={() => setDialog(null)} onError={onError}
+        onFiled={(result, folder) => {
+          setDialog(null);
+          setSelected((ids) => ids.filter((id) => !filing.includes(id)));
+          flash(`${result.moved.toLocaleString()}편을 ‘${folder.split("/").pop()}’ 폴더로 옮겼습니다.${result.created?.length ? " 새 폴더를 만들었습니다." : ""}`);
+        }} />}
       {dialog === "download" && <DownloadDialog key={projectId} projectId={projectId} selected={selected} scope={scope} scopeId={scopeId}
         runs={snapshot.runs} busy={busy || !!active || !!classifying}
         onClose={() => setDialog(null)} onError={onError} />}

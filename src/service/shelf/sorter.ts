@@ -11,10 +11,15 @@ import { AppError, DEFAULT_FILTERS, now, type AppEvent, type Run, type Work } fr
 import {
   SHELF_DUPLICATED,
   SHELF_UNCATEGORIZED,
+  folderKey,
   isInboxFolder,
   isUncategorizedFolder,
+  leafNameProblem,
+  leafPath,
   titleKey,
   type ShelfFileInfo,
+  type ShelfLeafList,
+  type ShelfNewLeaf,
   type ShelfSortItem,
   type ShelfSortJob,
   type ShelfSortLeaf,
@@ -62,6 +67,12 @@ const decisionSchema = z.object({
   })),
 });
 const outputSchema = z.toJSONSchema(decisionSchema, { target: "draft-7" });
+/** A new leaf's definition draft: a few papers' titles and abstracts, styled after its siblings. */
+const DRAFT_PAPERS = 12;
+const DRAFT_CHARS = 600;
+const DRAFT_INSTRUCTION = "Write the one-line definition of a new leaf folder in a personal research library's taxonomy. name is the folder and domain its parent; papers are the papers about to be filed there (title and abstract, or the first page). siblings are the domain's other leaves with their definitions: write in their language and style (English when there are none), one sentence or phrase of at most 160 characters saying what belongs in this leaf, so it reads apart from its siblings. Do not repeat the folder name or name individual papers.";
+const draftSchema = z.object({ def: z.string().trim().min(1).max(400) });
+const draftOutput = z.toJSONSchema(draftSchema, { target: "draft-7" });
 type Decision = z.infer<typeof decisionSchema>["decisions"][number];
 
 const taxonomySchema = z.object({
@@ -83,9 +94,13 @@ interface Leaf extends ShelfSortLeaf {
 export interface Taxonomy {
   source: "file" | "folders";
   leaves: Leaf[];
+  /** Where a new leaf may go: the file's domains (empty ones too), or the parents of leaf folders. */
+  domains: string[];
   policy: unknown;
 }
 type Row = FileRow & { folder: string };
+/** A checked new leaf: its taxonomy path, its folder on disk, and whether that folder is already there. */
+type PlannedLeaf = ShelfNewLeaf & { path: string; dir: string; exists: boolean };
 
 /** One path segment that stays inside the root: no separators, dot-names or `_` system folders. */
 const safeSegment = (name: string) => !!name && name === name.trim() && !/[/\\\0]/.test(name) && !name.startsWith(".") && !name.startsWith("_");
@@ -127,14 +142,133 @@ export async function loadTaxonomy(rootPath: string, folders: string[]): Promise
       ? d.leaves.filter((l) => safeSegment(l.name)).map((l) => ({ path: `${d.name}/${l.name}`, domain: d.name, name: l.name, def: l.def?.trim() || "", incl: l.incl || [], excl: l.excl || [] }))
       : []);
     if (!leaves.length) throw new AppError("SHELF_TAXONOMY", "_system/taxonomy.json에 분류 폴더가 없습니다.");
-    return { source: "file", leaves, policy: parsed.policy ?? DEFAULT_POLICY };
+    return { source: "file", leaves, domains: parsed.domains.map((d) => d.name).filter(safeSegment), policy: parsed.policy ?? DEFAULT_POLICY };
   }
   const visible = folders.filter((f) => f && f.split("/").every(safeSegment));
   const leaves = visible
     .filter((f) => !visible.some((other) => other.startsWith(f + "/")))
     .sort()
     .map((path) => ({ path, domain: parentRel(path) || "", name: basename(path), def: "", incl: [], excl: [] }));
-  return { source: "folders", leaves, policy: DEFAULT_POLICY };
+  return { source: "folders", leaves, domains: [...new Set(leaves.map((l) => l.domain))].sort(), policy: DEFAULT_POLICY };
+}
+
+/**
+ * A folder's spelling on disk, each segment matched as macOS matches names (NFC), or
+ * null when it is not there. A leaf renamed by hand is missing, never recreated.
+ */
+async function findDir(rootPath: string, rel: string): Promise<string | null> {
+  let found = "";
+  for (const part of rel.split("/")) {
+    const entries = await readdir(found ? join(rootPath, found) : rootPath, { withFileTypes: true }).catch(() => null);
+    const entry = entries?.find((e) => e.isDirectory() && e.name.normalize("NFC") === part.normalize("NFC"));
+    if (!entry) return null;
+    found = found ? `${found}/${entry.name}` : entry.name;
+  }
+  return found;
+}
+
+/** Python's string order (code points); JS's UTF-16 order differs past U+FFFF. */
+function byCodePoint(a: string, b: string) {
+  const x = [...a], y = [...b];
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    const d = x[i].codePointAt(0)! - y[i].codePointAt(0)!;
+    if (d) return d;
+  }
+  return x.length - y.length;
+}
+
+// Just enough of a JSON reader to find where a value sits in the text; strings are skipped whole.
+const skipSpace = (text: string, i: number) => { while (/\s/.test(text[i] ?? "")) i++; return i; };
+function skipValue(text: string, i: number): number {
+  i = skipSpace(text, i);
+  if (text[i] === '"') {
+    for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === "\\") i++;
+    return i + 1;
+  }
+  if (text[i] === "{" || text[i] === "[") return items(text, i).end;
+  while (i < text.length && !/[\s,:}\]]/.test(text[i])) i++;
+  return i;
+}
+/** An array's items or an object's values (with their keys), and where the container ends. */
+function items(text: string, at: number) {
+  const list: { key: string | null; start: number; end: number }[] = [];
+  const close = text[at] === "{" ? "}" : "]";
+  let i = skipSpace(text, at + 1);
+  while (i < text.length && text[i] !== close) {
+    const from = i;
+    let key: string | null = null;
+    if (close === "}") {
+      const end = skipValue(text, i);
+      key = text[i] === '"' ? JSON.parse(text.slice(i, end)) : null;
+      i = skipSpace(text, end);
+      if (text[i] === ":") i++;
+    }
+    const start = skipSpace(text, i), end = skipValue(text, start);
+    list.push({ key, start, end });
+    i = skipSpace(text, end);
+    if (text[i] === ",") i = skipSpace(text, i + 1);
+    if (i === from) break;
+  }
+  return { list, end: i + 1 };
+}
+
+/**
+ * Add a leaf to a hand-kept taxonomy.json without touching its other lines: one line
+ * after the domain's last leaf, in that leaf's indent and spacing. Null when the file
+ * is not kept one leaf per line (or the domain has none), so it is rewritten instead.
+ */
+function insertLeaf(text: string, domain: number, leaf: Record<string, unknown>): string | null {
+  const root = skipSpace(text, 0);
+  if (text[root] !== "{") return null;
+  const domains = items(text, root).list.find((e) => e.key === "domains");
+  const entry = domains && text[domains.start] === "[" ? items(text, domains.start).list[domain] : undefined;
+  const leaves = entry && text[entry.start] === "{" ? items(text, entry.start).list.find((e) => e.key === "leaves") : undefined;
+  const last = leaves && text[leaves.start] === "[" ? items(text, leaves.start).list.at(-1) : undefined;
+  if (!last) return null;
+  const indent = text.slice(text.lastIndexOf("\n", last.start) + 1, last.start);
+  const line = text.slice(last.start, last.end);
+  if (!/^[ \t]+$/.test(indent) || line.includes("\n")) return null;
+  const json = /^\{\s*"(?:[^"\\]|\\.)*"\s*: /.test(line) ? pyJson(leaf) : JSON.stringify(leaf);
+  return `${text.slice(0, last.end)},\n${indent}${json}${text.slice(last.end)}`;
+}
+
+/**
+ * `_system/taxonomy.json` with these leaves added. Each becomes
+ * `{name, def, incl: [], excl: [], ex: []}`, the entry `intake.py addleaf` writes. A file
+ * kept one leaf per line (the real shelf's) keeps every line: the leaf goes after the
+ * domain's last one, in the domain's own order. Any other layout is written as addleaf
+ * writes it: the domain's leaves sorted by name, `json.dump(indent=1, ensure_ascii=False)`.
+ */
+export async function taxonomyWith(rootPath: string, leaves: ShelfNewLeaf[]) {
+  let text: string, tax: { domains: { name: string; leaves: { name: string }[] }[] };
+  try {
+    text = await readFile(join(rootPath, "_system", "taxonomy.json"), "utf8");
+    tax = JSON.parse(text);
+  } catch {
+    throw new AppError("SHELF_TAXONOMY", "_system/taxonomy.json을 읽지 못했습니다. 파일 형식을 확인하세요.");
+  }
+  let kept: string | null = text;
+  for (const leaf of leaves) {
+    const index = tax.domains.findIndex((d) => d.name === leaf.domain);
+    const domain = tax.domains[index];
+    if (!domain) throw new AppError("SHELF_LEAF", `_system/taxonomy.json에 없는 도메인입니다: ${leaf.domain}`);
+    if (domain.leaves.some((l) => folderKey(String(l.name)) === folderKey(leaf.name)))
+      throw new AppError("SHELF_LEAF", `${leafPath(leaf)}: 이 도메인에 같은 이름의 폴더가 이미 있습니다.`);
+    const entry = { name: leaf.name, def: leaf.def, incl: [], excl: [], ex: [] };
+    domain.leaves.push(entry);
+    kept = kept === null ? null : insertLeaf(kept, index, entry);
+  }
+  // The kept text must read back as exactly the taxonomy with the leaves appended.
+  const readsBack = (candidate: string) => {
+    try {
+      return JSON.stringify(JSON.parse(candidate)) === JSON.stringify(tax);
+    } catch {
+      return false;
+    }
+  };
+  if (kept !== null && readsBack(kept)) return kept;
+  for (const domain of tax.domains) if (leaves.some((l) => l.domain === domain.name)) domain.leaves.sort((a, b) => byCodePoint(a.name, b.name));
+  return JSON.stringify(tax, null, 1);
 }
 
 /** Similarity-weighted folder vote over a paper's nearest filed neighbours. */
@@ -489,9 +623,9 @@ export class ShelfSorter {
   }
 
   /** Each batch is its own budget run, so one large inbox never exhausts a single run's allowance. */
-  private run(count: number): Run {
+  private run(count: number, query = "서고 수신함 정리"): Run {
     return {
-      id: randomUUID(), projectId: "shelf", mode: "ai", query: "서고 수신함 정리", seedProfileId: null,
+      id: randomUUID(), projectId: "shelf", mode: "ai", query, seedProfileId: null,
       inputIds: [], filters: DEFAULT_FILTERS, status: "running", createdAt: now(), updatedAt: now(),
       calls: 0, maxCalls: 1, maxCandidates: count, total: count, count, message: "", tasks: [], rankingVersion: "shelf-sort-1",
     };
@@ -501,38 +635,201 @@ export class ShelfSorter {
    * Move approved inbox PDFs. Names never change; a taken name gets " (2)" as in
    * intake.py. With `_system` present every move is logged before it happens and
    * index.json is rebuilt, so intake.py and the app can keep taking turns.
+   * `create` adds the new leaves some items go to before anything moves.
    */
-  async apply(requested: { fileId: string; target: string }[]): Promise<ShelfSortResult> {
+  apply(requested: { fileId: string; target: string }[], create: ShelfNewLeaf[] = []): Promise<ShelfSortResult> {
+    return this.move(requested, {
+      from: (folder) => isInboxFolder(folder) || isUncategorizedFolder(folder),
+      outside: "이미 수신함 밖에 있습니다.",
+      changed: "파일이 바뀌었습니다. 제안을 다시 만드세요.",
+      special: true,
+      create,
+    });
+  }
+
+  /**
+   * File papers from 미분류 (`_uncategorized`) into a leaf the user picked, with no AI
+   * decision: each paper's copies there move. `create` makes that leaf first.
+   */
+  async fileInto(input: { workIds: string[]; target?: string; create?: ShelfNewLeaf }): Promise<ShelfSortResult> {
+    const root = this.shelf.root();
+    if (!root || !this.shelf.config()) throw new AppError("SHELF_CONFIG", "서고를 먼저 연결하세요.");
+    const target = input.create ? leafPath(input.create) : input.target;
+    if (!target) throw new AppError("INVALID", "옮길 폴더를 고르세요.");
+    const rows = this.db.db.prepare(
+      "SELECT f.id,f.work_id,f.rel_path,fo.rel_path AS folder FROM shelf_files f JOIN shelf_folders fo ON fo.id=f.folder_id WHERE f.root_id=? AND f.work_id IN (SELECT value FROM json_each(?)) AND f.status NOT IN ('missing','hidden') ORDER BY f.rel_path",
+    ).all(root.id, JSON.stringify(input.workIds)) as { id: string; work_id: string; rel_path: string; folder: string }[];
+    const parked = rows.filter((r) => isUncategorizedFolder(r.folder));
+    // Papers filed or still in the inbox are not this action's to move.
+    const elsewhere = [...new Set(input.workIds)].filter((id) => !parked.some((r) => r.work_id === id)).map((id) => ({
+      relPath: rows.find((r) => r.work_id === id)?.rel_path || this.titleOf(id),
+      reason: "미분류에 없는 논문입니다.",
+    }));
+    if (!parked.length) return { moved: 0, uncategorized: 0, duplicated: 0, skipped: elsewhere, ledger: false };
+    const result = await this.move(parked.map((r) => ({ fileId: r.id, target })), {
+      from: isUncategorizedFolder,
+      outside: "미분류에 없는 파일입니다.",
+      changed: "파일이 바뀌었습니다. 서고를 다시 스캔한 뒤 옮기세요.",
+      special: false,
+      create: input.create ? [input.create] : [],
+    });
+    result.skipped.unshift(...elsewhere);
+    return result;
+  }
+  private titleOf(workId: string) {
+    try {
+      return this.db.get(workId).title;
+    } catch {
+      return workId;
+    }
+  }
+
+  /** Destinations for filing by hand, with leaves whose folder is gone from disk marked. */
+  async leaves(): Promise<ShelfLeafList> {
+    const root = this.shelf.root();
+    if (!root || !this.shelf.config()) throw new AppError("SHELF_CONFIG", "서고를 먼저 연결하세요.");
+    if (!(await rootOnline(root.path))) throw new AppError("SHELF_OFFLINE", "서고 오프라인 · NAS를 연결한 뒤 다시 여세요.");
+    const taxonomy = await loadTaxonomy(root.path, this.folders(root.id));
+    const domains: ShelfLeafList["domains"] = [];
+    for (const name of taxonomy.domains) {
+      const dir = name ? await findDir(root.path, name) : "";
+      const entries = dir === null ? [] : await readdir(dir ? join(root.path, dir) : root.path, { withFileTypes: true }).catch(() => []);
+      const present = new Set(entries.filter((e) => e.isDirectory()).map((e) => e.name.normalize("NFC")));
+      domains.push({
+        name,
+        leaves: taxonomy.leaves.filter((l) => l.domain === name)
+          .map(({ path, domain, name: leaf, def }) => ({ path, domain, name: leaf, def, missing: !present.has(leaf.normalize("NFC")) })),
+      });
+    }
+    return { taxonomy: taxonomy.source, domains };
+  }
+
+  /** A one-line definition draft for a leaf the user is naming, from the papers about to go there. */
+  async draftDefinition(input: { workIds: string[]; fileIds: string[]; domain: string; name: string }): Promise<{ def: string }> {
+    if (!{ ...DEFAULT_AI, ...this.db.pref<AIConfig>("ai") }.aiEnabled)
+      throw new AppError("AI_DISABLED", "설정에서 AI 연결을 선택하고 AI 추천·분류를 활성화하세요.");
+    const workIds = [...new Set([...input.fileIds.map((id) => this.shelf.file(id)?.work_id), ...input.workIds].filter((id): id is string => !!id))];
+    const papers = workIds.slice(0, DRAFT_PAPERS).flatMap((id) => {
+      let work: Work;
+      try {
+        work = this.db.get(id);
+      } catch {
+        return [];
+      }
+      const file = this.db.db.prepare("SELECT info FROM shelf_files WHERE work_id=? AND status NOT IN ('missing','hidden') ORDER BY rel_path LIMIT 1").get(id) as Pick<FileRow, "info"> | null;
+      const info = file ? parseInfo(file) : {};
+      return [{ title: work.title.slice(0, 400), text: (work.abstract || info.abstract || info.page1 || "").replace(/\s+/g, " ").trim().slice(0, DRAFT_CHARS) }];
+    });
+    if (!papers.length) throw new AppError("INVALID", "정의 초안에 쓸 논문이 없습니다.");
+    // Sibling definitions set the style; an offline shelf just goes without them.
+    const root = this.shelf.root();
+    const taxonomy = root && (await rootOnline(root.path)) ? await loadTaxonomy(root.path, this.folders(root.id)).catch(() => null) : null;
+    const siblings = (taxonomy?.leaves || []).filter((l) => l.domain === input.domain).map((l) => ({ name: l.name, ...(l.def ? { def: l.def } : {}) }));
+    const raw = await this.ai.structured(this.run(1, "서고 새 폴더 정의"), "shelf_leaf_definition", draftOutput, DRAFT_INSTRUCTION,
+      { domain: input.domain, name: input.name, siblings, papers }, AbortSignal.timeout(120000), false);
+    const parsed = draftSchema.safeParse(raw);
+    if (!parsed.success) throw new AppError("AI_FORMAT", "AI 응답 형식이 올바르지 않습니다. 다시 시도하세요.");
+    return { def: parsed.data.def.replace(/\s+/g, " ").trim().slice(0, 300) };
+  }
+
+  /**
+   * Check the leaves the user named, all before any is made, so a refused name never
+   * stops the indexer. A folder already on disk under exactly that name joins as it is.
+   */
+  private async planLeaves(rootPath: string, taxonomy: Taxonomy, create: ShelfNewLeaf[]) {
+    const added: PlannedLeaf[] = [];
+    for (const input of create) {
+      const leaf = { ...input, def: input.def.replace(/\s+/g, " ").trim() };
+      const where = leaf.domain || "서고 최상위";
+      if (!taxonomy.domains.includes(leaf.domain))
+        throw new AppError("SHELF_LEAF", taxonomy.source === "file" ? `_system/taxonomy.json에 없는 도메인입니다: ${where}` : `새 폴더를 둘 수 없는 위치입니다: ${where}`);
+      const parent = leaf.domain ? await findDir(rootPath, leaf.domain) : "";
+      if (parent === null) throw new AppError("SHELF_LEAF", `도메인 폴더가 서고에 없습니다: ${where}. 손으로 이름을 바꿨거나 지웠다면 _system/taxonomy.json도 고치세요.`);
+      const entries = await readdir(parent ? join(rootPath, parent) : rootPath, { withFileTypes: true });
+      // With taxonomy.json its leaves are the domain's folders; without it, the folders on disk are.
+      const siblings = taxonomy.source === "file" ? taxonomy.leaves.filter((l) => l.domain === leaf.domain).map((l) => l.name) : entries.filter((e) => e.isDirectory()).map((e) => e.name);
+      const problem = leafNameProblem(leaf.name, [...siblings, ...added.filter((a) => a.domain === leaf.domain).map((a) => a.name)]);
+      if (problem) throw new AppError("SHELF_LEAF", `${leafPath(leaf)}: ${problem}`);
+      const existing = entries.find((e) => folderKey(e.name) === folderKey(leaf.name));
+      if (existing && !existing.isDirectory()) throw new AppError("SHELF_LEAF", `${leafPath(leaf)}: 같은 이름의 파일이 이미 있습니다.`);
+      if (existing && existing.name.normalize("NFC") !== leaf.name.normalize("NFC"))
+        throw new AppError("SHELF_LEAF", `${leafPath(leaf)}: 대소문자만 다른 폴더(${existing.name})가 서고에 이미 있습니다. 그 이름을 그대로 쓰거나 다른 이름을 쓰세요.`);
+      const name = existing?.name ?? leaf.name;
+      added.push({ ...leaf, path: leafPath(leaf), dir: parent ? `${parent}/${name}` : name, exists: !!existing });
+    }
+    return added;
+  }
+  /**
+   * Make planned leaves: the folder first, then (with `_system/taxonomy.json`) the
+   * entry `intake.py addleaf` writes, read fresh and replaced atomically.
+   */
+  private async makeLeaves(rootPath: string, taxonomy: Taxonomy, planned: PlannedLeaf[]) {
+    if (!planned.length) return;
+    const text = taxonomy.source === "file" ? await taxonomyWith(rootPath, planned) : null;
+    for (const leaf of planned) if (!leaf.exists) await mkdir(join(rootPath, leaf.dir));
+    if (text === null) return;
+    const temp = join(rootPath, "_system", ".taxonomy.json.researchbunny");
+    await writeFile(temp, text);
+    await rename(temp, join(rootPath, "_system", "taxonomy.json"));
+  }
+
+  /**
+   * The one path every move takes. Destinations are taxonomy leaves (and, for the
+   * inbox sort, `_uncategorized` and `_duplicated`); a leaf whose folder is gone is
+   * refused, never recreated, unless `create` made it in this call.
+   */
+  private async move(requested: { fileId: string; target: string }[], options: {
+    /** Folders a file may leave. */
+    from: (folder: string) => boolean;
+    outside: string;
+    changed: string;
+    special: boolean;
+    create: ShelfNewLeaf[];
+  }): Promise<ShelfSortResult> {
     if (this.active) throw new AppError("BUSY", "제안을 만드는 중에는 파일을 옮길 수 없습니다.");
     const root = this.shelf.root(), config = this.shelf.config();
     if (!root || !config) throw new AppError("SHELF_CONFIG", "서고를 먼저 연결하세요.");
     if (!(await rootOnline(root.path))) throw new AppError("SHELF_OFFLINE", "서고 오프라인 · NAS를 연결한 뒤 옮기세요.");
     const folders = this.folders(root.id);
     const taxonomy = await loadTaxonomy(root.path, folders);
-    const allowed = new Set([...taxonomy.leaves.map((l) => l.path), SHELF_UNCATEGORIZED, SHELF_DUPLICATED]);
+    const leaves = new Set(taxonomy.leaves.map((l) => l.path));
+    const special = new Set(options.special ? [SHELF_UNCATEGORIZED, SHELF_DUPLICATED] : []);
     // Reuse an existing folder's on-disk spelling (SMB names may be NFD).
     const onDisk = new Map(folders.map((f) => [f.normalize("NFC"), f]));
     const excluded = new Set(config.exclude.map((name) => name.normalize("NFC")));
     const ledger = await isDir(join(root.path, "_system"));
     const moveLog = join(root.path, "_system", "move_log.jsonl");
+    const added = await this.planLeaves(root.path, taxonomy, options.create);
     this.applying = true;
     return this.shelf.hold(async () => {
       const result: ShelfSortResult = { moved: 0, uncategorized: 0, duplicated: 0, skipped: [], ledger };
+      await this.makeLeaves(root.path, taxonomy, added);
+      if (added.length) result.created = added.map((l) => l.path);
+      const dirs = new Map<string, string | null>(added.map((l) => [l.path, l.dir]));
+      for (const leaf of added) leaves.add(leaf.path);
+      const leafDir = async (target: string) => {
+        if (!dirs.has(target)) dirs.set(target, await findDir(root.path, target));
+        return dirs.get(target)!;
+      };
       const filed: string[] = [], parked: string[] = [], done = new Set<string>();
       for (const { fileId, target } of requested) {
         const row = this.shelf.file(fileId);
         const skip = (reason: string) => result.skipped.push({ relPath: row?.rel_path || fileId, reason });
         if (!row || row.root_id !== root.id || row.status === "missing") { skip("서고에서 찾을 수 없습니다."); continue; }
         const from = parentRel(row.rel_path) ?? "";
-        if (!isInboxFolder(from) && !isUncategorizedFolder(from)) { skip("이미 수신함 밖에 있습니다."); continue; }
-        if (!allowed.has(target)) { skip("분류 기준에 없는 폴더입니다."); continue; }
-        const dir = onDisk.get(target.normalize("NFC")) ?? target;
+        if (!options.from(from)) { skip(options.outside); continue; }
+        if (!leaves.has(target) && !special.has(target)) { skip("분류 기준에 없는 폴더입니다."); continue; }
+        const dir = special.has(target) ? onDisk.get(target.normalize("NFC")) ?? target : await leafDir(target);
+        if (dir === null) {
+          skip(taxonomy.source === "file" ? "폴더가 서고에 없습니다. 손으로 이름을 바꿨거나 지웠다면 _system/taxonomy.json도 고치세요." : "폴더가 서고에 없습니다. 서고를 다시 스캔하세요.");
+          continue;
+        }
         if (dir === from) { done.add(fileId); continue; }
         const src = join(root.path, row.rel_path);
         const before = await lstat(src).catch(() => null);
         if (!before?.isFile()) { skip("파일이 없습니다. 서고를 다시 스캔하세요."); continue; }
-        if (before.size !== row.size) { skip("파일이 바뀌었습니다. 제안을 다시 만드세요."); continue; }
-        await mkdir(join(root.path, dir), { recursive: true });
+        if (before.size !== row.size) { skip(options.changed); continue; }
+        if (special.has(target)) await mkdir(join(root.path, dir), { recursive: true });
         const rel = `${dir}/${await freeName(join(root.path, dir), basename(row.rel_path))}`;
         const entry = { id: -100, src: row.rel_path, dst: rel, st: "moving", ts: localStamp(), by: "ResearchBunny" };
         if (ledger) await appendFile(moveLog, pyJson(entry) + "\n");
@@ -551,12 +848,14 @@ export class ShelfSorter {
         else result.moved++;
         (target === SHELF_UNCATEGORIZED || target === SHELF_DUPLICATED ? parked : filed).push(rel);
       }
-      if (ledger && filed.length + parked.length) {
-        const day = localStamp().slice(0, 10);
+      if (ledger && filed.length + parked.length + added.length) {
+        const stamp = localStamp(new Date(), true);
         await mkdir(join(root.path, "_system", "logs"), { recursive: true });
-        await appendFile(join(root.path, "_system", "logs", `intake-${day}.md`),
-          `\n## run ${localStamp(new Date(), true)} · ResearchBunny\n${filed.map((r) => `- ${r}\n`).join("")}${parked.map((r) => `- (uncategorized) ${r}\n`).join("")}`);
-        await writeIndex(root.path);
+        // A leaf the app added gets its own block, the way a person would note an addleaf.
+        await appendFile(join(root.path, "_system", "logs", `intake-${localStamp().slice(0, 10)}.md`),
+          (added.length ? `\n## addleaf ${stamp} · ResearchBunny\n${added.map((l) => `- ${l.path}${l.def ? ` — ${l.def}` : ""}\n`).join("")}` : "") +
+          (filed.length + parked.length ? `\n## run ${stamp} · ResearchBunny\n${filed.map((r) => `- ${r}\n`).join("")}${parked.map((r) => `- (uncategorized) ${r}\n`).join("")}` : ""));
+        if (filed.length + parked.length) await writeIndex(root.path);
       }
       // The saved job describes what is left to review, never a past move: that is the caller's result.
       // A proposal with nothing left to move is finished, so the next visit starts from today's inbox.
@@ -567,6 +866,8 @@ export class ShelfSorter {
       else this.save({
         ...state,
         items,
+        // Leaves made here become choices for the rest of the proposal.
+        leaves: [...state.leaves, ...added.filter((a) => !state.leaves.some((l) => l.path === a.path)).map(({ path, domain, name, def }) => ({ path, domain, name, def }))],
         job: state.job.status === "ready" ? job("ready", `남은 제안 ${items.length}편 · 옮길 논문 ${left}편`) : state.job,
       });
       return result;

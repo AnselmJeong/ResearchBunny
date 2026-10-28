@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { Service } from "../../src/service/service";
 import { DEFAULT_AI } from "../../src/service/providers/openai";
-import { loadTaxonomy, readDecisions, tally, writeIndex } from "../../src/service/shelf/sorter";
+import { loadTaxonomy, readDecisions, tally, taxonomyWith, writeIndex } from "../../src/service/shelf/sorter";
 import { folderId } from "../../src/service/shelf/scanner";
 import { AppError, type Run } from "../../src/shared/types";
 import type { ShelfSortItem } from "../../src/shared/shelf";
@@ -346,3 +346,263 @@ test("without _system or a working AI: folder leaves, no ledger, vote fallback a
   expect(await readdir(dir)).not.toContain("_system");
   expect(await readdir(dir)).not.toContain("index.json");
 }, false));
+
+/** `intake.py addleaf`'s own code (cmd_addleaf), run on a copy to compare the bytes it writes. */
+const ADDLEAF = `import json, sys
+TAX, dom_id, name, definition = sys.argv[1:5]
+tax = json.load(open(TAX, encoding="utf-8"))
+for d in tax["domains"]:
+    if d["id"] == dom_id or d["name"] == dom_id:
+        if any(l["name"] == name for l in d["leaves"]):
+            print("EXISTS"); sys.exit()
+        d["leaves"].append({"name": name, "def": definition, "incl": [], "excl": [], "ex": []})
+        d["leaves"].sort(key=lambda l: l["name"])
+        json.dump(tax, open(TAX, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        print("ADDED"); sys.exit()
+print("NO_SUCH_DOMAIN")
+`;
+const KO = "_uncategorized/2024 - Ko - Ceramic kiln firing schedules.pdf";
+const MOON = "_uncategorized/2023 - Moon - Hippocampal place cells in bats.pdf";
+async function parkMore(service: Service, dir: string) {
+  await pdf(join(dir, KO), ["Ceramic kiln firing schedules", "Kiln firing schedules for stoneware glazes."]);
+  await pdf(join(dir, MOON), ["Hippocampal place cells in bats", "Hippocampal place cells map three-dimensional space in flying bats."]);
+  await service.shelf.scan("test");
+  await service.shelf.wait();
+}
+const workOf = (service: Service, rel: string) => row(service, rel)!.work_id;
+async function fileInto(service: Service, input: Record<string, unknown>) {
+  const result = await service.call("shelfFileInto", input);
+  await service.shelf.wait();
+  return result as { moved: number; skipped: { relPath: string; reason: string }[]; created?: string[]; ledger: boolean };
+}
+async function refused(service: Service, input: Record<string, unknown>, message: RegExp) {
+  await expect(service.call("shelfFileInto", input)).rejects.toThrow(message);
+  await service.shelf.wait();
+}
+
+test("filing 미분류 by hand: an existing leaf, a new leaf in a taxonomy.json written as addleaf writes it, and the index follows", async () => fixture(async ({ service, dir }) => {
+  await parkMore(service, dir);
+  const taxonomyPath = join(dir, "_system", "taxonomy.json");
+  const original = await readFile(taxonomyPath, "utf8");
+
+  // The picker lists every domain and leaf; the unsafe "../escape" is never a destination.
+  const list = await service.call("shelfLeaves", {});
+  expect(list.taxonomy).toBe("file");
+  expect(list.domains.map((d: { name: string }) => d.name)).toEqual(["01 Brain", "02 Mind"]);
+  expect(list.domains[0].leaves).toEqual([
+    { path: MEMORY, domain: "01 Brain", name: "Memory", def: "Hippocampal memory systems.", missing: false },
+    { path: PAIN, domain: "01 Brain", name: "Pain", def: "Pain and nociception.", missing: false },
+  ]);
+
+  // An existing leaf: no AI call, the row keeps its work, hash stamp and attachment at the new path.
+  const before = row(service, MOON)!;
+  const filed = await fileInto(service, { workIds: [before.work_id], target: MEMORY });
+  expect(filed).toMatchObject({ moved: 1, skipped: [], ledger: true });
+  expect(filed.created).toBeUndefined();
+  const moonRel = `${MEMORY}/2023 - Moon - Hippocampal place cells in bats.pdf`;
+  expect((await stat(join(dir, moonRel))).isFile()).toBe(true);
+  const after = row(service, moonRel)!;
+  expect(after).toMatchObject({ id: before.id, work_id: before.work_id, stage: "resolved", folder_id: folderId(service.shelf.root()!.id, MEMORY) });
+  expect(after.hashed_mtime).toBe(after.mtime);
+  expect(service.db.attachments(after.work_id).find((a) => a.id === after.attachment_id)?.path).toBe(join(dir, moonRel));
+  expect(service.db.shelfScope(folderId(service.shelf.root()!.id, "_uncategorized"))).not.toContain(before.work_id);
+  const log = (await readFile(join(dir, "_system", "move_log.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  expect(log).toEqual([expect.objectContaining({ src: MOON, dst: moonRel, st: "moving", by: "ResearchBunny" })]);
+  expect(JSON.parse(await readFile(join(dir, "index.json"), "utf8")).files["2023 - Moon - Hippocampal place cells in bats.pdf"]).toEqual({ category: MEMORY });
+  // Filing into a leaf never touches the taxonomy.
+  expect(await readFile(taxonomyPath, "utf8")).toBe(original);
+
+  // Names a NAS share, intake.py or the taxonomy would trip over are refused before anything is made.
+  const eun = workOf(service, INBOX.eun);
+  const brain = (await readdir(join(dir, "01 Brain"))).sort();
+  for (const [name, message] of [
+    ["", /폴더 이름을 입력하세요/], ["Sleep/Wake", /\/ 나 \\/], ["Sleep\\Wake", /\/ 나 \\/], [".cache", /\. 이나 _ 로 시작/], ["_misc", /\. 이나 _ 로 시작/],
+    ["Glaze: notes", /: \*/], ["Glazes.", /\. 으로 끝날/], [" Glazes", /앞뒤의 공백/], ["memory", /같은 이름의 폴더/], ["Pain", /같은 이름의 폴더/],
+  ] as const) await refused(service, { workIds: [eun], create: { domain: "01 Brain", name, def: "" } }, message);
+  await refused(service, { workIds: [eun], create: { domain: "03 Nope", name: "Glazes", def: "" } }, /taxonomy.json에 없는 도메인/);
+  await expect(service.call("shelfFileInto", { workIds: [eun] })).rejects.toThrow();
+  await expect(service.call("shelfFileInto", { workIds: [eun], target: MEMORY, create: { domain: "01 Brain", name: "Glazes", def: "" } })).rejects.toThrow();
+  expect((await readdir(join(dir, "01 Brain"))).sort()).toEqual(brain);
+  expect(await readFile(taxonomyPath, "utf8")).toBe(original);
+  expect((await stat(join(dir, INBOX.eun))).isFile()).toBe(true);
+
+  // Only 미분류 papers move, only into taxonomy leaves; a new folder is not made for papers that cannot go.
+  const ahn = workOf(service, INBOX.ahn), kim = workOf(service, KIM);
+  const outside = await fileInto(service, { workIds: [ahn, kim], create: { domain: "01 Brain", name: "Navigation", def: "" } });
+  expect(outside).toMatchObject({ moved: 0, ledger: false });
+  expect(outside.skipped).toEqual([{ relPath: INBOX.ahn, reason: "미분류에 없는 논문입니다." }, { relPath: KIM, reason: "미분류에 없는 논문입니다." }]);
+  expect((await readdir(join(dir, "01 Brain"))).sort()).toEqual(brain);
+  for (const target of ["_duplicated", "_uncategorized", "01 Brain/../escape", "01 Brain"])
+    expect((await fileInto(service, { workIds: [eun], target })).skipped).toEqual([{ relPath: INBOX.eun, reason: "분류 기준에 없는 폴더입니다." }]);
+  expect((await stat(join(dir, INBOX.eun))).isFile()).toBe(true);
+
+  // A new leaf. This taxonomy.json is not kept one leaf per line, so it is written byte for byte as intake.py addleaf writes it.
+  const expected = join(dir, "..", "addleaf.json");
+  await writeFile(expected, original);
+  const def = "Pottery, glaze chemistry and kilns (도자기).";
+  const python = Bun.which("python3");
+  if (python) expect(Bun.spawnSync([python, "-I", "-c", ADDLEAF, expected, "02 Mind", "Ceramics & Glazes", def]).stdout.toString().trim()).toBe("ADDED");
+  const ko = row(service, KO)!;
+  const made = await fileInto(service, { workIds: [eun, ko.work_id], create: { domain: "02 Mind", name: "Ceramics & Glazes", def: "  Pottery, glaze chemistry\n and kilns (도자기). " } });
+  const CERAMICS = "02 Mind/Ceramics & Glazes";
+  expect(made).toMatchObject({ moved: 2, skipped: [], created: [CERAMICS], ledger: true });
+  const written = await readFile(taxonomyPath, "utf8");
+  if (python) expect(written).toBe(await readFile(expected, "utf8"));
+  expect(written).toStartWith('{\n "version": 2,\n "policy": {\n  "primary_rule": ');
+  expect(written).toContain("(도자기)");
+  const mind = JSON.parse(written).domains[1];
+  expect(mind.leaves).toEqual([{ name: "Ceramics & Glazes", def, incl: [], excl: [], ex: [] }, { name: "Sleep", def: "Sleep and circadian rhythms." }]);
+  expect(JSON.parse(written).domains[0]).toEqual(TAXONOMY.domains[0]);
+  expect((await readdir(join(dir, "_system"))).filter((name) => name.includes("researchbunny"))).toEqual([]);
+  expect((await loadTaxonomy(dir, [])).leaves.map((l) => l.path)).toEqual([MEMORY, PAIN, CERAMICS, SLEEP]);
+  // Both papers moved with their rows; the ledger records the new leaf and the run.
+  for (const [rel, id] of [[`${CERAMICS}/2025 - Eun - Pottery glaze chemistry notes.pdf`, row(service, `${CERAMICS}/2025 - Eun - Pottery glaze chemistry notes.pdf`)?.id], [`${CERAMICS}/2024 - Ko - Ceramic kiln firing schedules.pdf`, ko.id]] as const) {
+    expect((await stat(join(dir, rel))).isFile()).toBe(true);
+    expect(row(service, rel)?.id).toBe(id!);
+  }
+  const [logName] = await readdir(join(dir, "_system", "logs"));
+  const runLog = await readFile(join(dir, "_system", "logs", logName), "utf8");
+  expect(runLog).toContain(`\n## addleaf `);
+  expect(runLog).toContain(`- ${CERAMICS} — ${def}\n`);
+  expect(runLog).toContain(`- ${CERAMICS}/2024 - Ko - Ceramic kiln firing schedules.pdf\n`);
+  expect(JSON.parse(await readFile(join(dir, "index.json"), "utf8")).categories[CERAMICS]).toEqual(["2024 - Ko - Ceramic kiln firing schedules.pdf", "2025 - Eun - Pottery glaze chemistry notes.pdf"]);
+  // 미분류 is empty now, so the sidebar entry goes.
+  expect(service.shelf.summary().uncategorized).toBeNull();
+  // The new leaf is a destination now and counts as a taken name.
+  expect((await service.call("shelfLeaves", {})).domains[1].leaves.map((l: { name: string }) => l.name)).toEqual(["Ceramics & Glazes", "Sleep"]);
+
+  // A folder made by hand joins the taxonomy as it is; one that differs only in case is refused.
+  await mkdir(join(dir, "01 Brain", "Vision"));
+  await mkdir(join(dir, "01 Brain", "attention"));
+  await pdf(join(dir, "_uncategorized/2022 - Oh - Visual cortex orientation maps.pdf"), ["Visual cortex orientation maps", "Orientation maps in primary visual cortex."]);
+  await service.shelf.scan("test");
+  await service.shelf.wait();
+  const oh = workOf(service, "_uncategorized/2022 - Oh - Visual cortex orientation maps.pdf");
+  await refused(service, { workIds: [oh], create: { domain: "02 Mind", name: "ceramics & glazes", def: "" } }, /같은 이름의 폴더/);
+  await refused(service, { workIds: [oh], create: { domain: "01 Brain", name: "Attention", def: "" } }, /대소문자만 다른 폴더\(attention\)/);
+  expect(await fileInto(service, { workIds: [oh], create: { domain: "01 Brain", name: "Vision", def: "" } })).toMatchObject({ moved: 1, created: ["01 Brain/Vision"] });
+  expect(JSON.parse(await readFile(taxonomyPath, "utf8")).domains[0].leaves.map((l: { name: string }) => l.name)).toEqual(["../escape", "Memory", "Pain", "Vision"]);
+}));
+
+test("a leaf renamed or removed by hand is never recreated; the sort window can send a paper to a new leaf", async () => fixture(async ({ service, dir }) => {
+  await parkMore(service, dir);
+  const { rename: move } = await import("node:fs/promises");
+  await move(join(dir, SLEEP), join(dir, "02 Mind", "Sleep & Circadian"));
+  await service.shelf.scan("test");
+  await service.shelf.wait();
+  const gone = "폴더가 서고에 없습니다. 손으로 이름을 바꿨거나 지웠다면 _system/taxonomy.json도 고치세요.";
+
+  // The picker shows the leaf as missing, and neither path recreates it.
+  expect((await service.call("shelfLeaves", {})).domains[1].leaves).toEqual([{ path: SLEEP, domain: "02 Mind", name: "Sleep", def: "Sleep and circadian rhythms.", missing: true }]);
+  expect((await fileInto(service, { workIds: [workOf(service, KO)], target: SLEEP })).skipped).toEqual([{ relPath: KO, reason: gone }]);
+  const choi = row(service, INBOX.choi)!;
+  const applied = await service.call("shelfSortApply", { items: [{ fileId: choi.id, target: SLEEP }] });
+  await service.shelf.wait();
+  expect(applied).toMatchObject({ moved: 0, skipped: [{ relPath: INBOX.choi, reason: gone }] });
+  expect(await readdir(join(dir, "02 Mind"))).toEqual(["Sleep & Circadian"]);
+  expect((await stat(join(dir, INBOX.choi))).isFile()).toBe(true);
+
+  // A proposal row set to 새 폴더…: the leaf is made when the paper moves, in the same call.
+  const PHYSIOLOGY = "02 Mind/Sleep Physiology";
+  const created = await service.call("shelfSortApply", {
+    items: [{ fileId: choi.id, target: PHYSIOLOGY }, { fileId: row(service, INBOX.baek)!.id, target: PAIN }],
+    create: [{ domain: "02 Mind", name: "Sleep Physiology", def: "Sleep stages, spindles and their physiology." }],
+  });
+  await service.shelf.wait();
+  expect(created).toMatchObject({ moved: 2, created: [PHYSIOLOGY], skipped: [] });
+  expect(row(service, `${PHYSIOLOGY}/${INBOX.choi}`)?.id).toBe(choi.id);
+  expect(JSON.parse(await readFile(join(dir, "_system", "taxonomy.json"), "utf8")).domains[1].leaves.map((l: { name: string }) => l.name)).toEqual(["Sleep", "Sleep Physiology"]);
+  // A new leaf is never a way around the rule: a name already in the taxonomy is refused even when its folder is gone.
+  await expect(service.call("shelfSortApply", { items: [{ fileId: row(service, INBOX.dong)!.id, target: SLEEP }], create: [{ domain: "02 Mind", name: "Sleep", def: "" }] })).rejects.toThrow(/같은 이름의 폴더/);
+  await service.shelf.wait();
+  expect((await readdir(join(dir, "02 Mind"))).sort()).toEqual(["Sleep & Circadian", "Sleep Physiology"]);
+
+  // A domain folder renamed by hand is not recreated either.
+  await move(join(dir, "01 Brain"), join(dir, "01 Brain (old)"));
+  await refused(service, { workIds: [workOf(service, KO)], create: { domain: "01 Brain", name: "Vision", def: "" } }, /도메인 폴더가 서고에 없습니다: 01 Brain/);
+  expect(await readdir(dir)).not.toContain("01 Brain");
+}));
+
+test("without taxonomy.json a new folder is just a folder, and the AI drafts a definition from the papers", async () => fixture(async ({ service, dir }) => {
+  await parkMore(service, dir);
+  const list = await service.call("shelfLeaves", {});
+  expect(list.taxonomy).toBe("folders");
+  expect(list.domains.map((d: { name: string }) => d.name)).toEqual(["01 Brain", "02 Mind"]);
+  // The folders on disk are the domain's names.
+  await refused(service, { workIds: [workOf(service, KO)], create: { domain: "01 Brain", name: "pain", def: "" } }, /같은 이름의 폴더/);
+  await refused(service, { workIds: [workOf(service, KO)], create: { domain: "", name: "Ceramics", def: "" } }, /새 폴더를 둘 수 없는 위치/);
+  const made = await fileInto(service, { workIds: [workOf(service, KO)], create: { domain: "02 Mind", name: "Ceramics", def: "ignored without a taxonomy" } });
+  expect(made).toMatchObject({ moved: 1, created: ["02 Mind/Ceramics"], ledger: false });
+  expect((await stat(join(dir, "02 Mind/Ceramics/2024 - Ko - Ceramic kiln firing schedules.pdf"))).isFile()).toBe(true);
+  expect(await readdir(dir)).not.toContain("_system");
+  expect(await readdir(dir)).not.toContain("index.json");
+  expect((await service.call("shelfLeaves", {})).domains[1].leaves.map((l: { path: string }) => l.path)).toEqual(["02 Mind/Ceramics", SLEEP]);
+
+  // The definition draft sends titles, abstracts and sibling leaves, never paths, and comes back as one line.
+  const sent: { name: string; data: { domain: string; name: string; siblings: unknown[]; papers: { title: string; text: string }[] } }[] = [];
+  service.ai.structured = async (_run: Run, name: string, _schema: Record<string, unknown>, _instruction: string, data: unknown) => {
+    sent.push({ name, data: data as (typeof sent)[number]["data"] });
+    return { def: "  Pottery glazes,\n kilns and firing. " };
+  };
+  const draft = await service.call("shelfLeafDraft", { workIds: [workOf(service, INBOX.eun)], fileIds: [row(service, MOON)!.id], domain: "02 Mind", name: "Glazes" });
+  expect(draft).toEqual({ def: "Pottery glazes, kilns and firing." });
+  expect(sent).toHaveLength(1);
+  expect(sent[0].name).toBe("shelf_leaf_definition");
+  expect(sent[0].data).toMatchObject({ domain: "02 Mind", name: "Glazes", siblings: [{ name: "Ceramics" }, { name: "Sleep" }] });
+  expect(sent[0].data.papers.map((p) => p.title).sort()).toEqual(["Hippocampal place cells in bats", "Pottery glaze chemistry notes"]);
+  expect(sent[0].data.papers.find((p) => p.title.startsWith("Pottery"))!.text).toContain("Glaze chemistry");
+  expect(JSON.stringify(sent[0].data)).not.toContain(dir);
+  service.db.pref("ai", { ...DEFAULT_AI, aiProvider: "codex", aiEnabled: false });
+  await expect(service.call("shelfLeafDraft", { workIds: [workOf(service, INBOX.eun)], domain: "02 Mind", name: "Glazes" })).rejects.toThrow(/AI/);
+}, false));
+
+/** The real shelf's layout: one leaf per line, leaves in the curator's order, not by name. */
+const HAND_KEPT = `{
+  "version": 2,
+  "policy": {
+    "primary_rule": "Assign the single leaf that best matches the paper's PRIMARY subject."
+  },
+  "domains": [
+    {"id":"01","name":"01 Brain","leaves":[
+      {"name":"Pain","def":"Pain and nociception.","incl":["nociceptive circuits"],"excl":[],"ex":[]},
+      {"name":"Memory","def":"Hippocampal memory systems.","incl":["replay"],"excl":["sleep physiology -> Sleep"],"ex":[]}
+    ]},
+    {"id":"02","name":"02 Mind","leaves":[
+      {"name":"Sleep","def":"Sleep and circadian rhythms.","incl":[],"excl":[],"ex":[]}
+    ]}
+  ]
+}
+`;
+
+test("a taxonomy.json kept one leaf per line keeps every line: a new leaf is one more line at the end of its domain", async () => fixture(async ({ service, dir }) => {
+  const taxonomyPath = join(dir, "_system", "taxonomy.json");
+  await writeFile(taxonomyPath, HAND_KEPT);
+  // From the sort window: two new leaves in two domains, made in the same call that moves the papers.
+  const result = await service.call("shelfSortApply", {
+    items: [{ fileId: row(service, INBOX.ahn)!.id, target: "01 Brain/Navigation" }, { fileId: row(service, INBOX.dong)!.id, target: "02 Mind/Gardening" }],
+    create: [{ domain: "01 Brain", name: "Navigation", def: "Spatial navigation and place cells." }, { domain: "02 Mind", name: "Gardening", def: "" }],
+  });
+  await service.shelf.wait();
+  expect(result).toMatchObject({ moved: 2, created: ["01 Brain/Navigation", "02 Mind/Gardening"], skipped: [] });
+  expect(await readFile(taxonomyPath, "utf8")).toBe(HAND_KEPT
+    .replace('"ex":[]}\n    ]},', '"ex":[]},\n      {"name":"Navigation","def":"Spatial navigation and place cells.","incl":[],"excl":[],"ex":[]}\n    ]},')
+    .replace('"ex":[]}\n    ]}\n  ]', '"ex":[]},\n      {"name":"Gardening","def":"","incl":[],"excl":[],"ex":[]}\n    ]}\n  ]'));
+  expect((await loadTaxonomy(dir, [])).leaves.map((l) => l.path)).toEqual([PAIN, MEMORY, "01 Brain/Navigation", SLEEP, "02 Mind/Gardening"]);
+
+  // Spacing follows the domain's own lines; a layout that is not one leaf per line is rewritten as addleaf would.
+  const root = await mkdtemp(join(tmpdir(), "rb-keep-"));
+  try {
+    await mkdir(join(root, "_system"));
+    const spaced = HAND_KEPT.replace('{"name":"Sleep","def":"Sleep and circadian rhythms.","incl":[],"excl":[],"ex":[]}', '{"name": "Sleep", "def": "Sleep and circadian rhythms.", "incl": [], "excl": [], "ex": []}');
+    await writeFile(join(root, "_system", "taxonomy.json"), spaced);
+    expect(await taxonomyWith(root, [{ domain: "02 Mind", name: "Dreams", def: "꿈" }])).toBe(spaced.replace(
+      '"ex": []}\n    ]}\n  ]', '"ex": []},\n      {"name": "Dreams", "def": "꿈", "incl": [], "excl": [], "ex": []}\n    ]}\n  ]'));
+    const empty = HAND_KEPT.replace(/"leaves":\[\n {6}\{"name":"Sleep".*\n {4}\]/, '"leaves":[]');
+    await writeFile(join(root, "_system", "taxonomy.json"), empty);
+    const rewritten = await taxonomyWith(root, [{ domain: "02 Mind", name: "Dreams", def: "" }, { domain: "01 Brain", name: "Attention", def: "" }]);
+    expect(rewritten).toStartWith('{\n "version": 2,\n "policy": {\n  "primary_rule": ');
+    expect(JSON.parse(rewritten).domains.map((d: { leaves: { name: string }[] }) => d.leaves.map((l) => l.name))).toEqual([["Attention", "Memory", "Pain"], ["Dreams"]]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}));
