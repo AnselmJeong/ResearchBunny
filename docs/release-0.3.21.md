@@ -32,6 +32,7 @@ Library schema stays at 3.
   - a leaf renamed on disk shown as `서고에 없음`;
   - `새 폴더…` in the sort window, defaulting to the row's candidate domain and made on apply;
   - light and dark themes.
+- Packaged app: the DMG's checksum is valid and strict signature verification passed for the bundle inside the `.tar.zst` (0.3.21). The packaged smoke test passed on the extracted bundle with a restricted PATH (PDF reader chunks, threads, extraction, folder matching, archive, BibTeX and PDF folder export, backup, restore and permanent deletion). The packaged service contains `shelfFileInto`, and the renderer contains `폴더로 보내기`.
 - Not checked: the real shelf, the real AI and the installed app's own window.
 
 ## Known issues
@@ -40,5 +41,13 @@ Library schema stays at 3.
 - `intake.py leaves` numbers leaves across all domains, so a new leaf shifts the numbers of every leaf after it. Look at `leaves` again before classifying with intake.py after making a folder in the app.
 - The first passage search after launch takes about 2.5 s while the in-memory sign bits load, and the service does not answer other requests during that time.
 - A "ResearchBunny quit unexpectedly" dialog was reported on quitting 0.3.7, cause not yet known.
+
+## Installation
+
+- Backed up the previous app and a consistent SQLite snapshot under `~/Library/Application Support/ResearchBunny/app-backups/20261028-222216-file-into-0.3.21` (integrity ok, schema 3, **12,361 works**, **9,203 attachments**, **9,238 shelf files**, 6 projects, matching the live library). The replaced 0.3.20 bundle is kept there as `ResearchBunny-0.3.20-installed.app` (signature verified). `passages.sqlite` was not copied: 0.3.21 does not change it, and the 0.3.18 backup holds a clone.
+- Replaced `/Applications/ResearchBunny.app` with version **0.3.21** (bundle hash `1my7xp1076ido`); all **242 files** match the package and strict signature verification passed. The app was not running and was not launched.
+- The real shelf's `_system/taxonomy.json` is unchanged until a folder is first made in the app.
+
+Artifacts, built from `a174017`: `out/electrobun/stable-macos-arm64-ResearchBunny.dmg` (SHA-256 `110d95f9…1372283e3`) and `out/electrobun/stable-macos-arm64-ResearchBunny.app.tar.zst` (`2a9b509b…1042b6434`), also copied to the main checkout's `out/electrobun`. Local validation logs are under `.qa/release-0.3.21/`.
 
 Local ad-hoc signing on macOS Apple Silicon; no Developer ID signing or Apple notarization.
