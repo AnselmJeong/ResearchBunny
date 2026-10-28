@@ -460,11 +460,11 @@ export function Inspector({
               </div>}
               {["review", "provisional"].includes(shelfFile.status) && <>
                 <label className="field">
-                  DOI로 직접 확인
-                  <input value={doiInput} placeholder="10.xxxx/…" onChange={(e) => setDoiInput(e.target.value)} />
+                  DOI·arXiv·PMID로 직접 확인
+                  <input value={doiInput} placeholder="10.xxxx/… 또는 arXiv:2610.27099" onChange={(e) => setDoiInput(e.target.value)} />
                 </label>
                 <div className="inline-actions">
-                  <button disabled={resolving || !doiInput.trim()} onClick={() => resolveShelf("doi", doiInput.trim())}>DOI 조회</button>
+                  <button disabled={resolving || !doiInput.trim()} onClick={() => resolveShelf("doi", doiInput.trim())}>조회</button>
                   <button disabled={resolving} onClick={() => resolveShelf("keep")}>파일명 서지 유지</button>
                 </div>
               </>}

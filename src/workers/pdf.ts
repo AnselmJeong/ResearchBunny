@@ -1,6 +1,7 @@
 
 import { readFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
+import { arxivDoisIn } from "../shared/domain";
 async function extract() {
   const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const data = new Uint8Array(await readFile(process.argv[2]));
@@ -124,12 +125,14 @@ async function extract() {
       !/^(untitled|microsoft|word|doi:)/i.test(metadataTitle)
         ? metadataTitle
         : heading;
+    // An arXiv stamp names the paper itself, so it goes ahead of DOIs that may be citations.
     const dois = [
-      ...new Set(
-        (text.match(/10\.\d{4,9}\/[^\s<>"{}]+/gi) || []).map((d) =>
+      ...new Set([
+        ...arxivDoisIn(text),
+        ...(text.match(/10\.\d{4,9}\/[^\s<>"{}]+/gi) || []).map((d) =>
           d.replace(/[.,;)]+$/, ""),
         ),
-      ),
+      ]),
     ].slice(0, 5);
     process.send?.({
       title: title.slice(0, 1000),

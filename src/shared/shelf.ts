@@ -355,9 +355,13 @@ export function formatShelfFilename(work: { year: number | null; authors: string
 export function surnameKey(value: string): string {
   return value.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^\p{L}\p{N}-]+/gu, " ").trim();
 }
+/** Surname particles a provider may drop or fold into the given name ("de Koning" ↔ "Marieke Koning"). */
+const PARTICLES = new Set(["d", "da", "das", "de", "del", "della", "der", "den", "di", "do", "dos", "du", "la", "le", "st", "te", "ten", "ter", "van", "von", "zu"]);
 export function authorMatches(filenameAuthor: string | undefined, providerAuthor: string | undefined): boolean {
   if (!filenameAuthor || !providerAuthor) return false;
-  const wanted = surnameKey(filenameAuthor).split(/\s+/)[0];
+  const parts = surnameKey(filenameAuthor).split(/\s+/);
+  // Skip leading particles, but keep a surname such as "Le" that stands alone.
+  const wanted = parts.find((p, i) => !PARTICLES.has(p) || i === parts.length - 1);
   if (!wanted) return false;
   const tokens = surnameKey(providerAuthor).split(/[\s]+/);
   return tokens.includes(wanted) || tokens.some((t) => t.split("-").includes(wanted)) || wanted.split("-").some((part) => tokens.includes(part));

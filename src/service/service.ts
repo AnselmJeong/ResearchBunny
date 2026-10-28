@@ -808,7 +808,7 @@ export class Service {
         const p = schemas.shelfResolve.parse(args);
         if (p.action === "keep") this.shelf.keepProvisional(p.fileId);
         else {
-          if (!p.value) throw new AppError("INVALID", "후보나 DOI를 입력하세요.");
+          if (!p.value) throw new AppError("INVALID", "후보나 DOI·arXiv·PMID를 입력하세요.");
           await this.shelf.resolveManually(p.fileId, p.value);
         }
         return this.shelf.fileDetails(p.fileId);

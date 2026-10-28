@@ -2,7 +2,9 @@ import { z } from "zod";
 import { createHash } from "node:crypto";
 import { AppError, now, type Work } from "../../shared/types";
 import {
+  arxivDoi,
   blankWork,
+  normalizeArxiv,
   normalizeDoi,
   normalizePmid,
   normalizeOpenAlex,
@@ -227,9 +229,10 @@ export class OpenAlex {
     onCall: () => void,
   ): Promise<Page> {
     const pmid = normalizePmid(identifier);
-    const id = normalizeOpenAlex(identifier) || normalizeDoi(identifier) || pmid;
+    const arxiv = normalizeArxiv(identifier);
+    const id = normalizeOpenAlex(identifier) || normalizeDoi(identifier) || (arxiv && arxivDoi(arxiv)) || pmid;
     if (!id)
-      throw new AppError("INVALID", "DOI, PMID 또는 OpenAlex ID가 필요합니다.");
+      throw new AppError("INVALID", "DOI, arXiv, PMID 또는 OpenAlex ID가 필요합니다.");
     const path = pmid ? `works/pmid:${pmid}` : normalizeOpenAlex(identifier)
       ? `works/${id}`
       : `works/https://doi.org/${id.split("/").map(encodeURIComponent).join("/")}`;

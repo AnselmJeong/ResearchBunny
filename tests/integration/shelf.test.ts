@@ -4,14 +4,15 @@ import { basename, join, resolve, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { Service } from "../../src/service/service";
 import { Library } from "../../src/service/db/database";
-import { blankWork } from "../../src/shared/domain";
+import { arxivDoisIn, blankWork, normalizeArxiv } from "../../src/shared/domain";
 import { AppError, DEFAULT_FILTERS, type Run, type Work, type ListResult, type MissingPdfs } from "../../src/shared/types";
 import { hasValidPdf } from "../../src/service/interchange/pdf";
 import { mergeWorks, undoMerge } from "../../src/service/db/merge";
 import { deleteTrashedWorks } from "../../src/service/db/trash";
-import { parseShelfFilename, extractAbstractCandidate, SHELF_ALL, SHELF_INBOX, SHELF_REVIEW } from "../../src/shared/shelf";
+import { authorMatches, parseShelfFilename, extractAbstractCandidate, SHELF_ALL, SHELF_INBOX, SHELF_REVIEW } from "../../src/shared/shelf";
 import { movedRel, planScan, rootRelation } from "../../src/service/shelf/scanner";
 import { slimRaw } from "../../src/service/shelf/resolver";
+import { fromCsl } from "../../src/service/providers/doi-org";
 import { VectorIndex } from "../../src/service/shelf/vectors";
 import { normalize } from "../../src/service/providers/ollama-local";
 import type { Page } from "../../src/service/providers/openalex";
@@ -136,6 +137,133 @@ test("filename parsing, abstract extraction, move planning and raw slimming", ()
   expect(raw.counts_by_year).toBeUndefined();
   expect(raw.concepts).toBeUndefined();
   expect(raw.ids).toEqual({});
+});
+
+test("arXiv ids become arXiv DOIs, and filename authors match past surname particles", () => {
+  expect(normalizeArxiv("arXiv:2610.27099v1")).toBe("2610.27099");
+  expect(normalizeArxiv("2610.27099")).toBe("2610.27099");
+  expect(normalizeArxiv("https://arxiv.org/pdf/2610.27099v2.pdf")).toBe("2610.27099");
+  expect(normalizeArxiv("arxiv.org/abs/1706.03762")).toBe("1706.03762");
+  expect(normalizeArxiv("hep-th/9901001")).toBe("hep-th/9901001");
+  expect(normalizeArxiv("arXiv:math.GT/0309136v1")).toBe("math/0309136");
+  for (const other of ["2019.2020", "10.1000/intero", "38772598", "W100", "intero 2610.27099"]) expect(normalizeArxiv(other)).toBeNull();
+  expect(arxivDoisIn("arXiv:2610.27099v1 [stat.ML] 19 Oct 2026 Following arXiv: hep-th/9901001 and https://arxiv.org/abs/1706.03762v5, not arXiv:2613.00001 or 2019.2020"))
+    .toEqual(["10.48550/arxiv.2610.27099", "10.48550/arxiv.hep-th/9901001", "10.48550/arxiv.1706.03762"]);
+  expect(authorMatches("de Koning", "Marieke Koning")).toBe(true);
+  expect(authorMatches("van der Waals", "J. D. van der Waals")).toBe(true);
+  expect(authorMatches("Le", "Quoc V. Le")).toBe(true);
+  expect(authorMatches("de Koning", "Marieke de Vries")).toBe(false);
+  expect(fromCsl({
+    type: "journal-article", DOI: "10.1098/RSPA.2025.0538", source: "Crossref", publisher: "The Royal Society",
+    title: "A framework for the use of generative modelling in non-equilibrium statistical mechanics",
+    author: [{ given: "Karl J.", family: "Friston" }, { given: "Maxwell J. D.", family: "Ramstead" }],
+    "container-title": "Proceedings of the Royal Society A", volume: "482", issue: "2330", page: "20250538-20250560",
+    issued: { "date-parts": [[2026, 1, 15]] },
+    abstract: "<jats:title>Abstract</jats:title>\n <jats:p>We discuss coupled objects &amp; generative models.</jats:p>",
+  })).toMatchObject({
+    doi: "10.1098/rspa.2025.0538", authors: ["Karl J. Friston", "Maxwell J. D. Ramstead"], year: 2026, type: "article",
+    venue: "Proceedings of the Royal Society A", pages: "20250538--20250560", abstract: "We discuss coupled objects & generative models.",
+    source: "doi", raw: { abstractSource: "doi" },
+  });
+  expect(() => fromCsl({ DOI: "10.1000/x" })).toThrow();
+});
+
+test("arXiv stamps resolve preprints, co-author filenames match by title, re-resolving reads the PDF again and doi.org fills papers OpenAlex lacks", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rb-shelf-arxiv-"));
+  const dir = join(root, "Articles");
+  const LIU = "2026 - Liu - A Bayesian Generative Modeling Approach for Arbitrary Conditional Inference.pdf";
+  const VASWANI = "2017 - Vaswani et al. - Attention Is All You Need.pdf";
+  const RAMSTEAD = "2026 - Ramstead - A framework for the use of generative modelling in non-equilibrium statistical mechanics.pdf";
+  const KONING = "2026 - de Koning - 4. More Than One Brain.pdf";
+  const ZHANG = "2026 - Zhang et al. - A general-purpose System One decision model for clinical records.pdf";
+  await pdf(join(dir, LIU), ["A Bayesian Generative Modeling Approach for Arbitrary Conditional Inference", "Qiao Liu, Wing Hung Wong", "arXiv:2601.05355v1 [stat.ML] 9 Jan 2026"]);
+  await pdf(join(dir, VASWANI), ["Attention Is All You Need", "Ashish Vaswani, Noam Shazeer", "arXiv:1706.03762v5 [cs.CL] 6 Dec 2017"]);
+  await pdf(join(dir, RAMSTEAD), ["A framework for the use of generative modelling in non-equilibrium statistical mechanics", "Maxwell Ramstead, Karl Friston"]);
+  await pdf(join(dir, KONING), ["4. More Than One Brain", "Marieke de Koning"]);
+  await pdf(join(dir, ZHANG), ["A general-purpose System One decision model for clinical records", "arXiv:2610.27099v1 [cs.AI] 19 Oct 2026"]);
+  const works = {
+    // arXiv v2 renamed the paper; the stamp's DOI still names it.
+    liu: oaWork({ openalex: "W10", doi: "10.48550/arxiv.2601.05355", title: "An AI-powered Bayesian Generative Modeling Approach for Arbitrary Conditional Inference", authors: ["Qiao Liu", "Wing Hung Wong"], year: 2026 }),
+    // Merged with a later record: the arXiv DOI is only on a location.
+    vaswani: oaWork({ openalex: "W11", doi: "10.65215/2q58a426", title: "Attention Is All You Need", authors: ["Ashish Vaswani"], year: 2017 }),
+    friston: oaWork({ openalex: "W12", doi: "10.1098/rspa.2026.0001", title: "A framework for the use of generative modelling in non-equilibrium statistical mechanics", authors: ["Karl John Friston", "Maxwell J. D. Ramstead", "Dalton Sakthivadivel"], year: 2026 }),
+    koning: oaWork({ openalex: "W13", title: "4. More Than One Brain", authors: ["Marieke Koning"], year: 2026, type: "book-chapter" }),
+  };
+  works.vaswani.raw.locations = [{ doi: "https://doi.org/10.65215/2q58a426" }, { doi: "https://doi.org/10.48550/arxiv.1706.03762" }];
+  const service = new Service(join(root, "library"), worker, () => {});
+  const ollama = fakeOllama();
+  let liuIndexed = false;
+  const page = (found: Work[]): Page => ({ works: found.map((w) => structuredClone(w)), cursor: null, total: found.length, cached: false, fetchedAt: new Date().toISOString() });
+  service.oa.page = async (params: Record<string, string>, _signal: AbortSignal, onCall: () => void): Promise<Page> => {
+    onCall();
+    if (params.filter?.startsWith("doi:")) {
+      const dois = params.filter.slice(4).split("|");
+      const locations = (w: Work) => ((w.raw.locations as { doi: string }[] | undefined) || []).map((l) => l.doi.replace("https://doi.org/", ""));
+      return page(Object.values(works).filter((w) => (w !== works.liu || liuIndexed) && [w.doi, ...locations(w)].some((d) => d && dois.includes(d))));
+    }
+    const q = params.search || "";
+    return page(q.includes("non-equilibrium") ? [works.friston] : q.includes("more than one brain") ? [works.koning] : []);
+  };
+  const paths: string[] = [];
+  service.oa.request = async (path: string) => {
+    paths.push(path);
+    if (path.includes("2610.27099")) throw new AppError("NOT_FOUND", "OpenAlex에서 문헌을 찾지 못했습니다.");
+    return { data: { ...works.liu.raw, id: "https://openalex.org/W10", doi: "https://doi.org/10.48550/arxiv.2601.05355", title: works.liu.title, authorships: [{ author: { display_name: "Qiao Liu" } }], abstract_inverted_index: { Arbitrary: [0], inference: [1] } }, cached: false, fetchedAt: new Date().toISOString() };
+  };
+  try {
+    await configure(service, dir, ollama.url);
+    const status = (rel: string) => fileOf(service, rel)!;
+    const method = (rel: string) => JSON.parse(status(rel).info).resolution.method;
+    expect([status(VASWANI).status, method(VASWANI), service.db.get(status(VASWANI).work_id).openalex]).toEqual(["ok", "doi", "W11"]);
+    expect([status(RAMSTEAD).status, method(RAMSTEAD), service.db.get(status(RAMSTEAD).work_id).openalex]).toEqual(["ok", "title", "W12"]);
+    expect([status(KONING).status, method(KONING)]).toEqual(["ok", "title"]);
+
+    // Liu was indexed before OpenAlex had it, by an extractor that ignored arXiv stamps.
+    const liu = status(LIU);
+    expect(liu.status).toBe("provisional");
+    expect(JSON.parse(liu.info).dois).toEqual(["10.48550/arxiv.2601.05355"]);
+    service.db.db.prepare("UPDATE shelf_files SET info=json_set(info,'$.dois',json('[]')) WHERE id=?").run(liu.id);
+    liuIndexed = true;
+    await service.call("shelfControl", { action: "reresolve" });
+    await service.shelf.wait();
+    expect([status(LIU).status, method(LIU), service.db.get(liu.work_id).doi]).toEqual(["ok", "doi", "10.48550/arxiv.2601.05355"]);
+
+    // Typing the arXiv id asks OpenAlex for its DOI.
+    service.db.db.prepare("UPDATE shelf_files SET status='review' WHERE id=?").run(liu.id);
+    const details = await service.call("shelfResolve", { fileId: liu.id, action: "doi", value: "arXiv:2601.05355v2" });
+    expect(details.status).toBe("ok");
+    expect(paths).toEqual(["works/https://doi.org/10.48550/arxiv.2601.05355"]);
+
+    // OpenAlex has not indexed Zhang yet; DataCite answers for the arXiv DOI through doi.org.
+    const zhang = status(ZHANG);
+    expect(zhang.status).toBe("provisional");
+    const asked: { url: string; accept: string | null }[] = [];
+    (service.shelf as unknown as { resolver: { fetcher: typeof fetch } }).resolver.fetcher = (async (url: string, init?: RequestInit) => {
+      asked.push({ url, accept: new Headers(init?.headers).get("accept") });
+      return Response.json({
+        type: "article", DOI: "10.48550/ARXIV.2610.27099", publisher: "arXiv", URL: "https://arxiv.org/abs/2610.27099", issued: { "date-parts": [[2026]] },
+        title: "A general-purpose System One decision model for clinical records",
+        author: [{ family: "Zhang", given: "Andrew" }, { family: "Vuong", given: "Trinh T. L." }],
+        abstract: "Clinical care depends on extracting reliable answers from patient records.",
+      }, { headers: { "content-type": "application/vnd.citationstyles.csl+json" } });
+    }) as typeof fetch;
+    const filled = await service.call("shelfResolve", { fileId: zhang.id, action: "doi", value: "2610.27099" });
+    expect(asked).toEqual([{ url: "https://doi.org/10.48550/arxiv.2610.27099", accept: "application/vnd.citationstyles.csl+json" }]);
+    expect(filled.status).toBe("ok");
+    expect(filled.resolution).toMatchObject({ method: "manual", note: "doi.org 서지 사용 · OpenAlex에 아직 없음", doi: "10.48550/arxiv.2610.27099" });
+    expect(service.db.get(zhang.work_id)).toMatchObject({
+      doi: "10.48550/arxiv.2610.27099", openalex: null, title: "A general-purpose System One decision model for clinical records",
+      authors: ["Andrew Zhang", "Trinh T. L. Vuong"], year: 2026, type: "preprint", venue: "arXiv",
+      abstract: "Clinical care depends on extracting reliable answers from patient records.",
+    });
+  } finally {
+    service.shelf.stop();
+    await service.shelf.wait();
+    service.downloads.stopRecoveryMonitor();
+    ollama.stop();
+    service.db.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("folder changes map stored paths by how the two folders relate", () => {

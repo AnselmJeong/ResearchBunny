@@ -13,6 +13,8 @@ import {
   type LinkedSize,
 } from "../../shared/types";
 import {
+  arxivDoi,
+  normalizeArxiv,
   normalizeDoi,
   normalizePmid,
   pmidOf,
@@ -112,6 +114,7 @@ export class Discovery {
     } else if (input.mode === "search") {
       const identifier =
         normalizeOpenAlex(input.query) || normalizeDoi(input.query) ||
+        (normalizeArxiv(input.query) ? arxivDoi(normalizeArxiv(input.query)!) : null) ||
         (normalizePmid(input.query) ? `pmid:${normalizePmid(input.query)}` : null);
       run.tasks = [
         identifier

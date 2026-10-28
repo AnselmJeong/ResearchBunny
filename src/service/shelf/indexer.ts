@@ -11,7 +11,7 @@ import { ShelfResolver, slimRaw, type Resolution } from "./resolver";
 import { diskSpelling, folderId, movedRel, parentRel, planScan, rootOnline, rootRelation, walk, type Walked } from "./scanner";
 import { VectorIndex } from "./vectors";
 import { AppError, now, type AppEvent, type Attachment, type Work } from "../../shared/types";
-import { blankWork, normalizeDoi } from "../../shared/domain";
+import { arxivDoi, blankWork, normalizeArxiv, normalizeDoi } from "../../shared/domain";
 import {
   DEFAULT_EMBED_MODEL,
   DEFAULT_OLLAMA_URL,
@@ -349,8 +349,9 @@ export class Shelf {
       this.control?.abort();
       return;
     }
+    // Read pages 1–2 again too, so identifiers a newer extractor knows (arXiv stamps) reach the lookup.
     if (action === "reresolve")
-      this.db.db.prepare("UPDATE shelf_files SET stage='extracted' WHERE stage='resolved' AND status IN ('review','provisional')").run();
+      this.db.db.prepare("UPDATE shelf_files SET stage='hashed' WHERE stage='resolved' AND status IN ('review','provisional')").run();
     if (action === "retryFailed")
       this.db.db.prepare("UPDATE shelf_files SET status='provisional',stage=CASE WHEN hash IS NULL THEN 'found' ELSE 'hashed' END,info=json_remove(info,'$.error') WHERE status='failed'").run();
     if (action === "reembed") {
@@ -1128,11 +1129,21 @@ export class Shelf {
   async resolveManually(fileId: string, identifier: string, signal = AbortSignal.timeout(30000)) {
     const row = this.file(fileId);
     if (!row?.work_id) throw new AppError("NOT_FOUND", "서고 파일을 찾을 수 없습니다.");
-    const page = await this.oa.lookup(identifier, signal, () => this.db.usage("openalex", "shelf"));
-    const work = page.works[0];
+    let work: Work;
+    let note: string | undefined;
+    try {
+      work = (await this.oa.lookup(identifier, signal, () => this.db.usage("openalex", "shelf"))).works[0];
+    } catch (error) {
+      // New papers reach OpenAlex days or weeks after their DOI is registered.
+      const arxiv = normalizeArxiv(identifier);
+      const doi = normalizeDoi(identifier) || (arxiv && arxivDoi(arxiv));
+      if (!doi || !(error instanceof AppError) || error.code !== "NOT_FOUND") throw error;
+      work = await this.resolver.doiRecord(doi, signal);
+      note = "doi.org 서지 사용 · OpenAlex에 아직 없음";
+    }
     await this.resolver.abstracts(work.abstract ? [] : [work], signal);
     this.applyResolution(fileId, { kind: "accept", work, method: "title", similarity: 1 });
-    this.setInfo(fileId, { resolution: { method: "manual", doi: work.doi || undefined, at: now() } });
+    this.setInfo(fileId, { resolution: { method: "manual", note, doi: work.doi || undefined, at: now() } });
     this.ensureAttachment(fileId);
     this.revision++;
     void this.embed(AbortSignal.timeout(60000), [this.file(fileId)!.work_id!]).catch(() => {});
