@@ -14,7 +14,7 @@ import { defaultGenealogySettings } from "../shared/genealogy";
 import { version } from "../../package.json";
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile, rename, stat } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type {
   AppEvent,
   ImportPreview,
@@ -44,6 +44,9 @@ import { planPdfExport, pdfExportTargets, previewPdfExport, exportPdfFolders } f
 import { schemas, type TrashDeletion } from "../shared/contracts";
 import { Shelf } from "./shelf/indexer";
 import { ShelfQueries } from "./shelf/search";
+import { PASSAGE_FILE, openPassageStore, type PassageStore } from "./passages/store";
+import { PassageIndexer, vectorModel } from "./passages/indexer";
+import { PassageSearch } from "./passages/search";
 import { SHELF_ALL } from "../shared/shelf";
 import { ShelfSorter, logDeletion } from "./shelf/sorter";
 import { rootOnline } from "./shelf/scanner";
@@ -67,6 +70,9 @@ export class Service {
   classifier: ArchiveClassifier;
   shelf: Shelf;
   shelfQueries: ShelfQueries;
+  passageStore: PassageStore;
+  passages: PassageIndexer;
+  passageSearch: PassageSearch;
   sorter: ShelfSorter;
   genealogy: GenealogyEngine;
   secrets: {
@@ -98,6 +104,19 @@ export class Service {
     this.shelf = new Shelf(this.db, this.oa, workerPath, emit, () => this.secrets);
     this.shelfQueries = new ShelfQueries(this.db, this.shelf);
     this.db.shelfHints = (works) => this.shelfQueries.hints(works);
+    // Passages are derived data in their own file: deleting it only means indexing again.
+    this.passageStore = openPassageStore(join(root, PASSAGE_FILE));
+    this.passages = new PassageIndexer(this.db.db, this.passageStore, workerPath, this.shelf.ollama, {
+      model: () => this.shelf.config()?.model ?? null,
+      onJob: (job) => emit({ type: "passages", job }),
+    });
+    this.passageSearch = new PassageSearch(this.db.db, this.passageStore, async (query, signal) => {
+      const vector = await this.shelf.embedText("query", "", query, signal);
+      const key = this.shelf.currentModelKey();
+      return vector && key ? { vector, model: vectorModel(key) } : null;
+    });
+    // Each shelf pass may bring new PDFs; their passages follow without waiting for a timer.
+    this.shelf.afterCycle = () => void this.passages.run();
     this.chat = new ArticleChat(this.db, () => this.settings(), () => this.secrets, new ChatProvider(this.ollama, this.codex, () => this.secrets.openai, fetch, this.claude), emit, (query, keys, signal) => this.evidence(query, keys, signal), (projectId, workId, attachmentId, signal) => this.reader.context({ projectId, workId, attachmentId }, signal));
     this.ai = new AIProvider(
       this.db,
@@ -760,6 +779,24 @@ export class Service {
         this.db.project(p.projectId);
         return this.shelfQueries.search(p.query, { limit: p.limit });
       }
+      case "passageSearch": {
+        const p = schemas.passageSearch.parse(args);
+        this.db.project(p.projectId);
+        const folder = p.folderId && p.folderId !== SHELF_ALL ? new Set(this.db.shelfScope(p.folderId)) : undefined;
+        return this.passageSearch.search(p.query, { limit: p.limit, revision: String(this.shelf.revision), works: folder });
+      }
+      case "passageStatus":
+        schemas.passageStatus.parse(args);
+        return this.passages.status();
+      case "passageControl": {
+        const { action } = schemas.passageControl.parse(args);
+        if (action === "pause") this.passages.setPaused(true);
+        else {
+          if (action === "resume") this.passages.setPaused(false);
+          void this.passages.run();
+        }
+        return;
+      }
       case "workLinks": {
         const p = schemas.workLinks.parse(args);
         this.db.project(p.projectId);
@@ -796,6 +833,7 @@ export class Service {
       case "shutdown":
         this.downloads.stopRecoveryMonitor();
         this.shelf.stop();
+        this.passages.stop();
         this.sorter.cancel();
         this.chat.close();
         this.codex.close();

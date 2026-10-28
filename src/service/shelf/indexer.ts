@@ -140,6 +140,8 @@ export class Shelf {
   private lastProgress = 0;
   private lastChanged = 0;
   online = true;
+  /** Called after every scan pass once the shelf is started, so work that follows the shelf (passage indexing) picks up new PDFs. */
+  afterCycle?: () => void;
   /** Bumped on every committed index change; search helpers rebuild caches lazily. */
   revision = 0;
   job: ShelfJob = { state: "idle", message: "", updatedAt: now() };
@@ -398,6 +400,7 @@ export class Shelf {
         this.managed = null;
         this.revision++;
         this.emit({ type: "changed" });
+        if (this.timer) this.afterCycle?.();
         if (this.storedQueued) {
           this.storedQueued = false;
           this.indexStoredSoon();

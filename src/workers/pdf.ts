@@ -17,6 +17,56 @@ async function extract() {
   });
   try {
     const pdf = await loading.promise;
+    if (process.argv[3] === "passages") {
+      // Lines with their position and size; the service finds paragraphs, headings and running heads.
+      const limit = Math.min(pdf.numPages, 1000);
+      const pages: { width: number; height: number; lines: { t: string; x: number; y: number; w: number; h: number }[] }[] = [];
+      let length = 0;
+      for (let n = 1; n <= limit && length < 4_000_000; n++) {
+        const page = await pdf.getPage(n);
+        const [x0, y0, x1, y1] = page.view;
+        const content = await page.getTextContent();
+        const lines: { t: string; x: number; y: number; w: number; h: number }[] = [];
+        let line: { t: string; x: number; y: number; w: number; h: number } | null = null;
+        for (const item of content.items) {
+          if (!("str" in item)) continue;
+          // Text turned more than 45° is a side stamp or watermark ("Downloaded from …"), not body text.
+          if (Math.abs(item.transform[1]) > Math.abs(item.transform[0])) continue;
+          const x = item.transform[4] - x0, y = item.transform[5] - y0;
+          const h = Math.abs(item.height) || Math.hypot(item.transform[2], item.transform[3]);
+          if (item.str) {
+            const gap = line ? x - (line.x + line.w) : 0;
+            // Superscripts sit within the line's height; a gap wider than 1.5 em is a column gutter or a table cell.
+            if (line && Math.abs(y - line.y) <= Math.max(2, Math.max(h, line.h) * 0.6) && gap >= -Math.max(h, line.h) * 3 && gap <= Math.max(h, line.h) * 1.5) {
+              line.t += (gap > Math.min(h, line.h) * 0.15 && !line.t.endsWith(" ") && !item.str.startsWith(" ") ? " " : "") + item.str;
+              line.w = Math.max(line.w, x + item.width - line.x);
+              line.h = Math.max(line.h, h);
+            } else {
+              if (line?.t.trim()) lines.push(line);
+              line = { t: item.str, x, y, w: item.width, h };
+            }
+          }
+          if (item.hasEOL && line) {
+            if (line.t.trim()) lines.push(line);
+            line = null;
+          }
+        }
+        if (line?.t.trim()) lines.push(line);
+        for (const l of lines) {
+          // Unmapped glyphs come through as control characters (often NUL).
+          l.t = l.t.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
+          l.x = Math.round(l.x * 10) / 10;
+          l.y = Math.round(l.y * 10) / 10;
+          l.w = Math.round(l.w * 10) / 10;
+          l.h = Math.round(l.h * 10) / 10;
+          length += l.t.length;
+        }
+        pages.push({ width: Math.round(x1 - x0), height: Math.round(y1 - y0), lines: lines.filter((l) => l.t) });
+        page.cleanup();
+      }
+      process.send?.({ pages, total: pdf.numPages, status: "extracted" });
+      return;
+    }
     if (process.argv[3] === "fulltext") {
       if (pdf.numPages > 500) throw new Error("Full-text page limit");
       const pages: string[] = [];

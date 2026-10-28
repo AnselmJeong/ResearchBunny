@@ -75,7 +75,10 @@ function copyText(text: string) {
   if (!copied) void navigator.clipboard?.writeText(text).catch(() => undefined);
 }
 
-function ReaderSurface({ documentId, initialPage, preferenceKey, visible, onExternal }: { documentId: string; initialPage: number; preferenceKey: string; visible: boolean; onExternal: () => void }) {
+/** A page someone asked for (a passage search hit); `at` tells two requests for the same page apart. */
+type Jump = { page: number; at: number };
+
+function ReaderSurface({ documentId, initialPage, jump, preferenceKey, visible, onExternal }: { documentId: string; initialPage: number; jump?: Jump; preferenceKey: string; visible: boolean; onExternal: () => void }) {
   const { state: { currentPage, totalPages } } = useScroll(documentId);
   const { state: zoomState } = useZoom(documentId);
   const { provides: scrollCapability } = useScrollCapability();
@@ -92,6 +95,26 @@ function ReaderSurface({ documentId, initialPage, preferenceKey, visible, onExte
   const fitPage = zoomState.zoomLevel === ZoomMode.FitPage;
   const viewport = () => surface.current?.querySelector<HTMLElement>(".reader-viewport");
   const go = (page: number) => { if (scroll) showPage(scroll, viewport(), page); };
+  /** Whether a page's top is at the top of the visible viewport; a hidden reader is at no page. */
+  const atPage = (page: number) => {
+    const el = viewport();
+    const target = el?.querySelector<HTMLElement>(`.reader-page[data-page="${page}"]`);
+    if (!el?.clientHeight || !target) return false;
+    const offset = target.getBoundingClientRect().top - el.getBoundingClientRect().top;
+    return offset > -40 && offset < 80;
+  };
+  /**
+   * Scroll requests made while the first layout settles (zoom fitting) or while
+   * the reader is still hidden are dropped, though the scroll state already
+   * reports the page; repeat until that page is really in view.
+   */
+  const settle = (page: number, tries = 40) => {
+    if (!scroll || atPage(page)) return;
+    go(page);
+    setTimeout(() => {
+      if (tries > 0 && !atPage(page)) settle(page, tries - 1);
+    }, 50);
+  };
   const setZoom = (level: ZoomLevel) => {
     if (!zoom || !scroll) return;
     const page = scroll.getCurrentPage();
@@ -115,12 +138,30 @@ function ReaderSurface({ documentId, initialPage, preferenceKey, visible, onExte
   }, [viewportCapability, zoom, documentId]);
   useEffect(() => {
     if (!scrollCapability || !scroll || restored.current) return;
-    return scrollCapability.onLayoutReady(event => {
-      if (event.documentId !== documentId || restored.current) return;
+    let frame = 0;
+    const restore = () => {
+      if (restored.current) return;
       restored.current = true;
-      requestAnimationFrame(() => showPage(scroll, viewport(), initialPage));
-    });
-  }, [scrollCapability, scroll, documentId, initialPage]);
+      cancelAnimationFrame(frame);
+      requestAnimationFrame(() => settle(lastPage.current));
+    };
+    const off = scrollCapability.onLayoutReady(event => { if (event.documentId === documentId) restore(); });
+    // A small PDF can be laid out before this effect subscribes, and that event is not sent again.
+    const poll = (tries: number) => {
+      if (restored.current) return;
+      const el = viewport();
+      if (scroll.getTotalPages() >= lastPage.current && el && el.scrollHeight > el.clientHeight) restore();
+      else if (tries > 0) frame = requestAnimationFrame(() => poll(tries - 1));
+    };
+    poll(120);
+    return () => { off(); cancelAnimationFrame(frame); };
+  }, [scrollCapability, scroll, documentId]);
+  useEffect(() => {
+    // Before the first layout the restore above opens this page; afterwards a jump moves the open document.
+    if (!jump || !scroll) return;
+    lastPage.current = jump.page;
+    if (restored.current) requestAnimationFrame(() => settle(jump.page));
+  }, [jump?.at]);
   useEffect(() => {
     // A hidden reader reports an empty viewport; keep the page it was left on.
     if (!visible || !restored.current) return;
@@ -176,7 +217,7 @@ function ReaderSurface({ documentId, initialPage, preferenceKey, visible, onExte
     return () => window.removeEventListener("keydown", keydown);
   });
 
-  const renderPage = ({ pageIndex, width, height }: { pageIndex: number; width: number; height: number }) => <div className="reader-page" style={{ width, height }}>
+  const renderPage = ({ pageIndex, width, height }: { pageIndex: number; width: number; height: number }) => <div className="reader-page" data-page={pageIndex + 1} style={{ width, height }}>
     <PagePointerProvider documentId={documentId} pageIndex={pageIndex}>
       <RenderLayer documentId={documentId} pageIndex={pageIndex} scale={1} className="reader-page-layer" draggable={false} />
       <TilingLayer documentId={documentId} pageIndex={pageIndex} className="reader-page-layer" />
@@ -195,7 +236,7 @@ function ReaderSurface({ documentId, initialPage, preferenceKey, visible, onExte
   </>;
 }
 
-function PdfView({ file, initialPage, preferenceKey, visible, onExternal, onRetry }: { file: { name: string; buffer: ArrayBuffer }; initialPage: number; preferenceKey: string; visible: boolean; onExternal: () => void; onRetry: () => void }) {
+function PdfView({ file, initialPage, jump, preferenceKey, visible, onExternal, onRetry }: { file: { name: string; buffer: ArrayBuffer }; initialPage: number; jump?: Jump; preferenceKey: string; visible: boolean; onExternal: () => void; onRetry: () => void }) {
   const { engine, isLoading, error } = usePdfiumEngine({ wasmUrl: WASM_URL, worker: true, fontFallback: null });
   const plugins = useMemo(() => [
     createPluginRegistration(DocumentManagerPluginPackage, { maxDocuments: 1, initialDocuments: [{ buffer: file.buffer, name: file.name, autoActivate: true }] }),
@@ -214,19 +255,24 @@ function PdfView({ file, initialPage, preferenceKey, visible, onExternal, onRetr
     {({ activeDocumentId }) => !activeDocumentId ? loading("PDF 여는 중…") : <DocumentContent documentId={activeDocumentId}>
       {({ documentState, isLoaded, isError }) => isError
         ? <ReaderStatus error={documentState.errorCode === PdfErrorCode.Password ? "암호가 있는 PDF입니다. 암호를 해제한 사본을 첨부하거나 외부 앱에서 열어 주세요." : `PDF를 열지 못했습니다: ${documentState.error || "알 수 없는 오류"}`} onRetry={onRetry} />
-        : isLoaded ? <ReaderSurface documentId={activeDocumentId} initialPage={initialPage} preferenceKey={preferenceKey} visible={visible} onExternal={onExternal} /> : loading("PDF 여는 중…")}
+        : isLoaded ? <ReaderSurface documentId={activeDocumentId} initialPage={initialPage} jump={jump} preferenceKey={preferenceKey} visible={visible} onExternal={onExternal} /> : loading("PDF 여는 중…")}
     </DocumentContent>}
   </EmbedPDF>;
 }
 
-export function ArticleReader({ projectId, work, attachmentId, visible, onBrowse }: { projectId: string; work: WorkView; attachmentId: string; visible: boolean; onBrowse: () => void }) {
+export function ArticleReader({ projectId, work, attachmentId, jump, visible, onBrowse }: { projectId: string; work: WorkView; attachmentId: string; jump?: Jump; visible: boolean; onBrowse: () => void }) {
   const [file, setFile] = useState<{ name: string; buffer: ArrayBuffer } | null>(null);
   const [name, setName] = useState("");
   const [error, setError] = useState("");
   const [progress, setProgress] = useState(0);
   const [retry, setRetry] = useState(0);
   const preferenceKey = `researchbunny.reader:${JSON.stringify([projectId, work.id, attachmentId])}`;
-  const initialPage = useMemo(() => { try { return Math.max(1, Number(JSON.parse(localStorage.getItem(preferenceKey) || "{}").page) || 1); } catch { return 1; } }, [preferenceKey, retry]);
+  // Opening at a passage's page wins over the page the reader was left on; later jumps move the open document.
+  const firstJump = useRef(jump);
+  const initialPage = useMemo(() => {
+    if (firstJump.current) return firstJump.current.page;
+    try { return Math.max(1, Number(JSON.parse(localStorage.getItem(preferenceKey) || "{}").page) || 1); } catch { return 1; }
+  }, [preferenceKey, retry]);
   useEffect(() => {
     let cancelled = false;
     setError(""); setFile(null); setProgress(0);
@@ -254,6 +300,6 @@ export function ArticleReader({ projectId, work, attachmentId, visible, onBrowse
     <header className="reader-heading"><div><span className="eyebrow">FULL TEXT</span><h2 title={work.title}>{work.title}</h2><small title={name}>{name || "첨부 PDF"}</small></div><button className="text-button" onClick={onBrowse}>목록으로 돌아가기</button></header>
     {error ? <><ReaderToolbar onExternal={onExternal} /><ReaderStatus error={error} onRetry={onRetry} /></>
       : !file ? <><ReaderToolbar onExternal={onExternal} /><ReaderStatus>PDF 불러오는 중… {progress}%</ReaderStatus></>
-      : <PdfView key={retry} file={file} initialPage={initialPage} preferenceKey={preferenceKey} visible={visible} onExternal={onExternal} onRetry={onRetry} />}
+      : <PdfView key={retry} file={file} initialPage={initialPage} jump={jump} preferenceKey={preferenceKey} visible={visible} onExternal={onExternal} onRetry={onRetry} />}
   </main>;
 }
