@@ -60,6 +60,7 @@ import { DEFAULT_FILTERS } from "../shared/types";
 import {
   defaultView,
   restoreNavigation,
+  withoutSearches,
   rememberView,
   compactNavigation,
   visitView,
@@ -224,6 +225,8 @@ export function App() {
     Record<string, { text: string; projectId: string; failed?: boolean }>
   >({});
   const initialized = useRef(""),
+    // Projects opened since launch; the first visit drops searches left from the last session.
+    openedProjects = useRef(new Set<string>()),
     noteTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({}),
     lastIndex = useRef<number | null>(null),
     searchInput = useRef<HTMLInputElement>(null),
@@ -319,7 +322,8 @@ export function App() {
   useEffect(
     () =>
       window.bunny.onEvent((event) => {
-        if (event.type === "chat") return;
+        // Passage indexing reports progress several times a second; only its settings panel listens.
+        if (event.type === "chat" || event.type === "passages") return;
         if (event.type === "attention") { flash(event.message); return; }
         if (event.type === "service-error")
           flash(event.message || "자료 서비스 오류", true);
@@ -345,7 +349,9 @@ export function App() {
       document.documentElement.dataset.theme = data.settings.theme;
       if (initialized.current !== current) {
         initialized.current = current;
-        const restored = restoreNavigation(data.ui);
+        const saved = restoreNavigation(data.ui);
+        const restored = openedProjects.current.has(current) ? saved : withoutSearches(saved);
+        openedProjects.current.add(current);
         navigationRef.current = restored;
         setNavigation(restored);
         applyView(restored.views[restored.keys[restored.index]]);

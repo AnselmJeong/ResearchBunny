@@ -672,6 +672,7 @@ test("backtracking preserves selections, view state, branches and restart state"
     visitView,
     moveHistory,
     rememberView,
+    withoutSearches,
   } = await import("../../src/shared/navigation");
   const root = defaultView({
     scope: "run",
@@ -715,6 +716,16 @@ test("backtracking preserves selections, view state, branches and restart state"
     }).views["archive:"].scope,
     "archive",
   );
+  // A new launch keeps each view's place and selection but not the last session's search words.
+  const searched = visitView(history, cited, defaultView({ scope: "shelf", scopeId: "folder", localQuery: "accelerated TMS", offset: 50, selected: ["e"] }));
+  const fresh = withoutSearches(searched);
+  assert.equal(fresh.views["shelf:folder"].localQuery, "");
+  assert.equal(fresh.views["shelf:folder"].offset, 0);
+  assert.deepEqual(fresh.views["shelf:folder"].selected, ["e"]);
+  assert.equal(fresh.views["run:search"].localQuery, "");
+  assert.equal(fresh.views["run:search"].query, "question");
+  assert.deepEqual(fresh.keys, searched.keys);
+  assert.equal(searched.views["shelf:folder"].localQuery, "accelerated TMS");
 });
 
 test("long navigation histories keep the current stage and bound preference storage", async () => {

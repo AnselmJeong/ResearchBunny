@@ -160,6 +160,15 @@ export function restoreNavigation(
   const view = old.success ? old.data : defaultView();
   return { keys: [viewKey(view)], index: 0, views: { [viewKey(view)]: view } };
 }
+/** A new launch keeps every view's place but not its search words, which belonged to the last session. */
+export function withoutSearches(history: NavigationHistory): NavigationHistory {
+  return {
+    ...history,
+    views: Object.fromEntries(
+      Object.entries(history.views).map(([key, view]) => [key, view.localQuery ? { ...view, localQuery: "", offset: 0 } : view]),
+    ),
+  };
+}
 export function rememberView(
   history: NavigationHistory,
   view: WorkspaceView,
