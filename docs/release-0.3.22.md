@@ -14,7 +14,7 @@ Library schema stays at 3.
 
 ## Validation
 
-- Typecheck and lint passed.
+- Typecheck and lint passed. Integration suite on macOS, after a full build: **303 passed, 0 failed** across 35 files.
 - `shelf.test.ts`, on scratch shelves:
   - permanent deletion leaves every file, record and status unchanged, also with the share unmounted;
   - the papers are listed again in this project's shelf and stay in another project's;
@@ -30,6 +30,7 @@ Library schema stays at 3.
   - a 30 MB download ran at 0.54 and 0.71 MB/s, against 1.18 to 1.31 MB/s with curl on the same address;
   - launching with `-NSAppSleepDisabled YES` gave 0.48 MB/s, so App Nap is not what slows these downloads;
   - against a local server that drops the connection after 100 KB, Chrome reported `inProgress` with growing bytes, then `canceled`.
+- Packaged app: the DMG's checksum is valid and strict signature verification passed for the bundle inside the `.tar.zst` (0.3.22). The packaged smoke test passed on the extracted bundle with a restricted PATH (PDF reader chunks, threads, extraction, folder matching, archive, BibTeX and PDF folder export, backup, restore and permanent deletion). The renderer no longer contains `서고 PDF도 삭제`, and the packaged service contains `CHROME_STALLED`.
 - Not checked: a real Sci-Hub or publisher download in the new build, the real shelf, and the installed app's own window.
 
 ## Known issues
@@ -39,3 +40,13 @@ Library schema stays at 3.
 - When 미분류 is emptied, its sidebar entry disappears and the open list's title falls back to `서고 0편`.
 - The first passage search after launch takes about 2.5 s while the in-memory sign bits load.
 - A "ResearchBunny quit unexpectedly" dialog was reported on quitting 0.3.7, cause not yet known.
+
+## Installation
+
+- Backed up the previous app and a consistent SQLite snapshot under `~/Library/Application Support/ResearchBunny/app-backups/20261030-211645-trash-chrome-0.3.22` (integrity ok, schema 3, **12,475 works**, **9,292 attachments**, **9,329 shelf files**, 7 projects, matching the live library). The replaced 0.3.21 bundle is kept there as `ResearchBunny-0.3.21-installed.app` (signature verified, identical to what was installed). `passages.sqlite` was not copied: 0.3.22 does not change it, and the 0.3.18 backup holds a clone.
+- Replaced `/Applications/ResearchBunny.app` with version **0.3.22** (bundle hash `26lbqwerz4a0d`); all **242 files** match the package and strict signature verification passed. The app was not running and was not launched.
+- The 42 shelf PDFs hidden on 2026-10-14 are still hidden; nothing in the library was changed by the install.
+
+Artifacts, built from `9426f02`: `out/electrobun/stable-macos-arm64-ResearchBunny.dmg` (SHA-256 `7bb774c6…e117cf84`) and `out/electrobun/stable-macos-arm64-ResearchBunny.app.tar.zst` (`73ed08de…6c151750`), also copied to the main checkout's `out/electrobun`. Local validation logs are under `.qa/release-0.3.22/`.
+
+Local ad-hoc signing on macOS Apple Silicon; no Developer ID signing or Apple notarization.
