@@ -18,6 +18,7 @@ import {
   type GenealogyOutputs,
   type Outline,
   type OutlineChapter,
+  type OutlineSection,
   type PaperOrigin,
   type GenealogyPaper,
   type GenealogySettings,
@@ -1040,12 +1041,14 @@ export class GenealogyEngine {
     if (!outline) throw new AppError("NOT_READY", "목차를 먼저 만드세요.");
     await this.ensureCorpus(g, outline, signal, meter);
     const total = { done: 0, problems: 0, requests: 0, adopted: 0 };
+    // Sections the safeguards stopped stay unwritten and are not asked again in this run.
+    const refused = new Map<string, string>();
     const add = (r: { done: number; problems: number; requests: number }) => {
       total.done += r.done;
       total.problems += r.problems;
       total.requests += r.requests;
     };
-    add(await this.writeSections(g, outline, signal, meter));
+    add(await this.writeSections(g, outline, signal, meter, refused));
     // What the writer asked for becomes candidates; in automatic mode the found papers join and their sections are rewritten.
     if (g.settings.expansion !== "off")
       for (let pass = 0; pass < 2; pass++) {
@@ -1071,13 +1074,19 @@ export class GenealogyEngine {
         this.progress(g, { message: `집필 요청으로 ${ids.length}편 자동 채택 · 자료 준비와 카드` });
         await this.prepare(g, signal, meter, ids);
         await this.cards(g, signal, meter);
-        const again = await this.writeSections(g, outline, signal, meter);
+        const again = await this.writeSections(g, outline, signal, meter, refused);
         add(again);
         if (!again.done) break;
       }
     await this.pruneChapters(g, outline);
     for (const step of ["check", "render"] as const) delete g.completed[step];
     this.store.save(g);
+    if (refused.size)
+      throw new AppError(
+        "AI_REFUSAL",
+        `${total.done}절을 쓰고 ${refused.size}절(${[...refused.keys()].join(", ")})은 쓰지 못했습니다: ${[...refused.values()][0]} 써 둔 절은 그대로 있습니다. 설정 탭에서 집필 모델을 바꾼 뒤 이어서 진행하면 남은 절만 씁니다.`,
+        true,
+      );
     return `${total.done}절 집필${total.problems ? ` · 검사 표시 ${total.problems}건` : ""}${total.requests ? ` · 근거 요청 ${total.requests}건` : ""}${total.adopted ? ` · 요청 논문 자동 채택 ${total.adopted}편` : ""}`;
   }
 
@@ -1143,7 +1152,7 @@ export class GenealogyEngine {
   }
 
   /** Writes every planned or stale section in outline order and the chapter files they belong to. */
-  private async writeSections(g: Genealogy, outline: Outline, signal: AbortSignal, meter: Meter) {
+  private async writeSections(g: Genealogy, outline: Outline, signal: AbortSignal, meter: Meter, refused: Map<string, string>) {
     const papers = this.store.papers(g.id, true);
     const works = new Map(papers.map((p) => [p.workId, this.deps.db.get(p.workId)]));
     const cards = this.store.cards(g.id);
@@ -1153,7 +1162,8 @@ export class GenealogyEngine {
     const pool = numberPool(cards.values());
     const branches = this.store.state<Branch[]>(g.id, "branches") ?? [];
     const texts = this.store.sectionTexts(g.id);
-    const todo = outline.chapters.flatMap((c) => c.sections).filter((s) => s.status === "planned" || s.status === "stale").length;
+    const pending = (s: OutlineSection) => (s.status === "planned" || s.status === "stale") && !refused.has(s.id);
+    const todo = outline.chapters.flatMap((c) => c.sections).filter(pending).length;
     let done = 0;
     let problems = 0;
     let requests = 0;
@@ -1163,15 +1173,17 @@ export class GenealogyEngine {
       let changed = false;
       const chapterKeys = new Set(chapter.sections.flatMap((s) => s.keys));
       for (const section of chapter.sections) {
-        if (section.status === "planned" || section.status === "stale") {
+        if (pending(section)) {
           signal.throwIfAborted();
           this.progress(g, { message: `집필 · ${done + 1}/${todo}절 · ${section.id} ${section.title}`, calls: meter.calls });
           let attempt = 0;
+          const notices: string[] = [];
           const result = await this.deps.ai.json({
             route: g.settings.routes.write,
             runId: g.id,
             meter,
             signal,
+            notices,
             schema: SECTION_SCHEMA,
             maxOutputTokens: 16000,
             instruction: sectionInstruction(g.settings),
@@ -1187,25 +1199,36 @@ export class GenealogyEngine {
               allowed: allowedList,
             }),
             parse: (value) => parseSection(value, section.title, allowed, attempt++ === 0, pool),
+          }).catch((error: unknown) => {
+            if (!(error instanceof AppError && error.code === "AI_REFUSAL")) throw error;
+            return error;
           });
-          this.store.saveSectionText(g.id, section.uid, result.markdown);
-          texts.set(section.uid, result.markdown);
-          Object.assign(section, {
-            status: "written",
-            summary: result.summary,
-            usedKeys: result.usedKeys,
-            missing: result.missing,
-            problems: result.problems,
-            writtenAt: now(),
-            rewrites: section.writtenAt ? section.rewrites + 1 : section.rewrites,
-          });
-          this.store.state(g.id, "outline", outline);
-          problems += result.problems.length;
-          requests += result.missing.length;
-          changed = true;
-          this.progress(g, { done: ++done, calls: meter.calls });
+          if (result instanceof AppError) {
+            // The section keeps its status and any earlier text; the next sections are still written.
+            refused.set(section.id, result.message);
+            section.problems = [result.message];
+            this.store.state(g.id, "outline", outline);
+            this.progress(g, { calls: meter.calls });
+          } else {
+            this.store.saveSectionText(g.id, section.uid, result.markdown);
+            texts.set(section.uid, result.markdown);
+            Object.assign(section, {
+              status: "written",
+              summary: result.summary,
+              usedKeys: result.usedKeys,
+              missing: result.missing,
+              problems: [...notices, ...result.problems],
+              writtenAt: now(),
+              rewrites: section.writtenAt ? section.rewrites + 1 : section.rewrites,
+            });
+            this.store.state(g.id, "outline", outline);
+            problems += result.problems.length;
+            requests += result.missing.length;
+            changed = true;
+            this.progress(g, { done: ++done, calls: meter.calls });
+          }
         }
-        previous.push({ id: section.id, title: section.title, summary: section.summary });
+        if (section.summary) previous.push({ id: section.id, title: section.title, summary: section.summary });
       }
       if (changed || !existsSync(join(g.workspace, chapter.file))) await this.writeChapter(g, chapter, texts);
     }

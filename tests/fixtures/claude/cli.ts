@@ -37,6 +37,22 @@ if (args.includes("--version")) {
   } else if (scenario === "assistant-error") {
     send({ type: "assistant", error: "rate_limit" });
     process.exitCode = 1;
+  } else if (scenario.startsWith("refusal-")) {
+    // Opus safeguards stop the first message; Claude Code continues once with another model in the same turn.
+    const event = (value: unknown) => send({ type: "stream_event", event: value });
+    const answer = '{"queries":["synthetic literature"]}';
+    event({ type: "message_start", message: { model: "claude-opus-5-5" } });
+    if (scenario === "refusal-thinking") event({ type: "content_block_delta", delta: { type: "thinking_delta", thinking: "private" } });
+    else event({ type: "content_block_delta", delta: { type: "text_delta", text: '{"queries":["partial' } });
+    event({ type: "message_delta", delta: { stop_reason: "refusal", stop_details: { type: "refusal", category: "bio" } } });
+    if (scenario === "refusal-final") send({ type: "result", subtype: "success", is_error: false, result: '{"queries":["partial' });
+    else {
+      send({ type: "system", subtype: "model_refusal_fallback", trigger: "refusal", original_model: "claude-opus-5-5", fallback_model: "claude-opus-5", api_refusal_category: "bio" });
+      event({ type: "message_start", message: { model: "claude-opus-5" } });
+      event({ type: "content_block_delta", delta: { type: "text_delta", text: answer } });
+      event({ type: "message_delta", delta: { stop_reason: "end_turn" } });
+      send({ type: "result", subtype: "success", is_error: false, result: answer });
+    }
   } else if (scenario === "structured") {
     send({ type: "rate_limit_event", rate_limit_info: { status: "allowed", utilization: 0.25 } });
     const reply = '```json\n{"scope":"범위","queries":["synthetic literature"],"subtopics":[]}\n```';

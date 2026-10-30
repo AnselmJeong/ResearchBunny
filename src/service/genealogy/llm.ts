@@ -1,4 +1,5 @@
 import { AppError } from "../../shared/types";
+import { CLAUDE_REFUSAL } from "../../shared/claude";
 import type { GenealogyProvider, ModelRoute } from "../../shared/genealogy";
 import type { CodexClient } from "../codex/client";
 import type { ClaudeClient } from "../claude/client";
@@ -36,6 +37,8 @@ export interface JsonRequest<T> {
   signal: AbortSignal;
   meter?: Meter;
   maxOutputTokens?: number;
+  /** Collects what the provider reported about the reply, such as a rewrite after a safeguard stop. */
+  notices?: string[];
 }
 
 export interface GenealogyClients {
@@ -63,7 +66,7 @@ export class GenealogyAI {
         reply = await this.clients.codex.complete({ model: route.model, instruction, input, outputSchema: schema, signal });
       } else if (route.provider === "claude") {
         if (!this.clients.claude) throw new AppError("CLAUDE_UNAVAILABLE", "Claude 연결을 사용할 수 없습니다.");
-        reply = await this.clients.claude.complete({ model: route.model, instruction, input, outputSchema: schema, signal });
+        reply = await this.clients.claude.complete({ model: route.model, instruction, input, outputSchema: schema, signal, onNotice: (n) => request.notices?.push(n) });
       } else {
         if (!this.clients.ollama) throw new AppError("OLLAMA_UNAVAILABLE", "Ollama 연결을 사용할 수 없습니다.");
         if (!route.model) throw new AppError("OLLAMA_MODEL", "설정 → AI 연결에서 Ollama Cloud 모델을 정하거나, 리포트 설정에서 모델을 고르세요.");
@@ -82,6 +85,8 @@ export class GenealogyAI {
       const message = errorText(error);
       // A spent subscription pauses the job; it resumes once the limit resets.
       if (LIMIT.test(message)) throw new AppError("BUDGET", message, true);
+      // A stopped answer is not a format problem; asking the same model again is usually stopped again.
+      if (CLAUDE_REFUSAL.test(message)) throw new AppError("AI_REFUSAL", message, true);
       throw new AppError("AI_PROVIDER", message || "AI 요청이 실패했습니다.", true);
     }
   }
@@ -93,7 +98,7 @@ export class GenealogyAI {
       try {
         return request.parse(JSON.parse(jsonReply(reply)));
       } catch (error) {
-        problem = error instanceof SyntaxError ? "the reply was not valid JSON" : errorText(error).slice(0, 800);
+        problem = error instanceof SyntaxError ? `the reply was not valid JSON (${error.message})` : errorText(error).slice(0, 800);
       }
       if (attempt === 1) break;
       request.signal.throwIfAborted();

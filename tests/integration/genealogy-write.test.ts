@@ -10,6 +10,7 @@ import { genealogyTools } from "../../src/service/genealogy/tools";
 import { familyFirst } from "../../src/service/genealogy/render";
 import { readingText } from "../../src/service/genealogy/sections";
 import type { GenealogyCard, Outline } from "../../src/shared/genealogy";
+import { claudeRefusalError } from "../../src/shared/claude";
 
 const fixtures: Fixture[] = [];
 afterEach(async () => {
@@ -54,7 +55,8 @@ test("sections cite only allowed keys: refused once, then cleaned and reported",
   expect(() => parseSection({ markdown: "짧다", summary: "", missingSources: [] }, "제목", allowed, false, pool)).toThrow();
 });
 
-async function written(f: Fixture) {
+/** `refuse`: section ids whose answers the safeguards stop. */
+async function written(f: Fixture, refuse = new Set<string>()) {
   const a = await f.add({ title: "Entropic brain", authors: ["Robin L. Carhart-Harris"], year: 2014, abstract: "a", venue: "Front Hum Neurosci", doi: "10.3389/fnhum.2014.00020" });
   const b = await f.add({ title: "Plasticity", authors: ["Calvin Ly"], year: 2018, abstract: "b", venue: "Cell Rep" });
   const calls: { section: string; previous: number; cards: string[] }[] = [];
@@ -65,6 +67,7 @@ async function written(f: Fixture) {
         async complete(request) {
           const input = JSON.parse(request.input);
           calls.push({ section: input.section.id, previous: input.previousSections.length, cards: input.cards.map((c: { key: string }) => c.key) });
+          if (refuse.has(input.section.id)) throw new Error(claudeRefusalError("bio"));
           const key = input.cards[0]?.key ?? a.citekey;
           return JSON.stringify({
             markdown: `${input.section.title}의 논지를 세운다 [@${key}]. 혈류는 20% 감소했다. ${"이 실험은 경쟁 가설을 배제했다. ".repeat(15)}`,
@@ -154,4 +157,34 @@ test("a chapter the user edited is kept, and a rewritten section goes beside it"
   const checks = new Map(engine.store.state<{ id: string; ok: boolean; details: string[] }[]>(g.id, "checks")!.map((c) => [c.id, c]));
   expect(checks.get("keys")).toMatchObject({ ok: false, details: ["nobody"] });
   expect(checks.get("edited")!.ok).toBe(false);
+});
+
+test("a section the safeguards stop stays unwritten, the rest are written, and resuming writes only it", async () => {
+  const f = await fixture();
+  const refuse = new Set(["2.1"]);
+  const { engine, g, calls } = await written(f, refuse);
+  engine.start(g.id, "continue", true);
+  const failed = await settle(engine, g.id, 60000);
+  expect(failed.job?.status).toBe("failed");
+  expect(failed.job?.message).toContain("2절을 쓰고 1절(2.1)은 쓰지 못했습니다");
+  expect(failed.job?.message).toContain("안전장치");
+  // No format retry: one call per section.
+  expect(calls.map((c) => c.section)).toEqual(["1.1", "2.1", "2.2"]);
+  let outline = engine.store.state<Outline>(g.id, "outline")!;
+  expect(outline.chapters.flatMap((c) => c.sections).map((s) => s.status)).toEqual(["written", "planned", "written"]);
+  expect(outline.chapters[1].sections[0].problems[0]).toContain("분류: bio");
+  // The section after the stopped one does not see it among the previous sections.
+  expect(calls[2].previous).toBe(1);
+  const first = engine.store.sectionTexts(g.id).get(outline.chapters[0].sections[0].uid);
+
+  refuse.clear();
+  calls.length = 0;
+  engine.start(g.id, "continue", true);
+  const done = await settle(engine, g.id, 120000);
+  expect(done.job?.status).toBe("completed");
+  expect(calls.map((c) => c.section)).toEqual(["2.1"]);
+  outline = engine.store.state<Outline>(g.id, "outline")!;
+  expect(outline.chapters.flatMap((c) => c.sections).map((s) => [s.status, s.rewrites])).toEqual([["written", 0], ["written", 0], ["written", 0]]);
+  expect(outline.chapters[1].sections[0].problems.join(" ")).not.toContain("안전장치");
+  expect(engine.store.sectionTexts(g.id).get(outline.chapters[0].sections[0].uid)).toBe(first);
 });

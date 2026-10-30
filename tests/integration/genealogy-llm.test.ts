@@ -7,6 +7,7 @@ import { Library } from "../../src/service/db/database";
 import { GenealogyAI, Meter } from "../../src/service/genealogy/llm";
 import { defaultRoutes, settingsModel } from "../../src/shared/genealogy";
 import { DEFAULT_AI } from "../../src/service/providers/openai";
+import { claudeRefusalError } from "../../src/shared/claude";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -54,6 +55,18 @@ test("two unusable replies fail as a format error", async () => {
   const db = await library();
   const ai = new GenealogyAI(db, { claude: { async complete() { return "not json"; } } });
   await expect(ai.json({ ...base, route: { provider: "claude", model: "" } })).rejects.toMatchObject({ code: "AI_FORMAT" });
+});
+
+test("a stopped answer is its own error without a format retry, and rewrite notices reach the caller", async () => {
+  const db = await library();
+  let calls = 0;
+  const stopped = new GenealogyAI(db, { claude: { async complete() { calls++; throw new Error(claudeRefusalError("bio")); } } });
+  await expect(stopped.json({ ...base, route: { provider: "claude", model: "opus" } })).rejects.toMatchObject({ code: "AI_REFUSAL" });
+  expect(calls).toBe(1);
+  const notices: string[] = [];
+  const rewritten = new GenealogyAI(db, { claude: { async complete(r) { r.onNotice?.("다시 썼습니다"); return '{"answer":"ok"}'; } } });
+  expect(await rewritten.json({ ...base, route: { provider: "claude", model: "opus" }, notices })).toEqual({ answer: "ok" });
+  expect(notices).toEqual(["다시 썼습니다"]);
 });
 
 test("a spent subscription pauses as a budget error; other failures stay provider errors", async () => {

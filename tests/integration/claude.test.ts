@@ -81,6 +81,27 @@ test("structured completions carry the schema as instructions and return bare JS
   expect((await client.status()).quota).toMatchObject({ status: "allowed", utilization: 0.25 });
 });
 
+test("a stopped answer is dropped and Claude Code's rewrite is returned with a notice", async () => {
+  const { client } = await fixture("refusal-rewrite");
+  const notices: string[] = [];
+  const reply = await client.complete({ ...request, outputSchema: { type: "object" }, onNotice: (n) => notices.push(n) });
+  expect(JSON.parse(reply)).toEqual({ queries: ["synthetic literature"] });
+  expect(notices).toEqual(["claude-opus-5-5의 안전장치가 첫 응답을 멈춰 Claude Code가 claude-opus-5로 다시 썼습니다 (분류: bio)."]);
+  // Streamed text cannot be taken back, so a stream stops with the reason instead of joining two answers.
+  await expect(collect(client.stream(request))).rejects.toThrow("안전장치가 응답을 멈췄습니다 (분류: bio)");
+});
+
+test("a stop before any text streams only the rewritten answer", async () => {
+  const { client } = await fixture("refusal-thinking");
+  expect(await collect(client.stream(request))).toBe('{"queries":["synthetic literature"]}');
+});
+
+test("an answer left stopped fails with the reason, not as a format error", async () => {
+  const { client, home } = await fixture("refusal-final");
+  await expect(client.complete({ ...request, outputSchema: { type: "object" } })).rejects.toThrow("안전장치가 응답을 멈췄습니다 (분류: bio)");
+  expect(await readdir(join(home, "workspace"))).toEqual([]);
+});
+
 test("jsonReply strips fences and surrounding prose", () => {
   expect(jsonReply('```json\n{"a":1}\n```')).toBe('{"a":1}');
   expect(jsonReply('결과입니다.\n{"a":{"b":2}}\n끝')).toBe('{"a":{"b":2}}');
