@@ -47,6 +47,7 @@ import { ShelfQueries } from "./shelf/search";
 import { PASSAGE_FILE, openPassageStore, type PassageStore } from "./passages/store";
 import { PassageIndexer, vectorModel } from "./passages/indexer";
 import { PassageSearch } from "./passages/search";
+import { PassageAnswerer } from "./passages/answer";
 import { SHELF_ALL } from "../shared/shelf";
 import { ShelfSorter } from "./shelf/sorter";
 import { searchEvidence, type SearchKeys } from "./chat/search";
@@ -72,6 +73,7 @@ export class Service {
   passageStore: PassageStore;
   passages: PassageIndexer;
   passageSearch: PassageSearch;
+  answers: PassageAnswerer;
   sorter: ShelfSorter;
   genealogy: GenealogyEngine;
   secrets: {
@@ -126,6 +128,7 @@ export class Service {
       this.ollama,
       this.claude,
     );
+    this.answers = new PassageAnswerer(this.passageSearch, this.ai, () => this.settings(), emit);
     this.discovery = new Discovery(this.db, this.oa, emit, this.ai, new LinkedDiscoveries(this.db), {
       enabled: () => !!this.shelf.root(),
       search: async (query, limit, signal) => (await this.shelfQueries.search(query, { limit, signal })).hits,
@@ -229,7 +232,7 @@ export class Service {
     return this.ai.seedQueries(question, run, AbortSignal.timeout(120000), false);
   }
   busy() {
-    return this.chat.active.size > 0 || this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0 || !!this.sorter.active || this.genealogy.active.size > 0;
+    return this.chat.active.size > 0 || this.answers.active.size > 0 || this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0 || !!this.sorter.active || this.genealogy.active.size > 0;
   }
   settings(): Settings {
     const saved = this.db.pref<Partial<AIConfig>>("ai");
@@ -761,6 +764,21 @@ export class Service {
         const folder = p.folderId && p.folderId !== SHELF_ALL ? new Set(this.db.shelfScope(p.folderId)) : undefined;
         return this.passageSearch.search(p.query, { limit: p.limit, revision: String(this.shelf.revision), works: folder });
       }
+      case "passageAsk": {
+        const p = schemas.passageAsk.parse(args);
+        this.db.project(p.projectId);
+        const scoped = p.folderId && p.folderId !== SHELF_ALL;
+        return this.answers.ask(p.askId, p.question, {
+          revision: String(this.shelf.revision),
+          stamp: this.passageStore.meta<number>("stamp") || 0,
+          works: scoped ? new Set(this.db.shelfScope(p.folderId!)) : undefined,
+          scope: scoped ? p.folderId! : SHELF_ALL,
+          fresh: p.fresh,
+        });
+      }
+      case "passageAskCancel":
+        this.answers.cancel(schemas.passageAskCancel.parse(args).askId);
+        return;
       case "passageStatus":
         schemas.passageStatus.parse(args);
         return this.passages.status();
@@ -818,6 +836,7 @@ export class Service {
         this.downloads.stopRecoveryMonitor();
         this.shelf.stop();
         this.passages.stop();
+        this.answers.stop();
         this.sorter.cancel();
         this.chat.close();
         this.codex.close();

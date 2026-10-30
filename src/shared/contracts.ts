@@ -3,7 +3,7 @@ import type { CodexStatus, CodexModel } from "./codex";
 import type { ClaudeStatus } from "./claude";
 import type { Genealogy, GenealogySummary, GenealogyView, Outline } from "./genealogy";
 import type { ChatSession, ChatThreadSummary } from "./chat";
-import type { PassageSearchResult, PassageStatus } from "./passages";
+import type { PassageAnswer, PassageSearchResult, PassageStatus } from "./passages";
 import type { ShelfAdoptResult, ShelfMovePreview, ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo, ShelfSortResult, ShelfSortView, ShelfLeafList } from "./shelf";
 import type {
   Snapshot,
@@ -370,6 +370,9 @@ export const schemas = {
   passageSearch: z.object({ projectId: id, query: z.string().trim().min(1).max(2000), folderId: id.optional(), limit: z.number().int().min(1).max(100).default(40) }),
   passageStatus: z.object({}),
   passageControl: z.object({ action: z.enum(["pause", "resume", "run"]) }),
+  /** Answer a question from the shelf's passages. `askId` names the request for progress events and cancelling. */
+  passageAsk: z.object({ projectId: id, question: z.string().trim().min(2).max(2000), folderId: id.optional(), askId: z.string().uuid(), fresh: z.boolean().default(false) }),
+  passageAskCancel: z.object({ askId: z.string().uuid() }),
   /** One paper's references, citing papers or related papers, listed in the inspector. Nothing joins the project until it is saved. */
   workLinks: z.object({
     projectId: id,
@@ -520,6 +523,8 @@ export interface Outputs {
   passageSearch: PassageSearchResult;
   passageStatus: PassageStatus;
   passageControl: void;
+  passageAsk: PassageAnswer;
+  passageAskCancel: void;
   workLinks: WorkLinks;
   shelfFile: ShelfFileDetails;
   shelfResolve: ShelfFileDetails;

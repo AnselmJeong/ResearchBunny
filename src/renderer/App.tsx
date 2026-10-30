@@ -100,12 +100,16 @@ import { Settings } from "./components/Settings";
 import { GenealogyWorkspace } from "./components/GenealogyWorkspace";
 import { GenealogyDialog } from "./components/GenealogyDialog";
 import { PassageResults } from "./components/PassageResults";
+import { PassageAnswerView } from "./components/PassageAnswer";
 import {
   ImportDialog,
   WorkEditor,
   SeedDialog,
   ExportDialog,
 } from "./components/Dialogs";
+
+/** What a shelf search lists: papers, passages of their PDFs, or an answer written from those passages. */
+type ShelfMode = "papers" | "passages" | "answer";
 const ArticleReader = lazy(() => import("./components/ArticleReader").then(module => ({ default: module.ArticleReader })));
 const MODES: Record<DiscoveryMode, string> = {
   search: "검색 결과",
@@ -181,8 +185,8 @@ export function App() {
     ),
     [semantic, setSemantic] = useState(false),
     // The shelf search lists papers or the passages of their PDFs; the choice is remembered.
-    [shelfMode, setShelfMode] = useState<"papers" | "passages">(() => {
-      try { return localStorage.getItem("researchbunny.shelfMode") === "passages" ? "passages" : "papers"; } catch { return "papers"; }
+    [shelfMode, setShelfMode] = useState<ShelfMode>(() => {
+      try { const saved = localStorage.getItem("researchbunny.shelfMode"); return saved === "passages" || saved === "answer" ? saved : "papers"; } catch { return "papers"; }
     });
   const [filters, setFilters] = useState<FilterValues>({ ...DEFAULT_FILTERS }),
     [filtersOpen, setFiltersOpen] = useState(false),
@@ -326,8 +330,8 @@ export function App() {
   useEffect(
     () =>
       window.bunny.onEvent((event) => {
-        // Passage indexing reports progress several times a second; only its settings panel listens.
-        if (event.type === "chat" || event.type === "passages") return;
+        // Passage indexing and answers report progress often; only their own panels listen.
+        if (event.type === "chat" || event.type === "passages" || event.type === "answer") return;
         if (event.type === "attention") { flash(event.message); return; }
         if (event.type === "service-error")
           flash(event.message || "자료 서비스 오류", true);
@@ -619,7 +623,8 @@ export function App() {
   // In the shelf the list query is a ranked search, not a word filter.
   const shelfSearch = scope === "shelf" && !!localQuery.trim();
   const passageMode = shelfSearch && shelfMode === "passages";
-  const chooseShelfMode = (mode: "papers" | "passages") => {
+  const answerMode = shelfSearch && shelfMode === "answer";
+  const chooseShelfMode = (mode: ShelfMode) => {
     setShelfMode(mode);
     try { localStorage.setItem("researchbunny.shelfMode", mode); } catch { /* Optional preference. */ }
   };
@@ -1809,18 +1814,21 @@ export function App() {
                 {shelfSearch && (
                   <div className="search-status" role="status">
                     <span>
-                      {passageMode
+                      {answerMode
+                        ? `‘${localQuery.trim()}’에 대한 답변 · 서고 본문 구절 근거`
+                        : passageMode
                         ? `‘${localQuery.trim()}’ 관련 본문 구절 · 관련도순`
                         : loading
                         ? "서고에서 찾는 중…"
                         : `‘${localQuery.trim()}’ 관련 ${list.total.toLocaleString()}편${sort === "rank" ? " · 관련도순" : ""}`}
-                      {!passageMode && !loading && list.search && !list.search.semantic && !list.search.identifier &&
+                      {!passageMode && !answerMode && !loading && list.search && !list.search.semantic && !list.search.identifier &&
                         " · Ollama를 쓸 수 없어 검색어가 들어 있는 논문만 찾았습니다."}
                     </span>
                     <span className="search-status-actions">
                       <span className="segmented" role="group" aria-label="검색 결과 단위">
-                        <button aria-pressed={!passageMode} onClick={() => chooseShelfMode("papers")}>논문</button>
+                        <button aria-pressed={!passageMode && !answerMode} onClick={() => chooseShelfMode("papers")}>논문</button>
                         <button aria-pressed={passageMode} onClick={() => chooseShelfMode("passages")}>본문 구절</button>
+                        <button aria-pressed={answerMode} title="찾은 본문 구절만 근거로 AI가 답하고 인용을 확인합니다" onClick={() => chooseShelfMode("answer")}>답변</button>
                       </span>
                       {!shelfScopeAll && (
                         <button className="text-button" onClick={() => {
@@ -1910,7 +1918,16 @@ export function App() {
                   </details>
                 )}
                 <div className="results-area">
-                  {passageMode ? (
+                  {answerMode ? (
+                    <PassageAnswerView
+                      projectId={projectId}
+                      question={localQuery.trim()}
+                      folderId={shelfScopeAll ? undefined : scopeId}
+                      onOpen={(workId, attachmentId, page) => void openArticle(workId, attachmentId, page).catch(onError)}
+                      onInspect={inspect}
+                      onSettings={() => setDialog("settings")}
+                    />
+                  ) : passageMode ? (
                     <PassageResults
                       projectId={projectId}
                       query={localQuery.trim()}
@@ -2233,7 +2250,7 @@ export function App() {
                     />
                   )}
                 </div>
-                <div className="results-footer" hidden={startScreen}>
+                <div className="results-footer" hidden={startScreen || passageMode || answerMode}>
                   <span>
                     {graphView
                       ? `연결된 ${list.works.length.toLocaleString()}편 / ${list.total.toLocaleString()}편`

@@ -461,7 +461,8 @@ export type AppEvent = {
 } | { type: "chat"; session: import("./chat").ChatSession } | { type: "genealogy"; id: string }
   /** The app's Chrome needs the person (robot check, login); `pid` lets main bring that Chrome forward. */
   | { type: "attention"; message: string; pid?: number }
-  | { type: "passages"; job: import("./passages").PassageJob };
+  | { type: "passages"; job: import("./passages").PassageJob }
+  | { type: "answer"; id: string; step: import("./passages").AnswerStep; message: string };
 export type Result<T> =
   | { ok: true; data: T }
   | { ok: false; error: { code: string; message: string; retryable: boolean } };
