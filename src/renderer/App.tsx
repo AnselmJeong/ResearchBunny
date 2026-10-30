@@ -1294,6 +1294,10 @@ export function App() {
                     <h1>
                       {title}
                       {!startScreen && <span>{(list.total + (list.shelf?.length || 0)).toLocaleString()}</span>}
+                      {/* The sidebar counts the inbox's files, like 수신함 정리; say so when they outnumber its papers. */}
+                      {!startScreen && scope === "shelf" && scopeId === SHELF_INBOX && !localQuery.trim() && !list.hidden && snapshot.shelf.inbox > list.total && (
+                        <small title="같은 논문의 PDF가 둘 이상 있거나 아직 색인 중인 PDF가 있으면 논문 수보다 많습니다.">PDF {snapshot.shelf.inbox.toLocaleString()}개</small>
+                      )}
                     </h1>
                   </div>
                   <div className="workspace-actions">
@@ -2128,6 +2132,7 @@ export function App() {
                                 {scope === "shelf" && !w.abstract && <span className="subtle">초록 없음</span>}
                                 {scope === "shelf" && w.abstract && w.raw?.abstractSource === "pdf" && <span className="subtle">PDF에서 추출한 초록</span>}
                                 {scope === "shelf" && w.state.screening === "included" && <span className="green">이 프로젝트에 저장됨</span>}
+                                {scope === "shelf" && w.state.screening === "trash" && <span className="subtle">이 프로젝트 휴지통에 있음</span>}
                                 {scope === "shelf" && scopeId !== w.shelf?.folderId && w.shelf && !(scopeId === SHELF_INBOX && w.shelf.folder === "수신함") && (
                                   <span className="folder-chip">{w.shelf.folder.split("/").pop()}</span>
                                 )}

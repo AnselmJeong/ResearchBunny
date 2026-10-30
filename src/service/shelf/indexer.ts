@@ -1389,7 +1389,9 @@ export class Shelf {
         current = byId.get(current)!.parentId;
       }
     }
-    const inbox = folders.filter((f) => isInboxFolder(f.relPath)).reduce((sum, f) => sum + (direct.get(f.id) || 0), 0);
+    // The inbox counts the PDFs waiting there, as 수신함 정리 does (ShelfSorter.view): a second copy of a
+    // paper and a paper in this project's trash are still files to sort.
+    const inbox = (this.db.db.prepare("SELECT count(*) AS n FROM shelf_files f JOIN shelf_folders fo ON fo.id=f.folder_id WHERE f.root_id=? AND fo.rel_path='' AND f.status NOT IN ('missing','hidden')").get(root.id) as { n: number }).n;
     const parked = folders.filter((f) => isUncategorizedFolder(f.relPath)).reduce((sum, f) => sum + (direct.get(f.id) || 0), 0);
     const parkedId = folders.find((f) => f.relPath === SHELF_UNCATEGORIZED)?.id;
     const review = (this.db.db.prepare(`SELECT count(DISTINCT work_id) AS n FROM shelf_files WHERE root_id=? AND stage='resolved' AND status IN ('review','provisional') AND work_id IS NOT NULL${trashed}`).get(...scope) as { n: number }).n;

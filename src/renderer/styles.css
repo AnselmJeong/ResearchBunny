@@ -2475,6 +2475,11 @@ html[data-theme="dark"] .graph-wrap {
   content: "편";
   margin-left: 2px;
 }
+.workspace-heading h1 small {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--muted);
+}
 .view-switch {
   background: var(--panel);
   padding: 0;

@@ -838,7 +838,8 @@ export class Library {
     const kept: WorkView[] = [];
     for (const w of works) {
       // Shelf folders and runs list works regardless of project state; trash shows only in its own view.
-      if (scope !== "trash" && w.state.screening === "trash") continue;
+      // The inbox is the exception: it lists every PDF waiting to be sorted, as its count does.
+      if (scope !== "trash" && w.state.screening === "trash" && !(scope === "shelf" && scopeId === "inbox")) continue;
       const reasons = filterReasons(w, args.filters, w.evidence);
       if (scope === "trash" || scope === "excluded") {
         const i = reasons.indexOf("사용자 제외");

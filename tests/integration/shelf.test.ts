@@ -665,10 +665,10 @@ test("permanent deletion drops papers from the project only: shelf PDFs stay on 
     const lost = fileOf(service, LOST)!, smith = fileOf(service, SMITH)!, kim = fileOf(service, KIM)!;
     const other = service.db.createProject("다른 프로젝트", "").id;
     service.db.mutate(other, [smith.work_id], { screening: "included" });
-    // A paper in this project's trash leaves its counts, as it already leaves its lists; other projects still count it.
+    // A paper in this project's trash leaves its folder counts and lists, but the inbox still counts and lists its PDF.
     service.db.mutate(projectId, [lost.work_id, smith.work_id, kim.work_id], { screening: "trash" });
-    expect(service.shelf.summary(projectId)).toMatchObject({ inbox: 1, review: 1, total: 2 });
-    expect(list(service, projectId, "shelf", SHELF_INBOX).total).toBe(1);
+    expect(service.shelf.summary(projectId)).toMatchObject({ inbox: 2, review: 1, total: 2 });
+    expect(list(service, projectId, "shelf", SHELF_INBOX).total).toBe(2);
     expect(service.shelf.summary(other)).toMatchObject({ inbox: 2, review: 2, total: 5 });
     service.db.mutate(projectId, [kim.work_id], { screening: "included" });
     const before = await listing(dir);
@@ -718,6 +718,24 @@ test("permanent deletion drops papers from the project only: shelf PDFs stay on 
     // An archived paper imported again stays archived.
     expect(service.db.reimport(projectId, kim.work_id)).toBeNull();
     expect(service.db.state(projectId, kim.work_id).screening).toBe("included");
+  });
+});
+
+test("the inbox counts its PDFs as 수신함 정리 does, with papers in this project's trash and second copies", async () => {
+  await fixture(async ({ service, dir, projectId, ollama }) => {
+    await configure(service, dir, ollama.url);
+    const lost = fileOf(service, LOST)!;
+    const counts = () => ({ sidebar: service.shelf.summary(projectId).inbox, sort: service.sorter.view().inbox, papers: list(service, projectId, "shelf", SHELF_INBOX).total });
+    expect(counts()).toEqual({ sidebar: 2, sort: 2, papers: 2 });
+    // A paper trashed in this project still has its PDF waiting to be sorted.
+    service.db.mutate(projectId, [lost.work_id], { screening: "trash" });
+    expect(counts()).toEqual({ sidebar: 2, sort: 2, papers: 2 });
+    expect(list(service, projectId, "shelf", SHELF_INBOX).works.find((w) => w.id === lost.work_id)?.state.screening).toBe("trash");
+    // A second copy of a paper is one more file but not one more paper.
+    await copyFile(join(dir, LOST), join(dir, "2020 - Nobody - A completely unresolvable gardening manuscript about quantum soil (2).pdf"));
+    await service.call("shelfControl", { action: "scan" });
+    await service.shelf.wait();
+    expect(counts()).toEqual({ sidebar: 3, sort: 3, papers: 2 });
   });
 });
 
