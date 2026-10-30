@@ -4,22 +4,25 @@ import type { Settings } from "./types";
 export type GenealogyProvider = "codex" | "claude" | "ollama";
 export interface ModelRoute {
   provider: GenealogyProvider;
-  /** Empty uses the account's default model. */
+  /** Empty follows the model chosen for that connection in Settings, whenever the call is made. */
   model: string;
 }
 /** light: types, section boundaries, candidate judgements. cards: one call per paper. write: ledger, outline, sections, review. */
 export type GenealogyStage = "light" | "cards" | "write";
 export type ModelRoutes = Record<GenealogyStage, ModelRoute>;
 
-/** Every stage starts on the connection chosen in Settings, falling back to Codex when that is the paid API. */
-export function defaultRoutes(settings: Pick<Settings, "aiProvider" | "codexModel" | "claudeModel" | "ollamaModel">): ModelRoutes {
-  const route: ModelRoute =
-    settings.aiProvider === "claude"
-      ? { provider: "claude", model: settings.claudeModel }
-      : settings.aiProvider === "ollama"
-        ? { provider: "ollama", model: settings.ollamaModel }
-        : { provider: "codex", model: settings.aiProvider === "codex" ? settings.codexModel : "" };
-  return { light: { ...route }, cards: { ...route }, write: { ...route } };
+/**
+ * Every stage starts on the connection chosen in Settings, falling back to
+ * Codex when that is the paid API, and follows that connection's model.
+ */
+export function defaultRoutes(settings: Pick<Settings, "aiProvider">): ModelRoutes {
+  const provider: GenealogyProvider = settings.aiProvider === "claude" || settings.aiProvider === "ollama" ? settings.aiProvider : "codex";
+  return { light: { provider, model: "" }, cards: { provider, model: "" }, write: { provider, model: "" } };
+}
+
+/** The model Settings names for a connection; empty means the account's default (Codex, Claude). */
+export function settingsModel(settings: Pick<Settings, "codexModel" | "claudeModel" | "ollamaModel">, provider: GenealogyProvider) {
+  return provider === "codex" ? settings.codexModel : provider === "claude" ? settings.claudeModel : settings.ollamaModel;
 }
 
 export const PROVIDER_NAMES: Record<GenealogyProvider, string> = {
@@ -78,7 +81,7 @@ export interface GenealogySettings {
   csl: string;
 }
 export const DEFAULT_READER = "이 분야를 처음 시작하는 연구자";
-export function defaultGenealogySettings(settings: Pick<Settings, "aiProvider" | "codexModel" | "claudeModel" | "ollamaModel">, question = ""): GenealogySettings {
+export function defaultGenealogySettings(settings: Pick<Settings, "aiProvider">, question = ""): GenealogySettings {
   return {
     question,
     reader: DEFAULT_READER,

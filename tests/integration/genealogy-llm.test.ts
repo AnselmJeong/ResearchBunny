@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { Library } from "../../src/service/db/database";
 import { GenealogyAI, Meter } from "../../src/service/genealogy/llm";
-import { defaultRoutes } from "../../src/shared/genealogy";
+import { defaultRoutes, settingsModel } from "../../src/shared/genealogy";
 import { DEFAULT_AI } from "../../src/service/providers/openai";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -77,8 +77,31 @@ test("the meter stops at the call limit and refuses oversized inputs before any 
   expect(calls).toBe(1);
 });
 
-test("default routes follow the Settings connection and never pick the paid API", () => {
-  expect(defaultRoutes({ ...DEFAULT_AI, aiProvider: "codex", codexModel: "gpt-6.1" }).write).toEqual({ provider: "codex", model: "gpt-6.1" });
-  expect(defaultRoutes({ ...DEFAULT_AI, aiProvider: "claude", claudeModel: "opus" }).cards).toEqual({ provider: "claude", model: "opus" });
-  expect(defaultRoutes({ ...DEFAULT_AI, aiProvider: "openai" }).light).toEqual({ provider: "codex", model: "" });
+test("default routes follow the Settings connection and its model, and never pick the paid API", () => {
+  expect(defaultRoutes({ aiProvider: "codex" }).write).toEqual({ provider: "codex", model: "" });
+  expect(defaultRoutes({ aiProvider: "claude" }).cards).toEqual({ provider: "claude", model: "" });
+  expect(defaultRoutes({ aiProvider: "openai" }).light).toEqual({ provider: "codex", model: "" });
+  expect(settingsModel({ ...DEFAULT_AI, codexModel: "gpt-6.1" }, "codex")).toBe("gpt-6.1");
+});
+
+test("a route without a model uses the model Settings names at the time of the call", async () => {
+  const db = await library();
+  const seen: string[] = [];
+  const models = { codex: "gpt-6.1", ollama: "deepseek-v4.1-flash:1017" };
+  const ai = new GenealogyAI(
+    db,
+    {
+      codex: { async complete(r) { seen.push(`codex:${r.model}`); return '{"answer":"ok"}'; } },
+      ollama: { async complete(model) { seen.push(`ollama:${model}`); return '{"answer":"ok"}'; } },
+    },
+    () => models,
+  );
+  await ai.json({ ...base, route: { provider: "codex", model: "" } });
+  models.codex = "gpt-6.2";
+  await ai.json({ ...base, route: { provider: "codex", model: "" } });
+  await ai.json({ ...base, route: { provider: "codex", model: "gpt-5.5" } });
+  await ai.json({ ...base, route: { provider: "ollama", model: "" } });
+  expect(seen).toEqual(["codex:gpt-6.1", "codex:gpt-6.2", "codex:gpt-5.5", "ollama:deepseek-v4.1-flash:1017"]);
+  const none = new GenealogyAI(db, { ollama: { async complete() { return '{"answer":"ok"}'; } } }, () => ({}));
+  await expect(none.json({ ...base, route: { provider: "ollama", model: "" } })).rejects.toMatchObject({ code: "OLLAMA_MODEL" });
 });

@@ -1235,6 +1235,7 @@ export function App() {
           <GenealogyWorkspace
             key={genealogyId}
             id={genealogyId}
+            app={snapshot.settings}
             onError={onError}
             onDeleted={() => {
               setGenealogyId(null);

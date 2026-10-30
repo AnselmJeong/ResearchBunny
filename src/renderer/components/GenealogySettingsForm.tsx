@@ -1,12 +1,17 @@
+import { useEffect, useState } from "react";
 import { FolderOpen } from "lucide-react";
 import {
   PROVIDER_NAMES,
+  settingsModel,
   type GenealogyProvider,
   type GenealogySettings,
   type GenealogyStage,
   type ModelRoute,
 } from "../../shared/genealogy";
 import { CLAUDE_MODELS } from "../../shared/claude";
+import type { Settings } from "../../shared/types";
+
+type AppModels = Pick<Settings, "codexModel" | "claudeModel" | "ollamaModel">;
 
 const STAGES: { key: GenealogyStage; label: string; help: string }[] = [
   { key: "light", label: "유형·후보 판정", help: "짧고 많은 호출" },
@@ -14,7 +19,39 @@ const STAGES: { key: GenealogyStage; label: string; help: string }[] = [
   { key: "write", label: "가지 장부·목차·집필", help: "품질이 결과를 정함" },
 ];
 
-function RouteField({ stage, value, onChange }: { stage: (typeof STAGES)[number]; value: ModelRoute; onChange: (route: ModelRoute) => void }) {
+/** The models each connection offers, asked once while the app runs; a failed request is asked again next time. */
+const catalogs = new Map<GenealogyProvider, Promise<string[]>>();
+function useModels(provider: GenealogyProvider) {
+  const [models, setModels] = useState<string[]>(provider === "claude" ? [...CLAUDE_MODELS] : []);
+  useEffect(() => {
+    if (provider === "claude") {
+      setModels([...CLAUDE_MODELS]);
+      return;
+    }
+    setModels([]);
+    let current = true;
+    let catalog = catalogs.get(provider);
+    if (!catalog) {
+      catalog = (provider === "codex" ? window.bunny.codexModels({}).then((list) => list.map((m) => m.id)) : window.bunny.ollamaModels({})).catch(() => {
+        catalogs.delete(provider);
+        return [];
+      });
+      catalogs.set(provider, catalog);
+    }
+    void catalog.then((list) => current && setModels(list));
+    return () => {
+      current = false;
+    };
+  }, [provider]);
+  return models;
+}
+
+const MODEL_NAMES: Record<string, string> = { opus: "Opus", sonnet: "Sonnet", haiku: "Haiku" };
+
+function RouteField({ stage, value, onChange, app }: { stage: (typeof STAGES)[number]; value: ModelRoute; onChange: (route: ModelRoute) => void; app: AppModels }) {
+  const models = useModels(value.provider);
+  const fromSettings = settingsModel(app, value.provider);
+  const follow = fromSettings ? (MODEL_NAMES[fromSettings] ?? fromSettings) : value.provider === "ollama" ? "모델 미지정" : "계정 기본 모델";
   return (
     <div className="genealogy-route">
       <span>
@@ -32,13 +69,15 @@ function RouteField({ stage, value, onChange }: { stage: (typeof STAGES)[number]
           </option>
         ))}
       </select>
-      <input
-        aria-label={`${stage.label} 모델`}
-        list={`genealogy-models-${value.provider}`}
-        placeholder={value.provider === "ollama" ? "모델 이름" : "계정 기본 모델"}
-        value={value.model}
-        onChange={(e) => onChange({ ...value, model: e.target.value })}
-      />
+      <select aria-label={`${stage.label} 모델`} value={value.model} onChange={(e) => onChange({ ...value, model: e.target.value })}>
+        <option value="">설정에 따름 · {follow}</option>
+        {value.model && !models.includes(value.model) && <option value={value.model}>{value.model} · 목록에 없음</option>}
+        {models.map((m) => (
+          <option key={m} value={m}>
+            {MODEL_NAMES[m] ?? m}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }
@@ -49,9 +88,12 @@ export function GenealogySettingsForm({
   onChange,
   workspace,
   onWorkspace,
+  app,
 }: {
   value: GenealogySettings;
   onChange: (value: GenealogySettings) => void;
+  /** The models Settings names, which a stage left on "설정에 따름" uses. */
+  app: AppModels;
   /** Shown only when the folder can still be chosen (at creation). */
   workspace?: string;
   onWorkspace?: () => void;
@@ -59,13 +101,6 @@ export function GenealogySettingsForm({
   const set = <K extends keyof GenealogySettings>(key: K, v: GenealogySettings[K]) => onChange({ ...value, [key]: v });
   return (
     <div className="genealogy-settings">
-      <datalist id="genealogy-models-claude">
-        {CLAUDE_MODELS.map((m) => (
-          <option key={m} value={m} />
-        ))}
-      </datalist>
-      <datalist id="genealogy-models-codex" />
-      <datalist id="genealogy-models-ollama" />
       <label className="field">
         연구 질문
         <textarea rows={3} value={value.question} onChange={(e) => set("question", e.target.value)} placeholder="이 리포트가 답하려는 질문" />
@@ -76,9 +111,9 @@ export function GenealogySettingsForm({
         <small>용어를 어디까지 풀어 쓸지 정합니다. 예: 정신과 의사, 이 분야를 처음 시작하는 대학원생</small>
       </label>
       <h3>AI 연결</h3>
-      <p className="subtle">단계마다 연결과 모델을 고릅니다. 계보 리포트는 구독 연결과 Ollama만 쓰며 유료 API로 넘어가지 않습니다. 모델을 비우면 계정 기본 모델을 씁니다.</p>
+      <p className="subtle">단계마다 연결과 모델을 고릅니다. 모델을 고르지 않으면(설정에 따름) 설정 → AI 연결에서 그 연결에 정한 모델을 쓰고, 그 설정을 바꾸면 따라 바뀝니다. 계보 리포트는 구독 연결과 Ollama만 쓰며 유료 API로 넘어가지 않습니다.</p>
       {STAGES.map((stage) => (
-        <RouteField key={stage.key} stage={stage} value={value.routes[stage.key]} onChange={(route) => set("routes", { ...value.routes, [stage.key]: route })} />
+        <RouteField key={stage.key} stage={stage} app={app} value={value.routes[stage.key]} onChange={(route) => set("routes", { ...value.routes, [stage.key]: route })} />
       ))}
       <h3>새 논문 자동 반영</h3>
       <label className="field">

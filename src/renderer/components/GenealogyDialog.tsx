@@ -40,6 +40,7 @@ export function GenealogyDialog({
       <GenealogySettingsForm
         value={value}
         onChange={setValue}
+        app={settings}
         workspace={workspace}
         onWorkspace={() =>
           void window.bunny

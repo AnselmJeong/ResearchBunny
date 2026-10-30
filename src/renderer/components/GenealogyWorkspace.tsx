@@ -17,6 +17,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { GenealogySettingsForm } from "./GenealogySettingsForm";
 import { numberCitations } from "../../shared/citations";
+import type { Settings } from "../../shared/types";
 
 type Tab = "papers" | "candidates" | "outline" | "manuscript" | "checks" | "settings";
 const TABS: { key: Tab; label: string }[] = [
@@ -541,7 +542,7 @@ function Checks({ id, view, busy, onRun, onError }: { id: string; view: Genealog
   );
 }
 
-export function GenealogyWorkspace({ id, onError, onDeleted }: { id: string; onError: (error: unknown) => void; onDeleted: () => void }) {
+export function GenealogyWorkspace({ id, onError, onDeleted, app }: { id: string; onError: (error: unknown) => void; onDeleted: () => void; app: Pick<Settings, "codexModel" | "claudeModel" | "ollamaModel"> }) {
   const [view, setView] = useState<GenealogyView | null>(null);
   const [tab, setTab] = useState<Tab>("papers");
   const [draft, setDraft] = useState<GenealogySettings | null>(null);
@@ -652,7 +653,7 @@ export function GenealogyWorkspace({ id, onError, onDeleted }: { id: string; onE
         {tab === "checks" && <Checks id={id} view={view} busy={running} onError={onError} onRun={(step) => void run(step, false)} />}
         {tab === "settings" && (
           <>
-            <GenealogySettingsForm value={draft ?? g.settings} onChange={setDraft} />
+            <GenealogySettingsForm value={draft ?? g.settings} onChange={setDraft} app={app} />
             <p className="subtle">작업 폴더: {g.workspace}</p>
             <div className="inline-actions">
               <button

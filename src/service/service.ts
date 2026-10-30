@@ -161,7 +161,14 @@ export class Service {
     this.genealogy = new GenealogyEngine({
       db: this.db,
       store: new GenealogyStore(this.db),
-      ai: new GenealogyAI(this.db, { codex: this.codex, claude: this.claude, ollama: this.ollama }),
+      ai: new GenealogyAI(this.db, { codex: this.codex, claude: this.claude, ollama: this.ollama }, () => {
+        const s = this.settings();
+        return { codex: s.codexModel, claude: s.claudeModel, ollama: s.ollamaModel };
+      }),
+      models: () => {
+        const s = this.settings();
+        return { codex: s.codexModel, claude: s.claudeModel, ollama: s.ollamaModel };
+      },
       oa: this.oa,
       downloads: this.downloads,
       workerPath,

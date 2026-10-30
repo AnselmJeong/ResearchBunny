@@ -183,3 +183,21 @@ test("a spent subscription pauses the job instead of failing it", async () => {
   expect(done.job).toMatchObject({ status: "paused" });
   expect(done.completed.prepare).toBeUndefined();
 });
+
+test("reports made when routes copied the Settings model follow Settings again; other choices stay", async () => {
+  const f = await fixture();
+  await f.add({ title: "Paper", openalex: "W40", references: [] });
+  const first = f.engine();
+  const g = first.create({
+    projectId: f.projectId,
+    collectionId: f.collectionId,
+    title: "옛 리포트",
+    settings: f.settings({ routes: { light: { provider: "ollama", model: "deepseek-v4.1-flash:1017" }, cards: { provider: "ollama", model: "gpt-oss:120b" }, write: { provider: "claude", model: "opus" } } }),
+  });
+  f.engine({ models: () => ({ ollama: "deepseek-v4.1-flash:1017", claude: "opus", codex: "" }) });
+  expect(f.store.get(g.id).settings.routes).toEqual({
+    light: { provider: "ollama", model: "" },
+    cards: { provider: "ollama", model: "gpt-oss:120b" },
+    write: { provider: "claude", model: "" },
+  });
+});

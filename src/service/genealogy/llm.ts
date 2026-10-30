@@ -1,5 +1,5 @@
 import { AppError } from "../../shared/types";
-import type { ModelRoute } from "../../shared/genealogy";
+import type { GenealogyProvider, ModelRoute } from "../../shared/genealogy";
 import type { CodexClient } from "../codex/client";
 import type { ClaudeClient } from "../claude/client";
 import { jsonReply } from "../claude/client";
@@ -49,10 +49,12 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
 
 /** Structured completions for genealogy work: a stage's route, a corrective retry, and quota errors that pause instead of fail. */
 export class GenealogyAI {
-  constructor(private db: Library, private clients: GenealogyClients) {}
+  /** `models`: the model Settings names for each connection, read at every call; a route without a model follows it. */
+  constructor(private db: Library, private clients: GenealogyClients, private models: () => Partial<Record<GenealogyProvider, string>> = () => ({})) {}
 
   private async raw(request: JsonRequest<unknown>, instruction: string, input: string): Promise<string> {
-    const { route, schema, signal } = request;
+    const { schema, signal } = request;
+    const route = { ...request.route, model: request.route.model || this.models()[request.route.provider] || "" };
     request.meter?.reserve(Buffer.byteLength(instruction + input + JSON.stringify(schema)));
     try {
       let reply: string;
@@ -64,6 +66,7 @@ export class GenealogyAI {
         reply = await this.clients.claude.complete({ model: route.model, instruction, input, outputSchema: schema, signal });
       } else {
         if (!this.clients.ollama) throw new AppError("OLLAMA_UNAVAILABLE", "Ollama 연결을 사용할 수 없습니다.");
+        if (!route.model) throw new AppError("OLLAMA_MODEL", "설정 → AI 연결에서 Ollama Cloud 모델을 정하거나, 리포트 설정에서 모델을 고르세요.");
         reply = await this.clients.ollama.complete(
           route.model,
           [{ role: "system", content: instruction }, { role: "user", content: input }],

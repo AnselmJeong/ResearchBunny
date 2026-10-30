@@ -14,6 +14,7 @@ import {
   type GapCandidate,
   type GenealogyCard,
   type GenealogyJob,
+  type GenealogyProvider,
   type GenealogyOutputs,
   type Outline,
   type OutlineChapter,
@@ -68,6 +69,8 @@ export interface EngineDeps {
   busy: () => boolean;
   fetcher?: FetchLike;
   tools?: () => { pandoc: string | null; typst: string | null };
+  /** The model Settings names for each connection. */
+  models?: () => Partial<Record<GenealogyProvider, string>>;
 }
 
 /** Thrown inside a step to stop the job without calling it a failure. */
@@ -84,11 +87,23 @@ const autoReason = (c: GapCandidate) =>
 export class GenealogyEngine {
   active = new Map<string, AbortController>();
   constructor(private deps: EngineDeps) {
-    for (const g of deps.store.all())
+    const models = deps.models?.() ?? {};
+    for (const g of deps.store.all()) {
+      let changed = false;
       if (g.job?.status === "running") {
         g.job = { ...g.job, status: "interrupted", message: "앱 종료로 중단되었습니다. 저장된 지점에서 이어서 실행할 수 있습니다." };
-        deps.store.save(g);
+        changed = true;
       }
+      // Reports made before routes could follow Settings copied its models; those copies follow Settings again.
+      for (const stage of ["light", "cards", "write"] as const) {
+        const route = g.settings.routes[stage];
+        if (route.model && route.model === models[route.provider]) {
+          g.settings.routes[stage] = { ...route, model: "" };
+          changed = true;
+        }
+      }
+      if (changed) deps.store.save(g);
+    }
   }
 
   get store() {
