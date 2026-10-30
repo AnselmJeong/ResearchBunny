@@ -9,7 +9,10 @@ import { openPassageStore, PassageStore, quantize } from "../../src/service/pass
 import { PassageIndexer } from "../../src/service/passages/indexer";
 import { normalize } from "../../src/service/providers/ollama-local";
 import { SHELF_ALL } from "../../src/shared/shelf";
-import type { PassageJob } from "../../src/shared/passages";
+import type { PassageAnswer, PassageJob } from "../../src/shared/passages";
+import { checkedNumbers, quoteIn } from "../../src/service/passages/answer";
+import { DEFAULT_AI } from "../../src/service/providers/openai";
+import type { AppEvent, Run as LibraryRun } from "../../src/shared/types";
 import type { Page } from "../../src/service/providers/openalex";
 import { fakeOllama } from "./shelf-helpers";
 
@@ -259,6 +262,123 @@ test("the app indexes shelf passages after a scan and searches them by words and
     await service.call("passageControl", { action: "resume" });
     await service.passages.wait();
     expect(service.passages.paused()).toBe(false);
+  } finally {
+    service.shelf.stop();
+    service.passages.stop();
+    await service.shelf.wait();
+    await service.passages.wait();
+    service.downloads.stopRecoveryMonitor();
+    ollama.stop();
+    service.passageStore.close();
+    service.db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a quote counts when its passage holds it, with folding and ellipses but not paraphrase", () => {
+  const text = "Participants received a neurotransmitter assay for butyrate after fasting. Samples were \u201cfrozen\u201d at minus eighty degrees \u2013 then thawed.";
+  expect(quoteIn("Participants received a neurotransmitter assay", text)).toBe(true);
+  expect(quoteIn("  SAMPLES were \"frozen\" at minus eighty degrees - then thawed.", text)).toBe(true);
+  expect(quoteIn("Participants received a neurotransmitter assay … frozen\" at minus eighty", text)).toBe(true);
+  expect(quoteIn("frozen\" at minus eighty … Participants received a neurotransmitter assay", text)).toBe(false);
+  expect(quoteIn("Participants were given a neurotransmitter assay", text)).toBe(false);
+  expect(quoteIn("butyrate", text)).toBe(false);
+  expect(checkedNumbers("세 연구 중 2개, 효과 0.42, 반응률 37%, 2019년")).toEqual(["0.42", "37", "2019"]);
+});
+
+test("answers cite passages by number, keep only quotes found in them, and can be cancelled", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rb-passage-answer-"));
+  const dir = join(root, "Articles");
+  await paper(join(dir, "02 Mood/2023 - Park - Ketamine response in depression.pdf"), "ketamine response", "glutamate");
+  await paper(join(dir, "2022 - Choi - Gut microbiota and anxiety.pdf"), "gut microbiota", "butyrate");
+  const events: AppEvent[] = [];
+  const service = new Service(join(root, "library"), worker, (event) => events.push(event));
+  const ollama = fakeOllama();
+  const empty = (): Page => ({ works: [], cursor: null, total: 0, cached: false, fetchedAt: new Date().toISOString() });
+  service.oa.page = async (_p: Record<string, string>, _s: AbortSignal, onCall: () => void) => (onCall(), empty());
+  service.oa.lookup = async () => { throw new Error("not found"); };
+  try {
+    const projectId = service.db.projects()[0].id;
+    await service.call("shelfConfigure", { path: dir, ollamaUrl: ollama.url });
+    await service.shelf.wait();
+    await service.passages.run();
+    const question = "금식 후 butyrate는 어떻게 측정했나?";
+
+    await expect(service.call("passageAsk", { projectId, question, askId: crypto.randomUUID() })).rejects.toThrow("AI 연결");
+    service.db.pref("ai", { ...DEFAULT_AI, aiProvider: "codex", aiEnabled: true, aiMaxInputTokens: 100000 });
+
+    const calls: { name: string; data: any }[] = [];
+    service.ai.structured = async (_run: LibraryRun, name: string, _schema: Record<string, unknown>, _instruction: string, data: unknown) => {
+      calls.push({ name, data });
+      if (name === "passage_plan") return { queries: ["butyrate assay after fasting", "frozen samples storage temperature"] };
+      const evidence = (data as { evidence: { n: number; text: string }[] }).evidence;
+      const methods = evidence.find((e) => e.text.includes("assay for butyrate after fasting"))!;
+      return {
+        statements: [
+          { text: "장내 미생물 연구는 금식 후 butyrate를 측정했다.", sources: [{ n: methods.n, quote: "neurotransmitter assay for butyrate after fasting" }], paragraph: false },
+          { text: "샘플은 영하 80도에 얼렸다.", sources: [{ n: methods.n, quote: "Samples were frozen at minus eighty degrees." }], paragraph: false },
+          { text: "효과 크기는 0.42였다.", sources: [{ n: methods.n, quote: "Participants received a neurotransmitter assay" }], paragraph: true },
+          { text: "근거 없는 주장이다.", sources: [{ n: methods.n, quote: "this sentence is nowhere in the passage text" }], paragraph: false },
+          { text: "없는 구절 번호를 인용했다.", sources: [{ n: 99, quote: "whatever text that is long enough to check" }], paragraph: false },
+          { text: "요약하면 금식 후 측정했다.", sources: [], paragraph: true },
+        ],
+        insufficient: false,
+        missing: "",
+      };
+    };
+    const askId = crypto.randomUUID();
+    const answer = await service.call("passageAsk", { projectId, question, askId }) as PassageAnswer;
+    expect(calls.map((c) => c.name)).toEqual(["passage_plan", "passage_answer"]);
+    expect(answer.queries).toEqual([question, "butyrate assay after fasting", "frozen samples storage temperature"]);
+    // Passages go to the AI numbered, at most three per paper.
+    const sent = calls[1].data.evidence as { n: number; paper: string; pages: string }[];
+    expect(sent.map((e) => e.n)).toEqual(sent.map((_, i) => i + 1));
+    const perPaper = new Map<string, number>();
+    for (const e of sent) perPaper.set(e.paper, (perPaper.get(e.paper) || 0) + 1);
+    expect(Math.max(...perPaper.values())).toBeLessThanOrEqual(3);
+    expect(sent.some((e) => e.paper.includes("Gut microbiota"))).toBe(true);
+
+    expect(answer.statements.map((s) => s.status)).toEqual(["cited", "cited", "cited", "unverified", "unverified", "uncited"]);
+    expect(answer.statements[0].refs).toEqual([1]);
+    expect(answer.refs).toHaveLength(1);
+    expect(answer.refs[0].hit.title).toContain("Gut microbiota");
+    expect(answer.refs[0].hit.page).toBe(2);
+    expect(answer.refs[0].hit.section).toBe("2. Methods");
+    expect(answer.refs[0].quotes).toContain("Samples were frozen at minus eighty degrees.");
+    // Numbers must appear in a cited passage: 0.42 is in none, and the passage spells out "eighty", so 80 is flagged too.
+    expect(answer.statements[2].unsupported).toEqual(["0.42"]);
+    expect(answer.statements[1].unsupported).toEqual(["80"]);
+    expect(answer.dropped).toBe(2);
+    expect(answer.unused.every((h) => h.passageId !== answer.refs[0].hit.passageId)).toBe(true);
+    expect(answer.unused.length).toBe(sent.length - 1);
+    expect(events.filter((e) => e.type === "answer" && e.id === askId).map((e) => e.type === "answer" && e.step)).toEqual(["plan", "search", "write", "check"]);
+
+    // The same question comes from memory; asking afresh calls the AI again.
+    expect((await service.call("passageAsk", { projectId, question, askId: crypto.randomUUID() }) as PassageAnswer).createdAt).toBe(answer.createdAt);
+    expect(calls).toHaveLength(2);
+    await service.call("passageAsk", { projectId, question, askId: crypto.randomUUID(), fresh: true });
+    expect(calls).toHaveLength(4);
+
+    // A plan the AI gets wrong falls back to the question alone.
+    service.ai.structured = async (_run: LibraryRun, name: string) => {
+      if (name === "passage_plan") return { wrong: true };
+      return { statements: [{ text: "근거가 부족하다.", sources: [], paragraph: false }], insufficient: true, missing: "측정 방법을 다룬 구절이 없다." };
+    };
+    const thin = await service.call("passageAsk", { projectId, question: "butyrate fasting", askId: crypto.randomUUID() }) as PassageAnswer;
+    expect(thin.queries).toEqual(["butyrate fasting"]);
+    expect(thin.insufficient).toBe(true);
+    expect(thin.missing).toBe("측정 방법을 다룬 구절이 없다.");
+
+    // Cancelling stops the request where it waits for the AI.
+    service.ai.structured = (_run: LibraryRun, _name: string, _schema: Record<string, unknown>, _instruction: string, _data: unknown, signal: AbortSignal) =>
+      new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    const slow = crypto.randomUUID();
+    const pending = service.call("passageAsk", { projectId, question: "ketamine glutamate response", askId: slow });
+    await Bun.sleep(30);
+    expect(service.answers.active.has(slow)).toBe(true);
+    await service.call("passageAskCancel", { askId: slow });
+    await expect(pending).rejects.toThrow("취소");
+    expect(service.answers.active.size).toBe(0);
   } finally {
     service.shelf.stop();
     service.passages.stop();

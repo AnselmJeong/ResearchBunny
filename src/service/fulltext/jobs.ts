@@ -343,7 +343,7 @@ export class PdfDownloads {
     this.db.saveRun(run);
     void this.execute(id);
   }
-  private save(run: Run, type: Exclude<AppEvent["type"], "chat" | "genealogy" | "attention" | "passages"> = "progress") {
+  private save(run: Run, type: Exclude<AppEvent["type"], "chat" | "genealogy" | "attention" | "passages" | "answer"> = "progress") {
     run.count = run.download!.items.filter(i => i.status === "completed" || i.status === "existing").length;
     run.updatedAt = now();
     this.db.saveRun(run);
