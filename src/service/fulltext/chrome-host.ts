@@ -9,13 +9,17 @@ import { setTimeout as delay } from "node:timers/promises";
 import { AppError, type AppEvent } from "../../shared/types";
 import { CdpConnection, chromeClosed, type CdpEvent } from "./cdp";
 
-export type BrowserDownload = { guid: string; url: string; suggestedFilename: string; state: "inProgress" | "completed" | "canceled"; path: string };
+/** `canceled` also covers a download Chrome gave up on, e.g. after a network error. */
+export type BrowserDownload = { guid: string; url: string; suggestedFilename: string; state: "inProgress" | "completed" | "canceled"; path: string; receivedBytes: number; totalBytes: number };
 /** The run's work tab: a minimized window of the app's own Chrome. */
 export interface BrowserTab {
   /** Downloads that begin from now on are saved into `directory` and listed by `downloads()`. */
   collect(directory: string, signal: AbortSignal): Promise<void>;
   downloads(): BrowserDownload[];
-  navigate(url: string, signal: AbortSignal): Promise<void>;
+  /** Stops one of `downloads()`; it is listed as `canceled` from then on. */
+  cancel(guid: string): Promise<void>;
+  /** `referrer`: the page a link was found on, sent as a click on it would. */
+  navigate(url: string, signal: AbortSignal, referrer?: string): Promise<void>;
   evaluate<T>(expression: string, signal: AbortSignal): Promise<T>;
   /** Shows the window for what only the person can do there, such as a robot check. */
   reveal(message: string, signal: AbortSignal): Promise<void>;
@@ -251,11 +255,14 @@ class CdpTab implements BrowserTab {
     private attention: (message: string) => void, private closed: () => void) {}
   event(event: CdpEvent) {
     if (event.method === "Target.targetDestroyed" && event.params.targetId === this.targetId) { this.closed(); return; }
-    if (event.method === "Browser.downloadWillBegin" && this.collecting)
-      this.found.set(event.params.guid, { guid: event.params.guid, url: event.params.url, suggestedFilename: event.params.suggestedFilename, state: "inProgress", path: join(this.directory, event.params.guid) });
+    if (event.method === "Browser.downloadWillBegin") {
+      // One begun between papers (a late answer to an earlier navigation) has no taker and would only share the bandwidth.
+      if (!this.collecting) void this.cdp.send("Browser.cancelDownload", { guid: event.params.guid }).catch(() => {});
+      else this.found.set(event.params.guid, { guid: event.params.guid, url: event.params.url, suggestedFilename: event.params.suggestedFilename, state: "inProgress", path: join(this.directory, event.params.guid), receivedBytes: 0, totalBytes: 0 });
+    }
     if (event.method === "Browser.downloadProgress") {
       const download = this.found.get(event.params.guid);
-      if (download) download.state = event.params.state;
+      if (download) Object.assign(download, { state: event.params.state, receivedBytes: event.params.receivedBytes ?? download.receivedBytes, totalBytes: event.params.totalBytes ?? download.totalBytes });
     }
     // A link with target=_blank opens a tab; its address is loaded here instead.
     if ((event.method === "Target.targetCreated" || event.method === "Target.targetInfoChanged") && event.params.targetInfo?.type === "page") {
@@ -279,9 +286,14 @@ class CdpTab implements BrowserTab {
     this.directory = directory; this.found.clear(); this.collecting = true;
   }
   downloads() { return [...this.found.values()]; }
-  async navigate(url: string, signal: AbortSignal) {
+  async cancel(guid: string) {
+    const download = this.found.get(guid);
+    if (download) download.state = "canceled";
+    await this.cdp.send("Browser.cancelDownload", { guid }).catch(() => {});
+  }
+  async navigate(url: string, signal: AbortSignal, referrer?: string) {
     // A URL that downloads ends the navigation with ERR_ABORTED; the download events tell the rest.
-    await this.cdp.send("Page.navigate", { url }, this.sessionId, signal);
+    await this.cdp.send("Page.navigate", { url, ...(referrer ? { referrer } : {}) }, this.sessionId, signal);
   }
   async evaluate<T>(expression: string, signal: AbortSignal): Promise<T> {
     const { result, exceptionDetails } = await this.cdp.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, this.sessionId, signal);

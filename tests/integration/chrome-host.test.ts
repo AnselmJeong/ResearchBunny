@@ -59,7 +59,7 @@ test("downloads are collected only while a paper is active, popups load in the w
     await begin("during");
     await cdp.send("Test.emit", { method: "Browser.downloadProgress", params: { guid: "during", state: "completed", totalBytes: 1, receivedBytes: 1 } });
     await settle();
-    assert.deepEqual(tab.downloads(), [{ guid: "during", url: "https://pub.example/during.pdf", suggestedFilename: "during.pdf", state: "completed", path: join(root, "item-1", "during") }]);
+    assert.deepEqual(tab.downloads(), [{ guid: "during", url: "https://pub.example/during.pdf", suggestedFilename: "during.pdf", state: "completed", path: join(root, "item-1", "during"), receivedBytes: 1, totalBytes: 1 }]);
     assert.deepEqual((await requests()).find(r => r.method === "Browser.setDownloadBehavior").params, { behavior: "allowAndName", downloadPath: join(root, "item-1"), eventsEnabled: true });
 
     // A target=_blank link: the new tab is closed and its address loaded in the work tab, which stays minimized.
@@ -85,6 +85,13 @@ test("downloads are collected only while a paper is active, popups load in the w
     assert(sent.some(r => r.method === "Browser.cancelDownload" && r.params.guid === "late"), "unfinished downloads are cancelled");
     assert(sent.some(r => r.method === "Page.navigate" && r.params.url === "about:blank"));
     assert(!tab.downloads().some(d => d.guid === "after" || d.guid === "before"));
+    // Downloads begun between papers have no taker: they are cancelled rather than left to share the bandwidth.
+    for (const guid of ["before", "after"]) assert(sent.some(r => r.method === "Browser.cancelDownload" && r.params.guid === guid), guid);
+    assert(!sent.some(r => r.method === "Browser.cancelDownload" && r.params.guid === "during"));
+
+    // A PDF link is followed from its page, with the page as referrer.
+    await tab.navigate("https://pub.example/b.pdf", AbortSignal.timeout(5000), "https://pub.example/article");
+    assert.deepEqual((await requests()).filter(r => r.method === "Page.navigate").at(-1).params, { url: "https://pub.example/b.pdf", referrer: "https://pub.example/article" });
     await chrome.idle();
     assert.equal((await requests()).filter(r => r.method === "Browser.setDownloadBehavior").at(-1).params.behavior, "default");
   } finally { await chrome.close(); await rm(root, { recursive: true, force: true }); }

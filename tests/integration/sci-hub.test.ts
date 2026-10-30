@@ -163,10 +163,10 @@ test("the Chrome driver opens the given mirror page instead of the paper's own p
       // The storage PDF is same-origin, so the page fetches it with its own session.
       opened.push("fetch");
       await writeFile(join(directory, "guid"), pdf);
-      found.push({ guid: "guid", url: "blob:https://sci-hub.kr/x", suggestedFilename: filename, state: "completed", path: join(directory, "guid") });
+      found.push({ guid: "guid", url: "blob:https://sci-hub.kr/x", suggestedFilename: filename, state: "completed", path: join(directory, "guid"), receivedBytes: pdf.length, totalBytes: pdf.length });
       return "started" as T;
     },
-    async reveal() { throw new Error("no robot check here"); }, async reset() {}, async close() {},
+    async cancel() {}, async reveal() { throw new Error("no robot check here"); }, async reset() {}, async close() {},
   };
   try {
     const result = await new ChromeDownloads({ tab: async () => tab, idle: async () => {} }, { pollMs: 5 })

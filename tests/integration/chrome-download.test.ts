@@ -30,7 +30,7 @@ class FakeTab implements BrowserTab {
   private async download(url: string, suggestedFilename: string) {
     const guid = `guid-${this.found.length + 1}`;
     await writeFile(join(this.directory, guid), pdf);
-    this.found.push({guid, url, suggestedFilename, state:"completed", path:join(this.directory, guid)});
+    this.found.push({guid, url, suggestedFilename, state:"completed", path:join(this.directory, guid), receivedBytes:pdf.length, totalBytes:pdf.length});
   }
   async navigate(url: string) {
     this.calls.push(`navigate ${url}`);
@@ -41,11 +41,58 @@ class FakeTab implements BrowserTab {
     if (filename) { this.calls.push("fetch"); await this.download(`blob:${this.url}`, filename); return "started" as T; }
     return JSON.stringify({url:this.url, ready:"complete", challenge:false, login:false, links:[], ...this.page(this)}) as T;
   }
+  async cancel(guid: string) { this.calls.push(`cancel ${guid}`); }
   async reveal(message: string) { this.revealed.push(message); }
   async reset() { this.calls.push("reset"); }
   async close() { this.calls.push("close"); }
 }
-function hostFor(tab: FakeTab): BrowserHost & { tabs: number; idles: number } {
+/** A tab whose one PDF link downloads as scripted: the nth download of it runs `scripts[n]`. */
+class ScriptedTab implements BrowserTab {
+  calls: string[] = [];
+  referrers: (string | undefined)[] = [];
+  found: BrowserDownload[] = [];
+  private directory = "";
+  private url = "";
+  constructor(private link: string, private scripts: ((download: BrowserDownload, finish: () => Promise<void>) => void)[]) {}
+  async collect(directory: string) { this.calls.push("collect"); this.directory = directory; await mkdir(directory, {recursive:true}); }
+  downloads() { return this.found; }
+  async cancel(guid: string) {
+    this.calls.push(`cancel ${guid}`);
+    const download = this.found.find(d => d.guid === guid);
+    if (download) download.state = "canceled";
+  }
+  async navigate(url: string, _signal: AbortSignal, referrer?: string) {
+    this.calls.push(`navigate ${url}`);
+    this.referrers.push(referrer);
+    if (url !== this.link) { this.url = url; return; }
+    const guid = `guid-${this.found.length + 1}`, path = join(this.directory, guid);
+    const download: BrowserDownload = {guid, url, suggestedFilename:"paper.pdf", state:"inProgress", path, receivedBytes:0, totalBytes:pdf.length};
+    this.found.push(download);
+    this.scripts[this.found.length - 1](download, async () => {
+      if (download.state !== "inProgress") return;
+      await writeFile(path, pdf);
+      Object.assign(download, {state:"completed", receivedBytes:pdf.length});
+    });
+  }
+  async evaluate<T>(): Promise<T> { return JSON.stringify({url:this.url, ready:"complete", challenge:false, login:false, links:[this.link]}) as T; }
+  async reveal() {}
+  async reset() { this.calls.push("reset"); }
+  async close() {}
+}
+/** Bytes that keep coming every `everyMs` until the file is complete. */
+const trickle = (everyMs: number, ticks: number) => (download: BrowserDownload, finish: () => Promise<void>) => {
+  let tick = 0;
+  const timer = setInterval(() => {
+    if (download.state !== "inProgress") { clearInterval(timer); return; }
+    download.receivedBytes += 1;
+    if (++tick === ticks) { clearInterval(timer); void finish(); }
+  }, everyMs);
+};
+const stall = () => {};
+const instant = (_download: BrowserDownload, finish: () => Promise<void>) => { void finish(); };
+// The deadline is shorter than a slow download; a stall is shorter still.
+const slow = { ...fast, budgetMs: 100, stallMs: 150, maxMs: 5000 };
+function hostFor(tab: BrowserTab): BrowserHost & { tabs: number; idles: number } {
   return { tabs: 0, idles: 0, async tab() { this.tabs++; return tab; }, async idle() { this.idles++; } };
 }
 async function scratch(run: (root: string, options: RetrievalOptions) => Promise<void>) {
@@ -85,6 +132,35 @@ test("a download that turns out to be another paper is set aside for the run, an
   }, options);
   assert.equal(result.sourceUrl, "https://cdn.example.net/right.pdf");
   assert.deepEqual(await readdir(join(root, "rejected")), ["guid-1.pdf"]);
+}));
+
+test("a PDF that keeps arriving outlasts the deadline instead of being cancelled", () => scratch(async (root, options) => {
+  const link = "https://cdn.example.net/slow.pdf";
+  const tab = new ScriptedTab(link, [trickle(25, 16)]);
+  const messages: string[] = [];
+  const begun = Date.now();
+  const result = await new ChromeDownloads(hostFor(tab), slow).retrieve(work, join(root, "saved.part"), new AbortController().signal, message => messages.push(message), async () => {}, options);
+  assert(Date.now() - begun > slow.budgetMs * 3, "the download ran well past the deadline");
+  assert.equal(result.sourceUrl, link);
+  assert.deepEqual(tab.calls, ["collect", `navigate ${work.url}`, `navigate ${link}`, "reset"]);
+  assert.equal(tab.referrers[1], work.url, "the PDF link is followed from its page, as a click would");
+  assert(messages.some(message => /내려받는 중 · \d+KB \/ \d+KB/.test(message)), "progress shows the bytes so far");
+}));
+
+test("a download that stalls or that Chrome gives up on starts once more from scratch; a second failure moves on", () => scratch(async (root, options) => {
+  const link = "https://cdn.example.net/flaky.pdf";
+  // Chrome gives up (a network error), then the fresh start completes.
+  let tab = new ScriptedTab(link, [download => { setTimeout(() => { download.state = "canceled"; }, 20); }, instant]);
+  const result = await new ChromeDownloads(hostFor(tab), slow).retrieve(work, join(root, "a.part"), new AbortController().signal, () => {}, async () => {}, options);
+  assert.equal(result.sourceUrl, link);
+  assert.deepEqual(tab.calls, ["collect", `navigate ${work.url}`, `navigate ${link}`, `navigate ${link}`, "reset"]);
+  assert.equal(tab.referrers[2], work.url);
+
+  // A stalled download is cancelled and started again; when that stalls too, the paper moves on.
+  tab = new ScriptedTab(link, [stall, stall, instant]);
+  await assert.rejects(new ChromeDownloads(hostFor(tab), slow).retrieve(work, join(root, "b.part"), new AbortController().signal, () => {}, async () => {}, options),
+    (error: unknown) => error instanceof AppError && error.code === "CHROME_STALLED" && error.message.includes("초 동안"));
+  assert.deepEqual(tab.calls, ["collect", `navigate ${work.url}`, `navigate ${link}`, "cancel guid-1", `navigate ${link}`, "reset"]);
 }));
 
 test("robot checks get a few seconds to clear on their own, then the window is shown once; unattended runs never show it", () => scratch(async (root, options) => {

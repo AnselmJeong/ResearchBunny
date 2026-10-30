@@ -9,7 +9,7 @@ import type { BrowserHost, BrowserTab } from "./chrome-host";
 
 const probeSchema = z.object({
   url: z.string(), ready: z.string(), challenge: z.boolean(), login: z.boolean(), links: z.array(z.string()),
-  state: z.string().optional(), contentType: z.string().optional(),
+  state: z.string().optional(), received: z.number().optional(), total: z.number().optional(), contentType: z.string().optional(),
 });
 export type ChromeProbe = z.infer<typeof probeSchema>;
 const PROBE_JS = `(() => {
@@ -30,20 +30,24 @@ const PROBE_JS = `(() => {
     const menu = [...document.querySelectorAll('button, [role="button"], summary, a[aria-haspopup]')].find(el => /^(download|download pdf|pdf|다운로드)$/i.test((el.textContent || '').trim()));
     if (menu) { window.__researchbunnyMenu = true; menu.click(); }
   }
-  return JSON.stringify({url:location.href, ready:document.readyState, challenge, login, links:links.slice(0, 10), state:window.__researchbunnyDownload?.state, contentType:document.contentType});
+  return JSON.stringify({url:location.href, ready:document.readyState, challenge, login, links:links.slice(0, 10), state:window.__researchbunnyDownload?.state, received:window.__researchbunnyDownload?.received, total:window.__researchbunnyDownload?.total, contentType:document.contentType});
 })()`;
 export function browserFetchScript(url: string, filename: string) {
   return `(() => {
     window.__researchbunnyDownload?.controller?.abort();
     const controller = new AbortController();
-    const state = {state:'running', controller};
+    const state = {state:'running', controller, received:0, total:0};
     window.__researchbunnyDownload = state;
-    const timer = setTimeout(() => controller.abort(), 15000);
+    // Only a fetch that stops receiving is given up; a slow PDF that keeps arriving may finish.
+    let timer = 0;
+    const alive = () => { clearTimeout(timer); timer = setTimeout(() => controller.abort(), 15000); };
+    alive();
     (async () => {
       const r = await fetch(${JSON.stringify(url)}, {credentials:'include', signal:controller.signal});
-      if (!r.ok || !r.body || Number(r.headers.get('content-length')) > 157286400) throw Error('response');
-      const reader = r.body.getReader(), parts = []; let size = 0;
-      try { while (true) { const chunk = await reader.read(); if (chunk.done) break; size += chunk.value.length; if (size > 157286400) throw Error('size'); parts.push(chunk.value); } }
+      state.total = Number(r.headers.get('content-length')) || 0;
+      if (!r.ok || !r.body || state.total > 157286400) throw Error('response');
+      const reader = r.body.getReader(), parts = [];
+      try { while (true) { alive(); const chunk = await reader.read(); if (chunk.done) break; state.received += chunk.value.length; if (state.received > 157286400) throw Error('size'); parts.push(chunk.value); } }
       finally { await reader.cancel().catch(() => {}); }
       const blob = new Blob(parts, {type:'application/pdf'});
       const header = new Uint8Array(await blob.slice(0, 1024).arrayBuffer());
@@ -72,8 +76,10 @@ export type RetrievalOptions = {
   /** False for unattended runs: the window is never shown and nobody is waited for. */
   interactive?: boolean;
 };
-type Timing = { budgetMs: number; pollMs: number; autoMs: number; challengeMs: number; loginMs: number };
-const TIMING: Timing = { budgetMs: 60_000, pollMs: 1000, autoMs: 5000, challengeMs: 30_000, loginMs: 90_000 };
+type Timing = { budgetMs: number; pollMs: number; autoMs: number; challengeMs: number; loginMs: number; stallMs: number; maxMs: number };
+// A PDF still arriving outlasts `budgetMs` until `maxMs`; one that gets no bytes for `stallMs` ends the attempt.
+const TIMING: Timing = { budgetMs: 60_000, pollMs: 1000, autoMs: 5000, challengeMs: 30_000, loginMs: 90_000, stallMs: 30_000, maxMs: 600_000 };
+const size = (bytes: number) => bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)}MB` : `${Math.round(bytes / 1024)}KB`;
 /** Retrieval in the app's own Chrome: one minimized tab for the run, downloads saved straight into staging. */
 export class ChromeDownloads implements BrowserRetrieval {
   private tab: BrowserTab | null = null;
@@ -87,17 +93,37 @@ export class ChromeDownloads implements BrowserRetrieval {
   }
   async retrieve(work: Work, path: string, signal: AbortSignal, progress: (message: string) => void,
     validate: (candidate: RetrievedPdf) => Promise<void>, { downloads, rejected, start, interactive = true }: RetrievalOptions) {
-    const { budgetMs, pollMs, autoMs, challengeMs, loginMs } = this.timing;
+    const { budgetMs, pollMs, autoMs, challengeMs, loginMs, stallMs, maxMs } = this.timing;
     const doi = cleanDoi(work.doi);
     const initial = start ? publicUrl(start) : publicUrl(work.url) || (doi ? `https://doi.org/${encodeURI(doi)}` : publicUrl(work.oaUrl));
     if (!initial) throw new AppError('CHROME_NO_URL', 'Chrome에서 열 원문 주소가 없습니다.');
-    // Waiting for the person extends the deadline; the hard stop bounds even that.
-    const itemSignal = AbortSignal.any([signal, AbortSignal.timeout(budgetMs + loginMs)]);
-    let deadline = Date.now() + budgetMs;
+    // Waiting for the person and bytes still arriving extend the deadline; the hard stop bounds even a hung command.
+    const started = Date.now(), limit = new AbortController();
+    const itemSignal = AbortSignal.any([signal, limit.signal]);
+    let deadline = started + budgetMs, hardStopAt = started + budgetMs + loginMs, hardStop: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+      clearTimeout(hardStop);
+      hardStop = setTimeout(() => limit.abort(new AppError('CHROME_TIMEOUT', '앱 전용 Chrome에서 시간 안에 PDF를 받지 못했습니다. 재시도하거나 원문 페이지에서 직접 받으세요.', true)), hardStopAt - Date.now());
+    };
+    arm();
+    const extend = (until: number) => {
+      deadline = Math.max(deadline, Math.min(until, started + maxMs));
+      if (deadline + 15_000 > hardStopAt) { hardStopAt = deadline + 15_000; arm(); }
+    };
+    // When each download (or the page's fetch) last got bytes; that keeps the attempt going.
+    const arrived = new Map<string, { bytes: number; at: number }>();
+    const arriving = (key: string, bytes: number) => {
+      const now = Date.now(), last = arrived.get(key);
+      if (!last || bytes > last.bytes) arrived.set(key, { bytes, at: now });
+      const at = arrived.get(key)!.at;
+      if (now - at > stallMs) return false;
+      extend(at + stallMs + pollMs);
+      return true;
+    };
     progress(start ? `앱 전용 Chrome에서 열기 · ${new URL(initial).hostname}` : '앱 전용 Chrome에서 원문 열기');
     const tab = this.tab = await this.host.tab(itemSignal);
     const filename = `researchbunny-${randomUUID()}.pdf`;
-    const tried = new Set<string>(), handled = new Set<string>();
+    const tried = new Set<string>(), handled = new Set<string>(), retried = new Set<string>();
     let lastUrl = '', stableSince = Date.now(), pending: string | null = null;
     let exhaustedSince = 0, waitingSince = 0, fetchedSince = 0, asked = false, probeErrors = 0;
     try {
@@ -105,10 +131,24 @@ export class ChromeDownloads implements BrowserRetrieval {
       await tab.navigate(initial, itemSignal);
       while (true) {
         itemSignal.throwIfAborted();
-        if (Date.now() > deadline) throw new AppError('CHROME_TIMEOUT', '앱 전용 Chrome에서 시간 안에 PDF를 받지 못했습니다. 재시도하거나 원문 페이지에서 직접 받으세요.', true);
+        // A download under way answers to the stall rule below instead (and to the hard stop at `maxMs`).
+        if (Date.now() > deadline && !tab.downloads().some(download => download.state === 'inProgress'))
+          throw new AppError('CHROME_TIMEOUT', '앱 전용 Chrome에서 시간 안에 PDF를 받지 못했습니다. 재시도하거나 원문 페이지에서 직접 받으세요.', true);
         for (const download of tab.downloads()) {
-          if (download.state !== 'completed' || handled.has(download.guid)) continue;
+          if (download.state === 'inProgress' || handled.has(download.guid)) continue;
           handled.add(download.guid);
+          if (download.state === 'canceled') {
+            // Chrome gave up on it, usually after a network error: fetch that address once more from the start.
+            const url = publicUrl(download.url);
+            if (url && !retried.has(url) && !tab.downloads().some(other => other.state === 'inProgress')) {
+              retried.add(url);
+              progress('끊긴 PDF를 처음부터 다시 받는 중');
+              await tab.navigate(url, itemSignal, publicUrl(lastUrl) || undefined);
+              stableSince = Date.now();
+              extend(Date.now() + stallMs + pollMs);
+            }
+            continue;
+          }
           const ours = download.suggestedFilename === filename;
           const candidate: RetrievedPdf = {sourceUrl:publicUrl(download.url) || pending || publicUrl(lastUrl) || initial, doi, method:"chrome", requireIdentity:!ours};
           await copyFile(download.path, path);
@@ -119,8 +159,19 @@ export class ChromeDownloads implements BrowserRetrieval {
             if (ours) throw error;
           }
         }
-        if (tab.downloads().some(download => download.state === 'inProgress')) {
-          progress('앱 전용 Chrome에서 PDF 내려받는 중');
+        const active = tab.downloads().filter(download => download.state === 'inProgress');
+        if (active.length) {
+          if (!active.map(download => arriving(download.guid, download.receivedBytes)).some(Boolean)) {
+            // A stalled download gets the same single fresh start as one Chrome gave up on.
+            if (active.some(download => { const url = publicUrl(download.url); return url && !retried.has(url); })) {
+              for (const download of active) await tab.cancel(download.guid);
+              extend(Date.now() + pollMs);
+              continue;
+            }
+            throw new AppError('CHROME_STALLED', `서버가 ${Math.round(stallMs / 1000)}초 동안 PDF를 더 보내지 않아 다운로드를 멈췄습니다. 재시도하거나 원문 페이지에서 직접 받으세요.`, true);
+          }
+          const received = Math.max(...active.map(download => download.receivedBytes)), total = Math.max(...active.map(download => download.totalBytes));
+          progress(`앱 전용 Chrome에서 PDF 내려받는 중 · ${size(received)}${total ? ` / ${size(total)}` : ''}`);
           await delay(pollMs, undefined, {signal:itemSignal});
           continue;
         }
@@ -155,13 +206,17 @@ export class ChromeDownloads implements BrowserRetrieval {
         } else if (info.ready !== 'loading' && Date.now() - stableSince >= Math.min(3000, pollMs * 3)) {
           waitingSince = 0;
           if (pending) {
-            if (info.state === 'done') {
+            if (info.state === 'running') {
+              // The page's own fetch gives up once it stops receiving; until then it may run past the deadline.
+              arriving(`fetch ${pending}`, info.received ?? 0);
+              if (info.received) progress(`Chrome PDF 다운로드 · ${size(info.received)}${info.total ? ` / ${size(info.total)}` : ''}`);
+            } else if (info.state === 'done') {
               // The page handed the PDF to Chrome; its download events finish the job.
               fetchedSince ||= Date.now();
               if (Date.now() - fetchedSince > 20_000) throw new AppError('CHROME_DOWNLOAD', '앱 전용 Chrome에서 파일 저장을 완료하지 못했습니다.');
             } else if (info.state !== 'running') {
               const url = pending; pending = null; fetchedSince = 0;
-              if (info.state === 'error' && current !== url) { await tab.navigate(url, itemSignal); stableSince = Date.now(); }
+              if (info.state === 'error' && current !== url) { await tab.navigate(url, itemSignal, current); stableSince = Date.now(); }
             }
           } else {
             const candidates = [...info.links.flatMap(url => /wiley\.com\/doi\/e?pdf\//.test(url) ? [url.replace(/\/doi\/e?pdf\//, '/doi/pdfdirect/'), url] : [url]), ...publisherPdfUrls(current)];
@@ -172,7 +227,7 @@ export class ChromeDownloads implements BrowserRetrieval {
               progress(`Chrome PDF 다운로드 · ${new URL(next).hostname}`);
               if (new URL(next).origin === new URL(current).origin && !/(?:^|\.)(?:sciencedirect|elsevier)\.com$/.test(new URL(next).hostname)) {
                 pending = next; await tab.evaluate(browserFetchScript(next, filename), itemSignal);
-              } else { await tab.navigate(next, itemSignal); stableSince = Date.now(); }
+              } else { await tab.navigate(next, itemSignal, current); stableSince = Date.now(); }
             } else {
               if (!exhaustedSince) { exhaustedSince = Date.now(); progress('Chrome에서 PDF 링크를 찾지 못했습니다 · 5초 후 다음 문헌으로 이동'); }
               if (Date.now() - exhaustedSince > 5000) throw new AppError('CHROME_UNAVAILABLE', '앱 전용 Chrome에서도 PDF를 확보하지 못했습니다. 원문 페이지에서 직접 내려받거나 재시도하세요.');
@@ -182,6 +237,6 @@ export class ChromeDownloads implements BrowserRetrieval {
         await delay(pollMs, undefined, {signal:itemSignal});
       }
     } catch (error) { itemSignal.throwIfAborted(); throw error; }
-    finally { await tab.reset().catch(() => {}); }
+    finally { clearTimeout(hardStop); await tab.reset().catch(() => {}); }
   }
 }
