@@ -20,6 +20,9 @@ Library schema stays at 3. Written sections live in the library (`genealogy_stat
 - `claude.test.ts`: a stopped answer followed by the rewrite (complete returns the rewrite with the notice; stream stops with the reason), a stop before any text (stream shows only the rewrite), and an answer left stopped (fails with the reason and removes request files).
 - `genealogy-llm.test.ts`: a stopped answer is `AI_REFUSAL` after one call, and rewrite notices reach the caller.
 - `genealogy-write.test.ts`: one of three sections stopped. The other two are written, with one call per section, and the job fails with the message above. `이어서 진행` then writes only that section and leaves the earlier sections' text and rewrite counts unchanged.
+- Typecheck and lint passed. Integration suite on macOS after a full build: **313 passed, 0 failed** across 35 files.
+- Packaged app: the DMG's checksum is valid and strict signature verification passed for the DMG's app and for the bundle inside the `.tar.zst` (0.3.25, bundle hash `3gyx7skv3yzsu`, 242 files). The packaged smoke test passed on the extracted bundle with a restricted PATH. The service contains `model_refusal_fallback` and `AI_REFUSAL`.
+- Not checked: a full genealogy write in the installed app, and AI 대화 with a stopped answer on a real account.
 
 ## Known issues
 
@@ -29,6 +32,8 @@ Library schema stays at 3. Written sections live in the library (`genealogy_stat
 
 ## Installation
 
-- Not installed yet.
+- Not installed yet. `/Applications/ResearchBunny.app` is still 0.3.23.
+
+Artifacts, built from `6e4ce18`: `out/electrobun/stable-macos-arm64-ResearchBunny.dmg` (SHA-256 `486963a5…a2b5e14c`) and `out/electrobun/stable-macos-arm64-ResearchBunny.app.tar.zst` (`d1edfe03…7ec804ae`), also copied to the main checkout's `out/electrobun`. Local validation logs are under `.qa/release-0.3.25/`.
 
 Local ad-hoc signing on macOS Apple Silicon; no Developer ID signing or Apple notarization.
