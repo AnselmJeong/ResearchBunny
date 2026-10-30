@@ -48,8 +48,7 @@ import { PASSAGE_FILE, openPassageStore, type PassageStore } from "./passages/st
 import { PassageIndexer, vectorModel } from "./passages/indexer";
 import { PassageSearch } from "./passages/search";
 import { SHELF_ALL } from "../shared/shelf";
-import { ShelfSorter, logDeletion } from "./shelf/sorter";
-import { rootOnline } from "./shelf/scanner";
+import { ShelfSorter } from "./shelf/sorter";
 import { searchEvidence, type SearchKeys } from "./chat/search";
 import type { ChatSource } from "../shared/chat";
 export class Service {
@@ -173,38 +172,17 @@ export class Service {
       tools: genealogyTools,
     });
   }
-  /** Downloads and imports are stored in the shelf inbox: refuse to start while a configured shelf is offline. */
   /**
-   * Permanent deletion takes the papers' shelf PDFs out of the app, in every
-   * folder, so the shelf never lists them again. By default (`keep`) the PDFs
-   * stay on disk and are only hidden; `delete` deletes them from disk. Files go
-   * first there: a paper whose PDF cannot be deleted stays in the trash.
+   * Permanent deletion drops only what this project keeps about the papers.
+   * The shelf is app-wide: its PDFs stay on disk and in every shelf list, and
+   * a paper with a shelf PDF keeps its record for the shelf.
    */
-  private async deleteTrash(projectId: string, selected: string[] | undefined, pdfs: "keep" | "delete"): Promise<TrashDeletion> {
+  private deleteTrash(projectId: string, selected: string[] | undefined): TrashDeletion {
     const ids = trashTargets(this.db, projectId, selected);
-    const files = this.shelf.filesOf(ids);
-    if (!files.length) return { ...deleteTrashedWorks(this.db, projectId, ids), shelf: { deleted: [], hidden: [], failed: [] } };
-    // Hiding never touches the disk, so an offline shelf does not stop it.
-    if (pdfs === "keep")
-      return this.shelf.hold(async () => this.db.transaction(() => {
-        const result = deleteTrashedWorks(this.db, projectId, ids);
-        return { ...result, shelf: { deleted: [], hidden: this.shelf.hide(files), failed: [] } };
-      }));
-    const root = this.shelf.root()!;
-    if (!(await rootOnline(root.path)))
-      throw new AppError("SHELF_OFFLINE", `서고(${root.path})가 연결되지 않아 서고 PDF를 지울 수 없습니다. NAS를 연결한 뒤 영구 삭제하세요.`);
-    return this.shelf.hold(async () => {
-      const { deleted, failed } = await this.shelf.unlinkFiles(files);
-      const kept = new Set(failed.flatMap((f) => this.shelf.owners(f.row, ids)));
-      const result = deleteTrashedWorks(this.db, projectId, ids.filter((id) => !kept.has(id)));
-      this.shelf.drop(deleted.map((f) => f.id));
-      await logDeletion(root.path, deleted.filter((f) => f.status !== "missing").map((f) => f.rel_path)).catch(() => false);
-      return {
-        ...result,
-        shelf: { deleted: deleted.map((f) => f.rel_path), hidden: [], failed: failed.map((f) => ({ relPath: f.row.rel_path, reason: f.reason })) },
-      };
-    });
+    const shelfFiles = this.shelf.filesOf(ids);
+    return { ...deleteTrashedWorks(this.db, projectId, ids), shelfFiles };
   }
+  /** Downloads and imports are stored in the shelf inbox: refuse to start while a configured shelf is offline. */
   private async shelfWritable() {
     if (this.shelf.root()) await this.shelf.writableRoot();
   }
@@ -388,12 +366,10 @@ export class Service {
         return this.deleteTrash(
           args.projectId,
           args.target.kind === "selected" ? args.target.ids : undefined,
-          // The safe choice also when a caller skips the schema default.
-          args.pdfs === "delete" ? "delete" : "keep",
         );
       case "previewTrashDeletion": {
         const ids = trashTargets(this.db, args.projectId, args.target.kind === "selected" ? args.target.ids : undefined);
-        return { count: ids.length, shelfFiles: this.shelf.filesOf(ids).filter((f) => f.status !== "missing").map((f) => f.rel_path) };
+        return { count: ids.length, shelfFiles: this.shelf.filesOf(ids) };
       }
       case "editWork": {
         const work = this.db.edit(args.workId, args.patch);
@@ -923,7 +899,7 @@ export class Service {
         }
         try {
           const { work, existing } = this.db.upsert(entry.work);
-          this.db.ensureMembership(args.projectId, work.id);
+          this.db.reimport(args.projectId, work.id);
           if (args.collectionId)
             this.db.db
               .prepare("INSERT OR IGNORE INTO collection_works VALUES(?,?)")

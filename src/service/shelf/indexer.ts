@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, lstat, readdir, rename, rm, stat, unlink } from "node:fs/promises";
+import { copyFile, lstat, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { Library } from "../db/database";
 import type { OpenAlex } from "../providers/openalex";
@@ -1204,51 +1204,19 @@ export class Shelf {
 
   // ---- permanent deletion ----
   /**
-   * The current root's files of these works, missing ones included. Hidden
-   * files have no work; they count when they were hidden from one of these
-   * works, or one of them still links to them.
+   * The current root's PDFs of these works, or that they link to, still on
+   * disk. Deleting papers from a project never touches them: the shelf is
+   * app-wide.
    */
-  filesOf(workIds: string[]): FileRow[] {
+  filesOf(workIds: string[]): string[] {
     const root = this.root();
     if (!root || !workIds.length) return [];
     const list = JSON.stringify(workIds), each = "(SELECT value FROM json_each(?))";
-    return this.db.db.prepare(
-      `SELECT * FROM shelf_files WHERE root_id=? AND (work_id IN ${each} OR (status='hidden' AND (json_extract(info,'$.hidden.workId') IN ${each} OR id IN (SELECT json_extract(data,'$.shelfFileId') FROM attachments WHERE work_id IN ${each})))) ORDER BY rel_path`,
-    ).all(root.id, list, list, list) as FileRow[];
+    return (this.db.db.prepare(
+      `SELECT rel_path FROM shelf_files WHERE root_id=? AND status NOT IN ('missing','hidden') AND (work_id IN ${each} OR id IN (SELECT json_extract(data,'$.shelfFileId') FROM attachments WHERE work_id IN ${each})) ORDER BY rel_path`,
+    ).all(root.id, list, list) as { rel_path: string }[]).map((row) => row.rel_path);
   }
-  /** The works among `workIds` a file belongs to, as `filesOf` found it. */
-  owners(row: FileRow, workIds: string[]): string[] {
-    if (row.work_id) return [row.work_id];
-    const from = parseInfo(row).hidden?.workId;
-    return workIds.filter((id) => id === from || this.db.attachments(id).some((a) => a.shelfFileId === row.id));
-  }
-  /**
-   * Take files out of the app without touching the disk. Each row stays, so
-   * scans still recognise the PDF, but it loses its work and is never listed
-   * again. Attachments that other papers keep still open the PDF; works nothing
-   * else uses leave the library. Returns the hidden files still on disk.
-   */
-  hide(rows: FileRow[]): string[] {
-    const works = new Set<string>(), hidden: string[] = [];
-    this.db.transaction(() => {
-      for (const row of rows) {
-        if (row.status === "hidden" || !row.work_id) continue;
-        const { error: _, ...info } = parseInfo(row) as ShelfFileInfo & { statusBeforeMissing?: ShelfStatus };
-        const missing = row.status === "missing";
-        const was = missing ? info.statusBeforeMissing || "provisional" : row.status;
-        // A missing file stays missing, and comes back hidden if it reappears.
-        const next = { ...info, hidden: { workId: row.work_id, status: was, at: now() }, ...(missing ? { statusBeforeMissing: "hidden" as const } : {}) };
-        this.db.db.prepare("UPDATE shelf_files SET work_id=NULL,status=?,info=? WHERE id=?").run(missing ? "missing" : "hidden", JSON.stringify(next), row.id);
-        works.add(row.work_id);
-        if (!missing) hidden.push(row.rel_path);
-      }
-      for (const work of works) this.dropWorkIfOrphan(work);
-      this.db.touch();
-    });
-    this.revision++;
-    return hidden;
-  }
-  /** The app obtained a hidden PDF again: its files (copies included) return as this work's. */
+  /** The app obtained a PDF that an older version hid (0.3.5–0.3.21 deletions): its files (copies included) return as this work's. */
   private unhide(hash: string, workId: string) {
     const root = this.root();
     if (!root) return;
@@ -1262,41 +1230,6 @@ export class Shelf {
         .run(workId, own?.workId === workId ? own.id : null, JSON.stringify({ ...info, resolution: { method: "app", at: now() } } satisfies ShelfFileInfo), row.id);
     }
     this.ftsRefresh(workId);
-    this.revision++;
-  }
-  /** Delete these PDFs from disk; run inside `hold`. A file that is already gone counts as deleted. */
-  async unlinkFiles(rows: FileRow[]) {
-    const root = this.root();
-    if (!root) throw new AppError("SHELF_CONFIG", "서고를 먼저 연결하세요.");
-    const deleted: FileRow[] = [], failed: { row: FileRow; reason: string }[] = [];
-    for (const row of rows) {
-      const path = join(root.path, row.rel_path);
-      const info = await lstat(path).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? null : error);
-      if (info instanceof Error) failed.push({ row, reason: `파일을 확인하지 못했습니다 (${(info as NodeJS.ErrnoException).code || "unknown"}).` });
-      else if (info && !info.isFile()) failed.push({ row, reason: "PDF 파일이 아닙니다." });
-      else if (!info) deleted.push(row);
-      else await unlink(path).then(
-        () => deleted.push(row),
-        (error: NodeJS.ErrnoException) => error.code === "ENOENT" ? deleted.push(row) : failed.push({ row, reason: `지우지 못했습니다 (${error.code || "unknown"}).` }),
-      );
-    }
-    return { deleted, failed };
-  }
-  /** Take deleted files out of the index with every attachment made from them; works nothing else uses go too. */
-  drop(fileIds: string[]) {
-    if (!fileIds.length) return;
-    this.db.transaction(() => {
-      const works = new Set<string>();
-      for (const id of fileIds) {
-        const row = this.file(id);
-        if (!row) continue;
-        this.db.db.prepare("DELETE FROM attachments WHERE id=? OR json_extract(data,'$.shelfFileId')=?").run(row.attachment_id || "", id);
-        this.db.db.prepare("DELETE FROM shelf_files WHERE id=?").run(id);
-        if (row.work_id) works.add(row.work_id);
-      }
-      for (const work of works) this.dropWorkIfOrphan(work);
-      this.db.touch();
-    });
     this.revision++;
   }
 

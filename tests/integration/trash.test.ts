@@ -254,8 +254,38 @@ test("deletion command validates scope and refuses while jobs run", async () => 
         projectId,
         target: { kind: "all" },
       }),
-      { ids: [work.id], shelf: { deleted: [], hidden: [], failed: [] } },
+      { ids: [work.id], shelfFiles: [] },
     );
+  } finally {
+    service.db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("importing a paper again returns it to the review queue from the trash, the excluded list or a cleared queue; archived papers stay", async () => {
+  const root = await mkdtemp(join(tmpdir(), "researchbunny-reimport-"));
+  const service = new Service(root, "unused", () => {});
+  try {
+    const p = service.db.projects()[0].id;
+    const bib = (key: string, title: string) => `@article{${key}, title={${title}}, author={Doe, Jane}, year={2020}, doi={10.1000/${key}}}`;
+    const papers = ["trashed", "excluded", "cleared", "archived"].map((key) =>
+      service.db.upsert(blankWork({ title: `Paper ${key}`, doi: `10.1000/${key}`, citekey: "" })).work,
+    );
+    const [trashed, excluded, cleared, archived] = papers;
+    service.db.mutate(p, [trashed.id], { screening: "trash" });
+    service.db.mutate(p, [excluded.id], { screening: "excluded" });
+    service.db.mutate(p, [cleared.id], { screening: "pending" });
+    service.db.clearPending(p);
+    service.db.mutate(p, [archived.id], { screening: "included" });
+    const { token } = await service.call("previewBib", { text: papers.map((w) => bib(w.doi!.split("/")[1], w.title)).join("\n") });
+    const result = await service.call("importBib", { projectId: p, token });
+    assert.equal(result.linked, 4);
+    for (const work of [trashed, excluded, cleared])
+      assert.deepEqual(
+        (({ screening, pendingDismissed }) => ({ screening, pendingDismissed }))(service.db.state(p, work.id)),
+        { screening: "pending", pendingDismissed: false },
+      );
+    assert.equal(service.db.state(p, archived.id).screening, "included");
   } finally {
     service.db.close();
     await rm(root, { recursive: true, force: true });

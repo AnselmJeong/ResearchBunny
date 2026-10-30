@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtemp, mkdir, readdir, readFile, stat, rename, rm, copyFile, utimes } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, stat, rename, rm, copyFile, utimes } from "node:fs/promises";
 import { basename, join, resolve, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { Service } from "../../src/service/service";
@@ -659,111 +659,79 @@ test("full-text jobs link shelf PDFs instead of downloading; deletion and merges
   });
 });
 
-test("permanent deletion with pdfs: delete deletes a paper's shelf PDFs in every folder, and trashed papers leave the sidebar counts", async () => {
-  await fixture(async ({ service, dir, projectId, ollama }) => {
+test("permanent deletion drops papers from the project only: shelf PDFs stay on disk and listed, and importing them again starts over", async () => {
+  await fixture(async ({ service, dir, projectId, ollama, root }) => {
     await configure(service, dir, ollama.url);
     const lost = fileOf(service, LOST)!, smith = fileOf(service, SMITH)!, kim = fileOf(service, KIM)!;
     const other = service.db.createProject("다른 프로젝트", "").id;
     service.db.mutate(other, [smith.work_id], { screening: "included" });
     // A paper in this project's trash leaves its counts, as it already leaves its lists; other projects still count it.
     service.db.mutate(projectId, [lost.work_id, smith.work_id, kim.work_id], { screening: "trash" });
-    const counted = service.shelf.summary(projectId);
-    expect(counted).toMatchObject({ inbox: 1, review: 1, total: 2 });
-    expect(counted.folders.find((f) => f.name === "01 Domain A")!.count).toBe(0);
+    expect(service.shelf.summary(projectId)).toMatchObject({ inbox: 1, review: 1, total: 2 });
     expect(list(service, projectId, "shelf", SHELF_INBOX).total).toBe(1);
     expect(service.shelf.summary(other)).toMatchObject({ inbox: 2, review: 2, total: 5 });
-
-    // The confirmation names every shelf PDF of the papers, the copy in another folder included.
-    const preview = await service.call("previewTrashDeletion", { projectId, target: { kind: "selected", ids: [lost.work_id, smith.work_id] } });
-    expect(preview.count).toBe(2);
-    expect(preview.shelfFiles.sort()).toEqual([SMITH, COPY, LOST].sort());
-
-    // An unmounted share refuses the deletion and changes nothing.
-    await rename(dir, dir + "-offline");
-    await expect(service.call("deleteTrashedWorks", { projectId, target: { kind: "all" }, pdfs: "delete" })).rejects.toThrow(/NAS/);
-    await rename(dir + "-offline", dir);
-    expect(service.db.counts(projectId).trash).toBe(3);
-
-    // A PDF that cannot be deleted keeps its paper in the trash.
-    await rm(join(dir, KIM));
-    await mkdir(join(dir, KIM));
-    const gone = (rel: string) => stat(join(dir, rel)).then(() => false, () => true);
-    const result = await service.call("deleteTrashedWorks", { projectId, target: { kind: "all" }, pdfs: "delete" });
-    await service.shelf.wait();
-    expect(result.ids.sort()).toEqual([lost.work_id, smith.work_id].sort());
-    expect(result.shelf.deleted.sort()).toEqual([SMITH, COPY, LOST].sort());
-    expect(result.shelf.hidden).toEqual([]);
-    expect(result.shelf.failed).toEqual([{ relPath: KIM, reason: "PDF 파일이 아닙니다." }]);
-    for (const rel of [SMITH, COPY, LOST]) {
-      expect(await gone(rel)).toBe(true);
-      expect(fileOf(service, rel)).toBeUndefined();
-    }
-    expect(service.db.counts(projectId).trash).toBe(1);
-
-    // A paper nothing else uses leaves the library; one another project keeps loses only its PDF.
-    expect(service.db.db.prepare("SELECT 1 FROM works WHERE id=?").get(lost.work_id)).toBeNull();
-    expect(service.db.get(smith.work_id).doi).toBe("10.1000/intero");
-    expect(service.db.attachments(smith.work_id)).toHaveLength(0);
-    // Left for the other project: Park and the supplement (Kim's PDF became a folder, so the rescan marks it missing).
-    expect(service.shelf.summary(other)).toMatchObject({ inbox: 1, total: 2 });
-
-    // The rescan after deleting brings nothing back, and the intake ledger records the deletion.
-    expect(list(service, projectId, "shelf", SHELF_ALL).works.map((w) => w.id)).not.toContain(smith.work_id);
-    const [logName] = await readdir(join(dir, "_system", "logs"));
-    expect(await readFile(join(dir, "_system", "logs", logName), "utf8")).toContain(`- (deleted) ${LOST}\n`);
-    const index = JSON.parse(await readFile(join(dir, "index.json"), "utf8"));
-    expect(index.files[basename(COPY)]).toBeUndefined();
-    expect(index.files[basename(PARK)]).toEqual({ category: "02 Domain B" });
-  });
-});
-
-test("permanent deletion keeps shelf PDFs on disk by default and hides them from the app until the same PDF is stored again", async () => {
-  await fixture(async ({ service, dir, projectId, ollama, root }) => {
-    await configure(service, dir, ollama.url);
-    const lost = fileOf(service, LOST)!, smith = fileOf(service, SMITH)!;
-    const other = service.db.createProject("다른 프로젝트", "").id;
-    service.db.mutate(other, [smith.work_id], { screening: "included" });
-    service.db.mutate(projectId, [lost.work_id, smith.work_id], { screening: "trash" });
+    service.db.mutate(projectId, [kim.work_id], { screening: "included" });
     const before = await listing(dir);
-    const preview = await service.call("previewTrashDeletion", { projectId, target: { kind: "all" } });
-    expect(preview.shelfFiles.sort()).toEqual([SMITH, COPY, LOST].sort());
 
-    // No option means keep. Hiding needs no disk access, so an unmounted share does not stop it.
+    // The confirmation names the papers' shelf PDFs, the copy in another folder included, to say they stay.
+    const preview = await service.call("previewTrashDeletion", { projectId, target: { kind: "all" } });
+    expect(preview).toEqual({ count: 2, shelfFiles: [COPY, LOST, SMITH].sort() });
+
+    // Nothing reaches the disk, so an unmounted share does not stop it.
     await rename(dir, dir + "-offline");
     const result = await service.call("deleteTrashedWorks", { projectId, target: { kind: "all" } });
-    await service.shelf.wait();
     await rename(dir + "-offline", dir);
     expect(result.ids.sort()).toEqual([lost.work_id, smith.work_id].sort());
-    expect(result.shelf).toEqual({ deleted: [], hidden: [COPY, SMITH, LOST].sort(), failed: [] });
+    expect(result.shelfFiles).toEqual(preview.shelfFiles);
     expect(service.db.counts(projectId).trash).toBe(0);
-    for (const rel of [SMITH, COPY, LOST]) expect(fileOf(service, rel)).toMatchObject({ status: "hidden", work_id: null });
+    for (const id of [lost.work_id, smith.work_id])
+      expect(service.db.db.prepare("SELECT 1 FROM project_works WHERE project_id=? AND work_id=?").get(projectId, id)).toBeNull();
 
-    // Nothing on disk changed, and a rescan lists none of them again in any project.
+    // The shelf is untouched: same files, same records, listed again in this project and still in the other.
     await service.call("shelfControl", { action: "scan" });
     await service.shelf.wait();
     expect(await listing(dir)).toEqual(before);
+    for (const [rel, row] of [[SMITH, smith], [COPY, fileOf(service, COPY)!], [LOST, lost]] as const)
+      expect(fileOf(service, rel)).toMatchObject({ id: row.id, status: row.status, work_id: row.work_id });
+    expect(service.shelf.counts().statuses.hidden).toBe(0);
     for (const project of [projectId, other])
-      for (const scope of [SHELF_ALL, SHELF_INBOX])
-        expect(list(service, project, "shelf", scope).works.filter((w) => w.id === lost.work_id || w.id === smith.work_id)).toEqual([]);
-    expect(service.shelf.summary(other)).toMatchObject({ inbox: 1, total: 3 });
-    expect(service.shelf.counts().statuses.hidden).toBe(3);
-    expect(service.sorter.view().inbox).toBe(1);
-    expect((await service.call("shelfSearch", { projectId: other, query: "interoceptive", limit: 5 })).hits.map((h: { workId: string }) => h.workId)).not.toContain(smith.work_id);
-    expect(service.db.db.prepare("SELECT count(*) AS n FROM shelf_fts WHERE work_id=?").get(smith.work_id)).toEqual({ n: 0 });
+      expect(list(service, project, "shelf", SHELF_ALL).works.map((w) => w.id)).toEqual(expect.arrayContaining([lost.work_id, smith.work_id]));
+    expect(service.shelf.summary(projectId)).toMatchObject({ inbox: 2, review: 2, total: 5 });
+    expect(service.db.get(lost.work_id).title).toContain("gardening");
+    expect(service.db.attachments(smith.work_id)).toMatchObject([{ shelfFileId: smith.id }]);
+    expect((await service.call("shelfSearch", { projectId, query: "interoceptive", limit: 5 })).hits[0].workId).toBe(smith.work_id);
 
-    // A paper nothing else uses leaves the library; the other project keeps its paper and can still open the PDF.
-    expect(service.db.db.prepare("SELECT 1 FROM works WHERE id=?").get(lost.work_id)).toBeNull();
-    expect(service.db.attachments(smith.work_id)).toMatchObject([{ shelfFileId: smith.id, path: join(dir, SMITH) }]);
-    expect(await hasValidPdf(service.db, smith.work_id)).toBe(true);
+    // Importing the PDFs again starts over: a deleted paper joins as new, a trashed one leaves the trash. No second copy is stored.
+    service.db.mutate(projectId, [smith.work_id], { screening: "trash" });
+    const again = [join(root, "again/lost.pdf"), join(root, "again/smith.pdf")];
+    await mkdir(join(root, "again"));
+    await copyFile(join(dir, LOST), again[0]);
+    await copyFile(join(dir, SMITH), again[1]);
+    const run: Run = await service.call("pdfImport", { projectId, paths: again, options: { mode: "managed" } });
+    while (service.pdf.active.size) await Bun.sleep(10);
+    for (const id of [lost.work_id, smith.work_id])
+      expect(service.db.state(projectId, id)).toMatchObject({ screening: "pending", pendingDismissed: false });
+    const items = await service.call("importItems", { runId: run.id }) as { name: string; status: string; message: string; workId: string }[];
+    expect(items.map((i) => [i.workId, i.status, i.message.endsWith("휴지통에서 되돌림")]).sort()).toEqual([[lost.work_id, "completed", false], [smith.work_id, "completed", true]].sort());
+    expect(list(service, projectId, "pending").works.map((w) => w.id)).toEqual(expect.arrayContaining([lost.work_id, smith.work_id]));
+    expect(await listing(dir)).toEqual(before);
+    // An archived paper imported again stays archived.
+    expect(service.db.reimport(projectId, kim.work_id)).toBeNull();
+    expect(service.db.state(projectId, kim.work_id).screening).toBe("included");
+  });
+});
 
-    // A hidden PDF moved on disk stays hidden, and the other project's link follows it.
-    const filed = "02 Domain B/2024 - Smith et al. - Interoceptive prediction errors in anxiety.pdf";
-    await rename(join(dir, SMITH), join(dir, filed));
+test("a shelf PDF an older version hid from the app returns when the same PDF is stored again", async () => {
+  await fixture(async ({ service, dir, projectId, ollama, root }) => {
+    await configure(service, dir, ollama.url);
+    const lost = fileOf(service, LOST)!;
+    // What 0.3.5–0.3.21 `앱에서만 지우기` left behind: the row without its work.
+    service.db.db.prepare("UPDATE shelf_files SET work_id=NULL,status='hidden',info=json_set(info,'$.hidden',json(?)) WHERE id=?")
+      .run(JSON.stringify({ workId: lost.work_id, status: "provisional", at: new Date().toISOString() }), lost.id);
     await service.call("shelfControl", { action: "scan" });
     await service.shelf.wait();
-    expect(fileOf(service, filed)).toMatchObject({ id: smith.id, status: "hidden", work_id: null });
-    expect(service.db.attachments(smith.work_id)[0].path).toBe(join(dir, filed));
-    expect(list(service, other, "shelf", SHELF_ALL).works.map((w) => w.id)).not.toContain(smith.work_id);
+    expect(fileOf(service, LOST)).toMatchObject({ status: "hidden", work_id: null });
+    expect(list(service, projectId, "shelf", SHELF_ALL).works.map((w) => w.id)).not.toContain(lost.work_id);
 
     // Storing the same bytes again (a new download) shows the hidden file instead of writing a second copy.
     const paper = service.db.upsert(blankWork({ title: "A completely unresolvable gardening manuscript about quantum soil", year: 2020, citekey: "" })).work;
@@ -775,16 +743,6 @@ test("permanent deletion keeps shelf PDFs on disk by default and hides them from
     expect(fileOf(service, LOST)).toMatchObject({ status: "ok", work_id: paper.id });
     expect(await readdir(dir)).not.toContain("2020 - Unknown - A completely unresolvable gardening manuscript about quantum soil.pdf");
     expect(list(service, projectId, "shelf", SHELF_INBOX).works.map((w) => w.id)).toContain(paper.id);
-
-    // Deleting the other project's paper with its PDFs reaches the hidden files it still links to.
-    service.db.mutate(other, [smith.work_id], { screening: "trash" });
-    expect((await service.call("previewTrashDeletion", { projectId: other, target: { kind: "all" } })).shelfFiles.sort()).toEqual([filed, COPY].sort());
-    const deleted = await service.call("deleteTrashedWorks", { projectId: other, target: { kind: "all" }, pdfs: "delete" });
-    await service.shelf.wait();
-    expect(deleted.shelf.deleted.sort()).toEqual([filed, COPY].sort());
-    expect(fileOf(service, filed)).toBeUndefined();
-    expect(fileOf(service, COPY)).toBeUndefined();
-    expect(await stat(join(dir, filed)).then(() => true, () => false)).toBe(false);
   });
 });
 

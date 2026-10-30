@@ -59,8 +59,8 @@ export function purgeUnreferencedWorks(db: Library, ids: Iterable<string>, refer
   return purged;
 }
 
-// Removal is project-scoped and keeps shared records. Shelf PDFs are deleted
-// beforehand by the service; any other PDF file is preserved.
+// Removal is project-scoped and keeps shared records, shelf papers included.
+// No PDF file is touched.
 export function deleteTrashedWorks(
   db: Library,
   projectId: string,

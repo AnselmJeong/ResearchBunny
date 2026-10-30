@@ -385,6 +385,10 @@ export class PdfImports {
                 exists: true,
               });
             }
+            // Attaching a PDF to a chosen paper leaves its screening alone.
+            const left = !job.matchExistingOnly && !job.workId && this.db.reimport(run.projectId, work!.id);
+            if (left === "trash") status += " · 휴지통에서 되돌림";
+            else if (left === "excluded") status += " · 제외 문헌에서 되돌림";
             let collectionId = job.collectionId;
             if (job.mapFolders) {
               const name = basename(dirname(path));

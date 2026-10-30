@@ -367,6 +367,19 @@ export class Library {
       .prepare("INSERT OR IGNORE INTO project_works VALUES(?,?,?)")
       .run(projectId, workId, JSON.stringify(defaultState()));
   }
+  /**
+   * Membership for an import the user started: importing a paper again asks
+   * for it again, so one this project trashed, excluded or cleared from the
+   * review queue returns to it. Archived papers stay. Returns the screening
+   * it left, if any.
+   */
+  reimport(projectId: string, workId: string): LibraryState["screening"] | null {
+    this.ensureMembership(projectId, workId);
+    const { screening, pendingDismissed } = this.state(projectId, workId);
+    if (screening === "included" || (screening === "pending" && !pendingDismissed)) return null;
+    this.mutate(projectId, [workId], { screening: "pending" }, false);
+    return screening;
+  }
   state(projectId: string, workId: string): LibraryState {
     const row = this.db
       .prepare(
