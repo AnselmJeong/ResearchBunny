@@ -80,8 +80,8 @@ export const filtersSchema = z.object({
   hideExcluded: z.boolean(),
   hideRetracted: z.boolean(),
   shelf: z.enum(["all", "hide", "only"]).optional(),
-  /** Lists the papers the other filters leave out instead of the ones they keep. */
-  filteredOut: z.boolean().optional(),
+  /** 조건 반전 (NOT): lists the papers that fail the conditions instead of the ones that meet them. */
+  negate: z.boolean().optional(),
 });
 const metadata = z
   .object({

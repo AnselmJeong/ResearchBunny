@@ -940,7 +940,7 @@ small {
 .filter-panel > p {
   font-size: 12px;
 }
-.hidden-banner {
+.filter-status {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -951,40 +951,23 @@ small {
   font-size: 12px;
   border-bottom: 1px solid var(--border);
 }
-.hidden-banner-actions {
+.filter-status strong {
+  color: var(--text);
+}
+.filter-status-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 0 14px;
   flex-shrink: 0;
 }
-.hidden-banner .text-button {
+.filter-status .text-button {
   font-size: 12px;
   min-height: 20px;
 }
-/* What the filters leave out, reason by reason, before it leaves the collection. */
-.uncollect-reasons {
-  list-style: none;
-  margin: 14px 0;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 13px;
-}
-.uncollect-reasons li {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 7px 12px;
-  overflow-wrap: anywhere;
-}
-.uncollect-reasons li + li {
-  border-top: 1px solid var(--border);
-}
-.uncollect-reasons li > span:last-child {
-  flex-shrink: 0;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
+.filter-status .text-button[aria-pressed="true"] {
+  color: var(--accent);
+  font-weight: 600;
 }
 .selection-bar {
   display: flex;

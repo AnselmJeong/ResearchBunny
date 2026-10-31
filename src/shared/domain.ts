@@ -262,7 +262,32 @@ export function relatedness(
     }),
   );
 }
-export function filterReasons(
+const filterTerms = (value: string) =>
+  value.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+/** The conditions a filter sets, in words; 조건 반전 (NOT) flips these and nothing else. */
+export function filterConditions(filters: Filters): string[] {
+  const conditions: string[] = [];
+  if (filters.relevance)
+    conditions.push(`초기 관심 관련성(${{ strict: "엄격", balanced: "균형", broad: "넓게" }[filters.strictness]})`);
+  if (filters.minCitations > 0) conditions.push(`피인용 ${filters.minCitations}회 이상`);
+  const { yearFrom: from, yearTo: to } = filters;
+  if (from !== null || to !== null)
+    conditions.push(from !== null && to !== null ? `${from}–${to}년` : from !== null ? `${from}년부터` : `${to}년까지`);
+  if (!filters.unknownYear) conditions.push("연도 있는 문헌");
+  if (filters.types.length) conditions.push(`유형 ${filters.types.join(", ")}`);
+  const include = filterTerms(filters.include), exclude = filterTerms(filters.exclude);
+  if (include.length) conditions.push(`포함어 ${include.join(", ")}`);
+  if (exclude.length) conditions.push(`제외어 ${exclude.join(", ")}`);
+  if (filters.minShared !== 2) conditions.push(`공통 연결 ${filters.minShared} 이상`);
+  if (filters.hasAbstract) conditions.push("초록 있음");
+  if (filters.hasPdf) conditions.push("보관 PDF");
+  if (filters.openAccess) conditions.push("OA 링크");
+  if (filters.shelf === "hide") conditions.push("서고에 없는 논문");
+  if (filters.shelf === "only") conditions.push("서고에 있는 논문");
+  return conditions;
+}
+/** Why a paper fails the filter's conditions. */
+export function conditionReasons(
   w: WorkView,
   filters: Filters,
   evidence?: Evidence,
@@ -283,27 +308,13 @@ export function filterReasons(
     reasons.push("출판 기간 밖");
   if (filters.types.length && !filters.types.includes(w.type))
     reasons.push("문헌 유형");
-  for (const term of filters.include
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean))
+  for (const term of filterTerms(filters.include))
     if (!text.includes(term)) reasons.push(`포함어 없음: ${term}`);
-  for (const term of filters.exclude
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean))
+  for (const term of filterTerms(filters.exclude))
     if (text.includes(term)) reasons.push(`제외어: ${term}`);
-  if (filters.reading && w.state.reading !== filters.reading)
-    reasons.push("읽기 상태 불일치");
   if (filters.hasAbstract && !w.abstract) reasons.push("초록 없음");
   if (filters.hasPdf && !w.attachmentCount) reasons.push("보관 PDF 없음");
   if (filters.openAccess && !w.oaUrl) reasons.push("OA 링크 없음");
-  if (filters.hideSaved && w.state.screening === "included")
-    reasons.push("이미 저장됨");
-  if (filters.hideExcluded && w.state.screening === "excluded")
-    reasons.push("사용자 제외");
-  if (filters.hideRetracted && w.retracted && w.state.screening !== "included")
-    reasons.push("철회 표시");
   if (filters.shelf === "hide" && w.shelf?.match === "identity")
     reasons.push("서고 보유");
   if (filters.shelf === "only" && w.shelf?.match !== "identity")
@@ -323,6 +334,26 @@ export function filterReasons(
   )
     reasons.push("공통 연결수 미달");
   return reasons;
+}
+/** Why the view leaves a paper out whatever the conditions say: the reading tab and the 숨김 options. */
+export function viewReasons(w: WorkView, filters: Filters): string[] {
+  const reasons: string[] = [];
+  if (filters.reading && w.state.reading !== filters.reading)
+    reasons.push("읽기 상태 불일치");
+  if (filters.hideSaved && w.state.screening === "included")
+    reasons.push("이미 저장됨");
+  if (filters.hideExcluded && w.state.screening === "excluded")
+    reasons.push("사용자 제외");
+  if (filters.hideRetracted && w.retracted && w.state.screening !== "included")
+    reasons.push("철회 표시");
+  return reasons;
+}
+export function filterReasons(
+  w: WorkView,
+  filters: Filters,
+  evidence?: Evidence,
+): string[] {
+  return [...conditionReasons(w, filters, evidence), ...viewReasons(w, filters)];
 }
 export function safeWebUrl(value: string | null): string | null {
   try {

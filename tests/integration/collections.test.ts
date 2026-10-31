@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Service } from "../../src/service/service";
 import { deleteTrashedWorks } from "../../src/service/db/trash";
-import { blankWork } from "../../src/shared/domain";
+import { blankWork, filterConditions } from "../../src/shared/domain";
 import { DEFAULT_FILTERS } from "../../src/shared/types";
 import { schemas } from "../../src/shared/contracts";
 
@@ -48,7 +48,7 @@ test("taking papers out of a collection leaves the archive and other collections
   assert.deepEqual(members(service, topic.id), [a, b, c].sort());
 }));
 
-test("a filtered-out list shows what the filters leave out, with every id and each reason's count", () => fixture(async service => {
+test("a filter lists what meets its conditions, 조건 반전 lists what fails them, and 제외 never hides a collection's papers", () => fixture(async service => {
   const db = service.db, projectId = db.projects()[0].id;
   const works = [
     { title: "Synaptic plasticity after psilocybin", year: 2022 },
@@ -56,36 +56,53 @@ test("a filtered-out list shows what the filters leave out, with every id and ea
     { title: "Ketamine and mood", year: 2023 },
     { title: "Serotonin receptors", year: 2005 },
   ].map(w => db.upsert(blankWork(w)).work.id);
+  const marked = db.upsert(blankWork({ title: "Plasticity marked excluded in review", year: 2020 })).work.id;
   const trashed = db.upsert(blankWork({ title: "Trashed plasticity paper", year: 2021 })).work.id;
   const collection = db.createCollection(projectId, "Psychedelics");
-  await service.call("collectionMembers", { projectId, collectionId: collection.id, ids: [...works, trashed] });
+  await service.call("collectionMembers", { projectId, collectionId: collection.id, ids: [...works, marked, trashed] });
+  db.mutate(projectId, [marked], { screening: "excluded" });
   db.mutate(projectId, [trashed], { screening: "trash" });
-  const filters = { ...DEFAULT_FILTERS, include: "plasticity", yearFrom: 2015 };
-  const list = (extra = {}) => db.list(schemas.list.parse({ projectId, scope: "collection", scopeId: collection.id, filters: { ...filters, ...extra }, limit: 1 }));
+  const list = (filters: Partial<typeof DEFAULT_FILTERS> = {}) =>
+    db.list(schemas.list.parse({ projectId, scope: "collection", scopeId: collection.id, filters: { ...DEFAULT_FILTERS, ...filters }, limit: 1 }));
+  const sorted = (ids: string[]) => [...ids].sort();
 
-  const kept = list();
-  assert.deepEqual(kept.ids, [works[0]]);
-  assert.equal(kept.hidden, 3);
-  // Every page: the ids reach past the one-paper page.
-  assert.deepEqual([...kept.hiddenIds].sort(), [works[1], works[2], works[3]].sort());
-  assert.deepEqual([...kept.hiddenBy].sort((x, y) => x.reason.localeCompare(y.reason)), [
-    { reason: "출판 기간 밖", count: 2 },
-    { reason: "포함어 없음: plasticity", count: 2 },
-  ]);
+  // No conditions: every paper in the collection, the one marked 제외 included; only the trash stays out.
+  const plain = list();
+  assert.deepEqual(sorted(plain.ids), sorted([...works, marked]));
+  assert.equal(plain.hidden, 0);
+  assert.equal(plain.scoped, 5);
 
-  const out = list({ filteredOut: true });
-  assert.equal(out.total, 3);
-  assert.equal(out.works.length, 1);
-  assert.deepEqual([...out.ids].sort(), [...kept.hiddenIds].sort());
-  assert.deepEqual(out.hiddenIds, kept.hiddenIds);
-  assert.ok(out.works.every(w => w.evidence?.hidden.length));
-  // Trashed members belong to no list but the trash, on either side of the filters.
-  assert.ok(![...kept.ids, ...out.ids].includes(trashed));
+  const conditions = { include: "plasticity", yearFrom: 2015 };
+  assert.deepEqual(filterConditions({ ...DEFAULT_FILTERS, ...conditions }), ["2015년부터", "포함어 plasticity"]);
+  const kept = list(conditions);
+  assert.deepEqual(sorted(kept.ids), sorted([works[0], marked]));
+  assert.equal(kept.total, 2);
+  assert.equal(kept.works.length, 1);
+  assert.equal(kept.scoped, 5);
 
-  // 필터 결과만 남기기: the collection keeps the filter's result.
-  await service.call("collectionMembers", { projectId, collectionId: collection.id, ids: kept.hiddenIds, remove: true });
-  assert.deepEqual(db.list(schemas.list.parse({ projectId, scope: "collection", scopeId: collection.id, filters: DEFAULT_FILTERS })).ids, [works[0]]);
-  assert.equal(list({ filteredOut: true }).total, 0);
+  // NOT over both conditions: the papers that miss either one, on every page, shown like any list.
+  const flipped = list({ ...conditions, negate: true });
+  assert.deepEqual(sorted(flipped.ids), sorted([works[1], works[2], works[3]]));
+  assert.equal(flipped.total, 3);
+  assert.equal(flipped.scoped, 5);
+  assert.ok(flipped.works.every(w => !w.evidence?.hidden.length));
+  // With no condition to flip, NOT is the plain list.
+  assert.deepEqual(sorted(list({ negate: true }).ids), sorted(plain.ids));
+
+  // The reading tab is not a condition: NOT flips the word and keeps the tab.
+  db.mutate(projectId, [works[1], works[2]], { reading: "planned" });
+  assert.deepEqual(list({ include: "plasticity", reading: "planned", negate: true }).ids, [works[2]]);
+
+  // Elsewhere 제외 문헌 숨김 still hides a paper marked 제외, and NOT leaves it hidden.
+  db.mutate(projectId, [marked, works[2], works[3]], { starred: true });
+  const starred = db.list(schemas.list.parse({ projectId, scope: "starred", filters: { ...DEFAULT_FILTERS, include: "ketamine", negate: true } }));
+  assert.deepEqual(starred.ids, [works[3]]);
+  assert.equal(starred.scoped, 2);
+
+  // Filter, flip, take the flipped papers out: the collection keeps what meets the conditions.
+  await service.call("collectionMembers", { projectId, collectionId: collection.id, ids: flipped.ids, remove: true });
+  assert.deepEqual(sorted(list().ids), sorted([works[0], marked]));
+  assert.equal(list({ ...conditions, negate: true }).total, 0);
   assert.equal(db.counts(projectId).archive, 4);
 }));
 

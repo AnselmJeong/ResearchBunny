@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from "react";
 import { filtersSchema } from "../../shared/contracts";
 import type { Filters as FilterValues } from "../../shared/types";
 import { DEFAULT_FILTERS } from "../../shared/types";
+import { filterConditions } from "../../shared/domain";
 // Keep incomplete numeric edits out of list requests and saved navigation.
 function NumericFilter({ field, value, onChange, label, min, max, placeholder, step = 1 }: {
   field: "yearFrom" | "yearTo" | "minCitations" | "minShared";
@@ -52,11 +53,15 @@ function NumericFilter({ field, value, onChange, label, min, max, placeholder, s
 export function Filters({
   value,
   onChange,
+  collection = false,
 }: {
   value: FilterValues;
   onChange: (value: FilterValues) => void;
+  /** A collection lists every paper put in it, so 제외 문헌 숨김 has nothing to hide there. */
+  collection?: boolean;
 }) {
   const [resetVersion, setResetVersion] = useState(0);
+  const conditions = filterConditions(value);
   const set = (key: keyof FilterValues, v: unknown) =>
     onChange({ ...value, [key]: v });
   return (
@@ -161,7 +166,7 @@ export function Filters({
             ["hideExcluded", "제외 문헌 숨김"],
             ["hideRetracted", "철회 후보 숨김"],
           ] as const
-        ).map(([key, label]) => (
+        ).filter(([key]) => !(collection && key === "hideExcluded")).map(([key, label]) => (
           <label key={key} className="check">
             <input
               type="checkbox"
@@ -171,6 +176,23 @@ export function Filters({
             {label}
           </label>
         ))}
+      </div>
+      <div className="filter-row">
+        {/* NOT over every condition above; the 숨김 options and the reading tab stay as they are. */}
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={!!value.negate && conditions.length > 0}
+            disabled={!conditions.length}
+            onChange={(e) => set("negate", e.target.checked)}
+          />
+          조건 반전 (NOT)
+        </label>
+        <span className="subtle">
+          {conditions.length
+            ? "위 조건에 맞지 않는 문헌을 보여 줍니다. 숨김 항목은 뒤집지 않습니다."
+            : "조건을 하나 이상 정하면 뒤집을 수 있습니다."}
+        </span>
         <button
           className="text-button"
           onClick={() => {

@@ -23,7 +23,9 @@ import {
   pmidOf,
   normalizeOpenAlex,
   titleSimilarity,
-  filterReasons,
+  conditionReasons,
+  viewReasons,
+  filterConditions,
   similarityEdges,
   wordMatcher,
   citekeyFor,
@@ -861,19 +863,26 @@ export class Library {
       works = works.filter((w) =>
         matches(`${w.title} ${w.authors.join(" ")} ${w.abstract || ""} ${w.citekey} ${w.state.note} ${w.state.tags.join(" ")}`),
       );
-    let deferred = 0;
-    const kept: WorkView[] = [],
-      hiddenIds: string[] = [],
-      reasonCounts = new Map<string, number>();
+    let deferred = 0,
+      scoped = 0,
+      hidden = 0;
+    const kept: WorkView[] = [];
+    // 조건 반전 needs a condition to flip; with none set the list is the plain one.
+    const negate = !!args.filters.negate && filterConditions(args.filters).length > 0;
     for (const w of works) {
       // Shelf folders and runs list works regardless of project state; trash shows only in its own view.
       // The inbox is the exception: it lists every PDF waiting to be sorted, as its count does.
       if (scope !== "trash" && w.state.screening === "trash" && !(scope === "shelf" && scopeId === "inbox")) continue;
-      const reasons = filterReasons(w, args.filters, w.evidence);
-      if (scope === "trash" || scope === "excluded") {
-        const i = reasons.indexOf("사용자 제외");
-        if (i >= 0) reasons.splice(i, 1);
+      const failed = conditionReasons(w, args.filters, w.evidence),
+        left = viewReasons(w, args.filters);
+      // A collection lists every paper put in it: marking one 제외 in review does not hide it there.
+      if (scope === "trash" || scope === "excluded" || scope === "collection") {
+        const i = left.indexOf("사용자 제외");
+        if (i >= 0) left.splice(i, 1);
       }
+      if (!left.length) scoped++;
+      const shown = !left.length && (negate ? failed.length > 0 : !failed.length);
+      const reasons = shown ? [] : [...(negate ? (failed.length ? [] : ["필터 조건에 맞음 (조건 반전)"]) : failed), ...left];
       const hit = hits.get(w.id);
       if (w.evidence) w.evidence.hidden = reasons;
       else
@@ -894,15 +903,9 @@ export class Library {
           scope: scope === "shelf" ? "서고" : "로컬 아카이브",
         };
       if (w.evidence.deferred) deferred++;
-      if (reasons.length) {
-        hiddenIds.push(w.id);
-        for (const reason of reasons) reasonCounts.set(reason, (reasonCounts.get(reason) || 0) + 1);
-      }
-      // A filtered-out view lists only the papers the filters leave out.
-      if (args.filters.filteredOut ? reasons.length : args.showHidden || !reasons.length) kept.push(w);
+      if (!shown) hidden++;
+      if (shown || args.showHidden) kept.push(w);
     }
-    const hidden = hiddenIds.length;
-    const hiddenBy = [...reasonCounts].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count);
     if (scope === "shelf" && args.sort === "rank" && !search)
       kept.sort((a, b) => (b.year || 0) - (a.year || 0) || a.title.localeCompare(b.title));
     // Shelf matches stay in their own pinned group instead of competing on score.
@@ -949,8 +952,7 @@ export class Library {
         hidden,
         deferred,
         ids: kept.map((w) => w.id),
-        hiddenIds,
-        hiddenBy,
+        scoped,
         edges: citations.filter((e) => drawn.has(e.source) && drawn.has(e.target)),
         graph: { connected: chosen.connected },
         ...(scope === "shelf" ? { subfolders: this.shelfSubfolders(scopeId || "all", page.map((w) => w.id)) } : {}),
@@ -970,8 +972,7 @@ export class Library {
       hidden,
       deferred,
       ids: kept.map((w) => w.id),
-      hiddenIds,
-      hiddenBy,
+      scoped,
       edges: this.edges([...page.map((w) => w.id), ...contextIds]),
     };
   }

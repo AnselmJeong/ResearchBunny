@@ -59,6 +59,7 @@ import type {
   LibraryState,
 } from "../shared/types";
 import { DEFAULT_FILTERS } from "../shared/types";
+import { filterConditions } from "../shared/domain";
 import {
   defaultView,
   restoreNavigation,
@@ -135,8 +136,7 @@ const EMPTY: ListResult = {
   hidden: 0,
   deferred: 0,
   ids: [],
-  hiddenIds: [],
-  hiddenBy: [],
+  scoped: 0,
   edges: [],
 };
 type Scope = Input<"list">["scope"];
@@ -156,7 +156,6 @@ type Dialog =
   | "shelfSort"
   | "shelfFile"
   | "genealogy"
-  | "uncollect"
   | null;
 function Bunny({ size = 27 }: { size?: number }) {
   return (
@@ -248,6 +247,7 @@ export function App() {
     shownGenealogy = useRef<string | null>(null);
   // The inspector follows its list; see anchorInspector.
   const inspectorAnchor = useRef<InspectorAnchor>({ id: null, listed: false, key: "" });
+  const shownFilters = useRef({ view: "", filters: "" });
   const [navigation, setNavigation] = useState(() => restoreNavigation({}));
   const [hydratedProject, setHydratedProject] = useState("");
   const navigationRef = useRef(navigation);
@@ -398,6 +398,16 @@ export function App() {
       const { anchor, drop } = anchorInspector(inspectorAnchor.current, listMembers(result), key);
       inspectorAnchor.current = anchor;
       if (drop) setInspectorId((id) => (id === stale ? null : id));
+      // A changed filter (or 조건 반전) is a new set to pick from: picks it no longer lists are let go,
+      // so no action reaches papers out of sight.
+      const view = `${projectId}:${viewKey({ scope, scopeId })}`,
+        filterKey = JSON.stringify(filters),
+        last = shownFilters.current;
+      shownFilters.current = { view, filters: filterKey };
+      if (last.view === view && last.filters !== filterKey) {
+        const members = listMembers(result);
+        setSelected((current) => current.filter((id) => members.has(id)));
+      }
     };
     const timer = setTimeout(() => {
       if ((scope === "run" || scope === "collection" || scope === "topic") && !scopeId) {
@@ -566,8 +576,12 @@ export function App() {
   const graphScope = graphView && list.total > 0;
   const selectedIds = useMemo(() => new Set(selected), [selected]);
   const listedIds = useMemo(() => new Set(list.ids), [list.ids]);
-  const filteredOutIds = useMemo(() => new Set(list.hiddenIds), [list.hiddenIds]);
-  const filteredOutSelected = selected.filter((id) => filteredOutIds.has(id)).length;
+  const conditions = useMemo(() => filterConditions(filters), [filters]);
+  const negating = !!filters.negate && conditions.length > 0;
+  // 조건 반전 belongs to the conditions: clearing the last one turns it off, so a later condition starts unflipped.
+  useEffect(() => {
+    if (filters.negate && !conditions.length) setFilters((current) => ({ ...current, negate: undefined }));
+  }, [filters.negate, conditions.length]);
   const listedPapers = useMemo(() => listMembers(list), [list]);
   const allPageSelected = list.works.length > 0 &&
     list.works.every((work) => selectedIds.has(work.id));
@@ -586,9 +600,10 @@ export function App() {
         ...list.ids.filter((id) => !picked.has(id)),
       ];
     });
-  const invertHelp = morePages
-    ? "현재 검색·필터에 해당하는 모든 페이지의 문헌에서 선택한 문헌은 해제하고 선택하지 않은 문헌을 선택합니다. 필터에 가려진 문헌의 선택은 바꾸지 않습니다."
-    : "이 목록에서 선택한 문헌은 해제하고 선택하지 않은 문헌을 선택합니다. 필터에 가려진 문헌의 선택은 바꾸지 않습니다.";
+  const invertHelp = (morePages
+    ? "현재 검색·필터에 해당하는 모든 페이지의 문헌에서 선택한 문헌은 해제하고 선택하지 않은 문헌을 선택합니다."
+    : "이 목록에서 선택한 문헌은 해제하고 선택하지 않은 문헌을 선택합니다.") +
+    " 필터 조건에 맞지 않는 문헌을 보려면 필터의 조건 반전(NOT)을 쓰세요.";
   const navigate = (
     next: Scope,
     id = "",
@@ -735,7 +750,7 @@ export function App() {
     ? snapshot?.collections.find((c) => c.id === scopeId)
     : undefined;
   // Only the collection loses them: the archive, other collections and the shelf keep them.
-  const uncollect = (ids: string[], done?: () => void) => {
+  const uncollect = (ids: string[]) => {
     if (busy || !ids.length || !currentCollection) return;
     const collection = currentCollection,
       targetProject = projectId;
@@ -748,7 +763,6 @@ export function App() {
       setNavigation(navigationRef.current);
       const left = new Set(removed);
       setSelected((current) => current.filter((id) => !left.has(id)));
-      done?.();
       flash(removed.length
         ? `‘${collection.name}’에서 ${removed.length}편을 뺐습니다. 아카이브와 서고에는 그대로 있고, 상단 되돌리기로 복원할 수 있습니다.`
         : "선택한 문헌 중 이 컬렉션에 든 문헌이 없습니다.");
@@ -861,7 +875,7 @@ export function App() {
       const nextFilters = {
         ...filters,
         reading: undefined,
-        filteredOut: undefined,
+        negate: undefined,
         relevance: mode === "related" || mode === "ai",
       };
       await task(async () => {
@@ -1830,7 +1844,7 @@ export function App() {
                     onClick={() => setFiltersOpen(!filtersOpen)}
                   >
                     <SlidersHorizontal size={14} />
-                    필터{list.hidden > 0 && <span>{list.hidden}</span>}
+                    필터{conditions.length > 0 && <span>{negating ? "NOT" : conditions.length}</span>}
                   </button>
                   <select
                     aria-label="목록 정렬"
@@ -1898,43 +1912,39 @@ export function App() {
                   </div>
                 )}
                 {filtersOpen && (
-                  <Filters value={filters} onChange={setFilters} />
+                  <Filters value={filters} onChange={setFilters} collection={scope === "collection"} />
                 )}
-                {(list.hidden > 0 || filters.filteredOut) && (
-                  <div className="hidden-banner">
+                {conditions.length > 0 && (
+                  <div className="filter-status">
                     <span>
-                      {filters.filteredOut
-                        ? list.hidden
-                          ? `필터로 제외된 문헌 ${list.hidden}편을 보고 있습니다`
-                          : "필터로 제외된 문헌이 없습니다"
-                        : `필터로 제외된 문헌 ${list.hidden}편`}
-                      {list.deferred
-                        ? ` · 관련성 판단 보류 ${list.deferred}편`
-                        : ""}
-                      {!filters.filteredOut && filteredOutSelected > 0 &&
-                        ` · 선택한 문헌 중 ${filteredOutSelected}편이 여기에 가려 있습니다`}
+                      <strong>{negating ? "NOT" : "필터"}</strong>{" "}
+                      {negating ? `(${conditions.join(" · ")})` : conditions.join(" · ")}
+                      {` → ${negating ? "조건에 맞지 않는" : "조건에 맞는"} 문헌 ${list.total.toLocaleString()}편 / ${list.scoped.toLocaleString()}편`}
+                      {list.deferred ? ` · 관련성 판단 보류 ${list.deferred}편` : ""}
                     </span>
-                    <span className="hidden-banner-actions">
-                      {/* The other side of the filters: what they leave out, each with its reason. */}
+                    <span className="filter-status-actions">
                       <button
                         className="text-button"
+                        aria-pressed={negating}
+                        data-help={negating
+                          ? "조건 반전을 끄고 필터 조건에 맞는 문헌을 다시 봅니다."
+                          : "필터 조건 전체에 NOT을 붙여, 조건에 맞지 않는 문헌만 봅니다. 숨김 항목과 읽기 상태 탭은 뒤집지 않습니다."}
                         onClick={() => {
-                          setFilters({ ...filters, filteredOut: !filters.filteredOut });
+                          setFilters({ ...filters, negate: !negating });
                           setOffset(0);
                         }}
                       >
-                        {filters.filteredOut ? "필터 결과 보기" : "제외된 문헌 보기"}
+                        {negating ? "조건 반전 해제" : "조건 반전 (NOT)"}
                       </button>
-                      {currentCollection && list.hidden > 0 && (
-                        <button
-                          className="text-button"
-                          disabled={busy || loading}
-                          data-help="필터에 맞지 않는 문헌을 이 컬렉션에서 빼고 필터 결과만 남깁니다. 아카이브·다른 컬렉션·서고에는 그대로 남습니다."
-                          onClick={() => setDialog("uncollect")}
-                        >
-                          컬렉션에서 빼기…
-                        </button>
-                      )}
+                      <button
+                        className="text-button"
+                        onClick={() => {
+                          setFilters({ ...DEFAULT_FILTERS, reading: filters.reading, hideExcluded: filters.hideExcluded });
+                          setOffset(0);
+                        }}
+                      >
+                        조건 지우기
+                      </button>
                     </span>
                   </div>
                 )}
@@ -2038,7 +2048,9 @@ export function App() {
                         </div>
                       </div>
                       <h2>
-                        {list.hidden
+                        {negating && list.scoped
+                          ? "필터 조건에 맞지 않는 문헌이 없습니다."
+                          : list.hidden
                           ? "조건에 맞는 문헌이 없습니다."
                           : shelfSearch
                             ? `‘${localQuery.trim()}’ 관련 논문을 찾지 못했습니다.`
@@ -2055,7 +2067,9 @@ export function App() {
                                 : `아직 ${title}이 없습니다.`}
                       </h2>
                       <p>
-                        {list.hidden
+                        {negating && list.scoped
+                          ? "모든 문헌이 필터 조건에 맞습니다. 조건 반전을 끄면 다시 보입니다."
+                          : list.hidden
                           ? "필터 조건을 완화하거나 초기화해 주세요."
                           : shelfSearch
                             ? "다른 표현으로 찾거나 서고 전체에서 검색해 보세요."
@@ -2165,7 +2179,7 @@ export function App() {
                               "paper-row " +
                               (selectedIds.has(w.id) ? "selected " : "") +
                               (inspectorId === w.id ? "inspected " : "") +
-                              (w.evidence?.hidden.length && !filters.filteredOut ? "filtered" : "")
+                              (w.evidence?.hidden.length ? "filtered" : "")
                             }
                             // Right-click toggles the row's selection, like its checkbox (shift selects a range).
                             onContextMenu={(e) => {
@@ -2356,7 +2370,7 @@ export function App() {
                     {graphView && list.total > 0 && (
                       <button
                         className="text-button"
-                        data-help={`현재 필터 결과 ${list.total}편에서 선택한 문헌은 해제하고 선택하지 않은 문헌을 선택합니다. 필터에 가려진 문헌의 선택은 바꾸지 않습니다.`}
+                        data-help={`현재 필터 결과 ${list.total}편에서 선택한 문헌은 해제하고 선택하지 않은 문헌을 선택합니다. 필터 조건에 맞지 않는 문헌을 보려면 필터의 조건 반전(NOT)을 쓰세요.`}
                         onClick={invertSelection}
                       >
                         선택 반전
@@ -2919,58 +2933,14 @@ export function App() {
           </div>
           {currentCollection && (
             <p className="subtle">
-              컬렉션에서 빼기는 이 컬렉션에서만 뺍니다. 프로젝트 휴지통은 아카이브와
-              모든 컬렉션에서 함께 빼며, 휴지통에서 복원할 수 있습니다. 서고 PDF는
-              어느 쪽이든 그대로입니다.
+              컬렉션에서 빼기는 이 컬렉션에서만 뺍니다. 제외는 검토 결정만 바꿀 뿐
+              컬렉션에서 빼지 않습니다. 프로젝트 휴지통은 아카이브와 모든 컬렉션에서
+              함께 빼며, 휴지통에서 복원할 수 있습니다. 서고 PDF는 어느 쪽이든
+              그대로입니다.
             </p>
           )}
           <footer className="modal-footer">
             <button onClick={() => setDialog(null)}>완료</button>
-          </footer>
-        </Modal>
-      )}
-      {dialog === "uncollect" && currentCollection && (
-        <Modal
-          title="필터로 제외된 문헌을 컬렉션에서 빼기"
-          onClose={() => setDialog(null)}
-        >
-          <p>
-            ‘{currentCollection.name}’에서 지금 필터에 맞지 않는 문헌 {list.hidden}편을
-            뺍니다. 컬렉션에는 {Math.max(0, currentCollection.count - list.hidden)}편이 남습니다.
-          </p>
-          {wordSearch && (
-            <p className="subtle">
-              검색어 ‘{localQuery.trim()}’의 단어가 모두 들어 있는 문헌 가운데서만 셌습니다.
-            </p>
-          )}
-          <ul className="uncollect-reasons">
-            {list.hiddenBy.slice(0, 8).map(({ reason, count }) => (
-              <li key={reason}>
-                <span>{reason}</span>
-                <span>{count}편</span>
-              </li>
-            ))}
-          </ul>
-          <p className="subtle">
-            {list.hiddenBy.length > 1 && "한 문헌이 여러 이유에 해당할 수 있습니다. "}
-            논문은 아카이브·다른 컬렉션·서고에 그대로 남고, 상단 되돌리기로 한 번에
-            복원할 수 있습니다.
-          </p>
-          <footer className="modal-footer">
-            <button disabled={busy} onClick={() => setDialog(null)}>
-              취소
-            </button>
-            <button
-              className="primary"
-              disabled={busy || loading || !list.hidden}
-              onClick={() =>
-                uncollect(list.hiddenIds, () =>
-                  setFilters((current) => ({ ...current, filteredOut: false })),
-                )
-              }
-            >
-              {list.hidden}편 컬렉션에서 빼기
-            </button>
           </footer>
         </Modal>
       )}
