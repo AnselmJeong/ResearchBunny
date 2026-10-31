@@ -32,7 +32,9 @@ Library schema stays at 3. Written sections live in the library (`genealogy_stat
 
 ## Installation
 
-- Not installed yet. `/Applications/ResearchBunny.app` is still 0.3.23.
+- Backed up the previous app and a consistent SQLite snapshot under `~/Library/Application Support/ResearchBunny/app-backups/20261031-085942-safeguard-stop-0.3.25` (integrity ok, schema 3, **12,500 works**, **9,308 attachments**, **9,345 shelf files**, 7 projects, **42 written genealogy sections**, matching the live library). The replaced 0.3.23 bundle is kept there as `ResearchBunny-0.3.23-installed.app` (signature verified). 0.3.24 was never installed.
+- Replaced `/Applications/ResearchBunny.app` with version **0.3.25** (bundle hash `3gyx7skv3yzsu`); all **242 files** match the package and strict signature verification passed. The user quit the running app first; it was not launched afterwards.
+- The report `Self-Repair의 계보` is as the failed run left it: 42 sections written, 11.3 and 11.4 planned, steps up to the outline done, so `이어서 진행` starts at the write step.
 
 Artifacts, built from `6e4ce18`: `out/electrobun/stable-macos-arm64-ResearchBunny.dmg` (SHA-256 `486963a5…a2b5e14c`) and `out/electrobun/stable-macos-arm64-ResearchBunny.app.tar.zst` (`d1edfe03…7ec804ae`), also copied to the main checkout's `out/electrobun`. Local validation logs are under `.qa/release-0.3.25/`.
 
