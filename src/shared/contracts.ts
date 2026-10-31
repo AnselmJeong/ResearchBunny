@@ -80,6 +80,8 @@ export const filtersSchema = z.object({
   hideExcluded: z.boolean(),
   hideRetracted: z.boolean(),
   shelf: z.enum(["all", "hide", "only"]).optional(),
+  /** Lists the papers the other filters leave out instead of the ones they keep. */
+  filteredOut: z.boolean().optional(),
 });
 const metadata = z
   .object({
@@ -435,7 +437,8 @@ export interface Outputs {
   projectStats: Record<string, ProjectStats>;
   deleteProject: { purged: number };
   createCollection: Collection;
-  collectionMembers: void;
+  /** The papers that joined or left the collection. */
+  collectionMembers: { ids: string[] };
   list: ListResult;
   inspect: WorkView;
   mutateWorks: void;

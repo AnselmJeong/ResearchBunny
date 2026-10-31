@@ -179,6 +179,8 @@ export interface Filters {
   hideExcluded: boolean;
   hideRetracted: boolean;
   shelf?: "all" | "hide" | "only";
+  /** Lists the papers the other filters leave out instead of the ones they keep. */
+  filteredOut?: boolean;
 }
 export const DEFAULT_FILTERS: Filters = {
   strictness: "balanced",
@@ -399,6 +401,9 @@ export interface ListResult {
   hidden: number;
   deferred: number;
   ids: string[];
+  /** Every paper the filters leave out, on every page, and how many each reason leaves out. */
+  hiddenIds: string[];
+  hiddenBy: { reason: string; count: number }[];
   edges: { source: string; target: string }[];
   /** Graph requests: papers in scope linked to another paper; the rest are not drawn. */
   graph?: { connected: number };

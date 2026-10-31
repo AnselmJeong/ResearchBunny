@@ -537,6 +537,25 @@ export class Library {
       return { ids: trashed, kept: collected.size };
     });
   }
+  /**
+   * Takes papers out of one collection and nothing else: they stay in the
+   * archive, in other collections and on the shelf. Undo puts them back.
+   */
+  uncollect(projectId: string, collectionId: string, ids: string[]): { ids: string[] } {
+    return this.transaction(() => {
+      if (!this.collections(projectId).some((c) => c.id === collectionId))
+        throw new AppError("INVALID", "대상 컬렉션을 확인하세요.");
+      const remove = this.db.prepare("DELETE FROM collection_works WHERE collection_id=? AND work_id=?");
+      const removed = [...new Set(ids)].filter((id) => remove.run(collectionId, id).changes > 0);
+      if (removed.length) {
+        this.db
+          .prepare("INSERT INTO changes(project_id,kind,data,created_at) VALUES(?,?,?,?)")
+          .run(projectId, "collection", JSON.stringify(removed.map((id) => ({ id, collectionId }))), now());
+        this.touch();
+      }
+      return { ids: removed };
+    });
+  }
   clearPending(projectId: string): { ids: string[] } {
     return this.transaction(() => {
       this.project(projectId);
@@ -556,8 +575,17 @@ export class Library {
       .get(projectId) as { id: number; kind: string; data: string } | undefined;
     if (!row) return false;
     this.transaction(() => {
-      for (const item of JSON.parse(row.data))
-        this.mutate(projectId, [item.id], { pendingDismissed: false, ...item.state }, false);
+      if (row.kind === "collection") {
+        // A paper whose record has gone since (a merge) cannot rejoin.
+        const restore = this.db.prepare(
+          "INSERT OR IGNORE INTO collection_works SELECT ?,? WHERE EXISTS(SELECT 1 FROM collections WHERE id=? AND project_id=?) AND EXISTS(SELECT 1 FROM works WHERE id=?)",
+        );
+        for (const item of JSON.parse(row.data) as { id: string; collectionId: string }[])
+          restore.run(item.collectionId, item.id, item.collectionId, projectId, item.id);
+        this.touch();
+      } else
+        for (const item of JSON.parse(row.data))
+          this.mutate(projectId, [item.id], { pendingDismissed: false, ...item.state }, false);
       this.db.prepare("DELETE FROM changes WHERE id=?").run(row.id);
     });
     return true;
@@ -833,9 +861,10 @@ export class Library {
       works = works.filter((w) =>
         matches(`${w.title} ${w.authors.join(" ")} ${w.abstract || ""} ${w.citekey} ${w.state.note} ${w.state.tags.join(" ")}`),
       );
-    let hidden = 0,
-      deferred = 0;
-    const kept: WorkView[] = [];
+    let deferred = 0;
+    const kept: WorkView[] = [],
+      hiddenIds: string[] = [],
+      reasonCounts = new Map<string, number>();
     for (const w of works) {
       // Shelf folders and runs list works regardless of project state; trash shows only in its own view.
       // The inbox is the exception: it lists every PDF waiting to be sorted, as its count does.
@@ -865,9 +894,15 @@ export class Library {
           scope: scope === "shelf" ? "서고" : "로컬 아카이브",
         };
       if (w.evidence.deferred) deferred++;
-      if (reasons.length) hidden++;
-      if (args.showHidden || !reasons.length) kept.push(w);
+      if (reasons.length) {
+        hiddenIds.push(w.id);
+        for (const reason of reasons) reasonCounts.set(reason, (reasonCounts.get(reason) || 0) + 1);
+      }
+      // A filtered-out view lists only the papers the filters leave out.
+      if (args.filters.filteredOut ? reasons.length : args.showHidden || !reasons.length) kept.push(w);
     }
+    const hidden = hiddenIds.length;
+    const hiddenBy = [...reasonCounts].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count);
     if (scope === "shelf" && args.sort === "rank" && !search)
       kept.sort((a, b) => (b.year || 0) - (a.year || 0) || a.title.localeCompare(b.title));
     // Shelf matches stay in their own pinned group instead of competing on score.
@@ -914,6 +949,8 @@ export class Library {
         hidden,
         deferred,
         ids: kept.map((w) => w.id),
+        hiddenIds,
+        hiddenBy,
         edges: citations.filter((e) => drawn.has(e.source) && drawn.has(e.target)),
         graph: { connected: chosen.connected },
         ...(scope === "shelf" ? { subfolders: this.shelfSubfolders(scopeId || "all", page.map((w) => w.id)) } : {}),
@@ -933,6 +970,8 @@ export class Library {
       hidden,
       deferred,
       ids: kept.map((w) => w.id),
+      hiddenIds,
+      hiddenBy,
       edges: this.edges([...page.map((w) => w.id), ...contextIds]),
     };
   }

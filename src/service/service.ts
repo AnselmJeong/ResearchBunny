@@ -308,30 +308,28 @@ export class Service {
           args.parentId,
         );
       case "collectionMembers": {
+        if (args.remove)
+          return this.db.uncollect(args.projectId, args.collectionId, args.ids);
         if (
           !this.db
             .collections(args.projectId)
             .some((c) => c.id === args.collectionId)
         )
           throw new AppError("INVALID", "대상 컬렉션을 확인하세요.");
-        this.db.transaction(() => {
+        return this.db.transaction(() => {
+          const added: string[] = [];
           for (const id of args.ids) {
             this.db.get(id);
-            if (args.remove)
-              this.db.db
-                .prepare(
-                  "DELETE FROM collection_works WHERE collection_id=? AND work_id=?",
-                )
-                .run(args.collectionId, id);
-            else {
-              this.db.mutate(args.projectId, [id], { screening: "included" });
+            this.db.mutate(args.projectId, [id], { screening: "included" });
+            if (
               this.db.db
                 .prepare("INSERT OR IGNORE INTO collection_works VALUES(?,?)")
-                .run(args.collectionId, id);
-            }
+                .run(args.collectionId, id).changes
+            )
+              added.push(id);
           }
+          return { ids: added };
         });
-        return;
       }
       case "list":
         // In the shelf the query is a hybrid (meaning + words) search; elsewhere it filters by substring.

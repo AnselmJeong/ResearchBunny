@@ -21,6 +21,7 @@ import {
   FileText,
   Folder,
   FolderInput,
+  FolderMinus,
   FolderOutput,
   Inbox,
   List,
@@ -134,6 +135,8 @@ const EMPTY: ListResult = {
   hidden: 0,
   deferred: 0,
   ids: [],
+  hiddenIds: [],
+  hiddenBy: [],
   edges: [],
 };
 type Scope = Input<"list">["scope"];
@@ -153,6 +156,7 @@ type Dialog =
   | "shelfSort"
   | "shelfFile"
   | "genealogy"
+  | "uncollect"
   | null;
 function Bunny({ size = 27 }: { size?: number }) {
   return (
@@ -562,6 +566,8 @@ export function App() {
   const graphScope = graphView && list.total > 0;
   const selectedIds = useMemo(() => new Set(selected), [selected]);
   const listedIds = useMemo(() => new Set(list.ids), [list.ids]);
+  const filteredOutIds = useMemo(() => new Set(list.hiddenIds), [list.hiddenIds]);
+  const filteredOutSelected = selected.filter((id) => filteredOutIds.has(id)).length;
   const listedPapers = useMemo(() => listMembers(list), [list]);
   const allPageSelected = list.works.length > 0 &&
     list.works.every((work) => selectedIds.has(work.id));
@@ -581,8 +587,8 @@ export function App() {
       ];
     });
   const invertHelp = morePages
-    ? "현재 검색·필터에 해당하는 모든 페이지의 문헌에서 선택한 문헌은 해제하고 선택하지 않은 문헌을 선택합니다."
-    : "이 목록에서 선택한 문헌은 해제하고 선택하지 않은 문헌을 선택합니다.";
+    ? "현재 검색·필터에 해당하는 모든 페이지의 문헌에서 선택한 문헌은 해제하고 선택하지 않은 문헌을 선택합니다. 필터에 가려진 문헌의 선택은 바꾸지 않습니다."
+    : "이 목록에서 선택한 문헌은 해제하고 선택하지 않은 문헌을 선택합니다. 필터에 가려진 문헌의 선택은 바꾸지 않습니다.";
   const navigate = (
     next: Scope,
     id = "",
@@ -725,6 +731,29 @@ export function App() {
         : "선택한 문헌 중 아카이브에 저장된 문헌이 없습니다.");
     });
   };
+  const currentCollection = scope === "collection"
+    ? snapshot?.collections.find((c) => c.id === scopeId)
+    : undefined;
+  // Only the collection loses them: the archive, other collections and the shelf keep them.
+  const uncollect = (ids: string[], done?: () => void) => {
+    if (busy || !ids.length || !currentCollection) return;
+    const collection = currentCollection,
+      targetProject = projectId;
+    setDialog(null);
+    void task(async () => {
+      const removed = (await window.bunny.collectionMembers({ projectId: targetProject, collectionId: collection.id, ids, remove: true })).ids;
+      if (projectRef.current !== targetProject) return;
+      // The papers leave this collection's list, so its views stop remembering them.
+      navigationRef.current = deselectWhere(navigationRef.current, removed, (view) => view.scope === "collection" && view.scopeId === collection.id);
+      setNavigation(navigationRef.current);
+      const left = new Set(removed);
+      setSelected((current) => current.filter((id) => !left.has(id)));
+      done?.();
+      flash(removed.length
+        ? `‘${collection.name}’에서 ${removed.length}편을 뺐습니다. 아카이브와 서고에는 그대로 있고, 상단 되돌리기로 복원할 수 있습니다.`
+        : "선택한 문헌 중 이 컬렉션에 든 문헌이 없습니다.");
+    });
+  };
   const saveToCollection = (target: string) => {
     const ids = [...selected],
       creating = target === NEW_COLLECTION,
@@ -832,6 +861,7 @@ export function App() {
       const nextFilters = {
         ...filters,
         reading: undefined,
+        filteredOut: undefined,
         relevance: mode === "related" || mode === "ai",
       };
       await task(async () => {
@@ -1692,6 +1722,16 @@ export function App() {
                       저장
                     </button>
                   )}
+                  {currentCollection && (
+                    <button
+                      disabled={busy || !selected.length}
+                      data-help="선택한 문헌을 이 컬렉션에서만 뺍니다. 아카이브·다른 컬렉션·서고에는 그대로 남고 상단 되돌리기로 복원할 수 있습니다."
+                      onClick={() => uncollect(selected)}
+                    >
+                      <FolderMinus size={14} />
+                      컬렉션에서 빼기
+                    </button>
+                  )}
                   <button onClick={() => setDialog("seeds")}>
                     <Leaf size={14} />
                     seed
@@ -1700,10 +1740,12 @@ export function App() {
                     <Download size={14} />
                     내보내기
                   </button>
-                  {scope !== "trash" && (
+                  {/* In a collection the removal at hand is 컬렉션에서 빼기; the trash stays in 일괄 편집. */}
+                  {scope !== "trash" && !currentCollection && (
                     <button
                       className="danger"
                       disabled={busy || !selected.length}
+                      data-help={`선택한 문헌을 이 프로젝트의 휴지통으로 옮겨 프로젝트의 모든 목록에서 뺍니다.${archiveScope ? " 컬렉션에 든 문헌은 아카이브에 남깁니다." : ""} 휴지통에서 복원할 수 있고 서고 PDF는 그대로입니다.`}
                       onClick={trashSelected}
                     >
                       <Trash2 size={14} />
@@ -1858,13 +1900,41 @@ export function App() {
                 {filtersOpen && (
                   <Filters value={filters} onChange={setFilters} />
                 )}
-                {list.hidden > 0 && (
+                {(list.hidden > 0 || filters.filteredOut) && (
                   <div className="hidden-banner">
                     <span>
-                      필터로 제외된 문헌 {list.hidden}편
+                      {filters.filteredOut
+                        ? list.hidden
+                          ? `필터로 제외된 문헌 ${list.hidden}편을 보고 있습니다`
+                          : "필터로 제외된 문헌이 없습니다"
+                        : `필터로 제외된 문헌 ${list.hidden}편`}
                       {list.deferred
                         ? ` · 관련성 판단 보류 ${list.deferred}편`
                         : ""}
+                      {!filters.filteredOut && filteredOutSelected > 0 &&
+                        ` · 선택한 문헌 중 ${filteredOutSelected}편이 여기에 가려 있습니다`}
+                    </span>
+                    <span className="hidden-banner-actions">
+                      {/* The other side of the filters: what they leave out, each with its reason. */}
+                      <button
+                        className="text-button"
+                        onClick={() => {
+                          setFilters({ ...filters, filteredOut: !filters.filteredOut });
+                          setOffset(0);
+                        }}
+                      >
+                        {filters.filteredOut ? "필터 결과 보기" : "제외된 문헌 보기"}
+                      </button>
+                      {currentCollection && list.hidden > 0 && (
+                        <button
+                          className="text-button"
+                          disabled={busy || loading}
+                          data-help="필터에 맞지 않는 문헌을 이 컬렉션에서 빼고 필터 결과만 남깁니다. 아카이브·다른 컬렉션·서고에는 그대로 남습니다."
+                          onClick={() => setDialog("uncollect")}
+                        >
+                          컬렉션에서 빼기…
+                        </button>
+                      )}
                     </span>
                   </div>
                 )}
@@ -2095,7 +2165,7 @@ export function App() {
                               "paper-row " +
                               (selectedIds.has(w.id) ? "selected " : "") +
                               (inspectorId === w.id ? "inspected " : "") +
-                              (w.evidence?.hidden.length ? "filtered" : "")
+                              (w.evidence?.hidden.length && !filters.filteredOut ? "filtered" : "")
                             }
                             // Right-click toggles the row's selection, like its checkbox (shift selects a range).
                             onContextMenu={(e) => {
@@ -2286,7 +2356,7 @@ export function App() {
                     {graphView && list.total > 0 && (
                       <button
                         className="text-button"
-                        data-help={`현재 필터 결과 ${list.total}편에서 선택한 문헌은 해제하고 선택하지 않은 문헌을 선택합니다.`}
+                        data-help={`현재 필터 결과 ${list.total}편에서 선택한 문헌은 해제하고 선택하지 않은 문헌을 선택합니다. 필터에 가려진 문헌의 선택은 바꾸지 않습니다.`}
                         onClick={invertSelection}
                       >
                         선택 반전
@@ -2806,6 +2876,12 @@ export function App() {
               <Star size={14} />
               핵심 표시
             </button>
+            {currentCollection && (
+              <button disabled={busy || !selected.length} onClick={() => uncollect(selected)}>
+                <FolderMinus size={14} />
+                컬렉션에서 빼기
+              </button>
+            )}
             {scope !== "trash" && (
               <button
                 className="danger"
@@ -2813,7 +2889,7 @@ export function App() {
                 onClick={trashSelected}
               >
                 <Trash2 size={14} />
-                휴지통
+                {currentCollection ? "프로젝트 휴지통으로" : "휴지통"}
               </button>
             )}
             {scope === "trash" && (
@@ -2841,8 +2917,60 @@ export function App() {
               </button>
             )}
           </div>
+          {currentCollection && (
+            <p className="subtle">
+              컬렉션에서 빼기는 이 컬렉션에서만 뺍니다. 프로젝트 휴지통은 아카이브와
+              모든 컬렉션에서 함께 빼며, 휴지통에서 복원할 수 있습니다. 서고 PDF는
+              어느 쪽이든 그대로입니다.
+            </p>
+          )}
           <footer className="modal-footer">
             <button onClick={() => setDialog(null)}>완료</button>
+          </footer>
+        </Modal>
+      )}
+      {dialog === "uncollect" && currentCollection && (
+        <Modal
+          title="필터로 제외된 문헌을 컬렉션에서 빼기"
+          onClose={() => setDialog(null)}
+        >
+          <p>
+            ‘{currentCollection.name}’에서 지금 필터에 맞지 않는 문헌 {list.hidden}편을
+            뺍니다. 컬렉션에는 {Math.max(0, currentCollection.count - list.hidden)}편이 남습니다.
+          </p>
+          {wordSearch && (
+            <p className="subtle">
+              검색어 ‘{localQuery.trim()}’의 단어가 모두 들어 있는 문헌 가운데서만 셌습니다.
+            </p>
+          )}
+          <ul className="uncollect-reasons">
+            {list.hiddenBy.slice(0, 8).map(({ reason, count }) => (
+              <li key={reason}>
+                <span>{reason}</span>
+                <span>{count}편</span>
+              </li>
+            ))}
+          </ul>
+          <p className="subtle">
+            {list.hiddenBy.length > 1 && "한 문헌이 여러 이유에 해당할 수 있습니다. "}
+            논문은 아카이브·다른 컬렉션·서고에 그대로 남고, 상단 되돌리기로 한 번에
+            복원할 수 있습니다.
+          </p>
+          <footer className="modal-footer">
+            <button disabled={busy} onClick={() => setDialog(null)}>
+              취소
+            </button>
+            <button
+              className="primary"
+              disabled={busy || loading || !list.hidden}
+              onClick={() =>
+                uncollect(list.hiddenIds, () =>
+                  setFilters((current) => ({ ...current, filteredOut: false })),
+                )
+              }
+            >
+              {list.hidden}편 컬렉션에서 빼기
+            </button>
           </footer>
         </Modal>
       )}
