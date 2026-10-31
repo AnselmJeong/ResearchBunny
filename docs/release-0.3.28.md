@@ -25,6 +25,11 @@ Library schema stays at 3. Nothing in the library changes on install. Papers alr
   - Taking the 24 out with `컬렉션에서 빼기` emptied the NOT list. After `조건 지우기` the collection held 6, and `되돌리기` restored all 30.
   - Light and dark themes were checked. No console errors.
 - Typecheck and lint passed. Integration suite on macOS after a full build: **316 passed, 0 failed** across 36 files.
+- Packaged app:
+  - The DMG's checksum is valid.
+  - Strict signature verification passed for the bundle inside the `.tar.zst` (0.3.28, bundle hash `3px0ctvmq31ab`, 242 files).
+  - The packaged smoke test passed on the extracted bundle with a restricted PATH.
+  - The bundle's renderer has the filter status line and `조건 반전`; no file in the bundle still mentions `filteredOut`.
 - Not checked: the installed app against the real library.
 
 ## Known issues
@@ -32,3 +37,15 @@ Library schema stays at 3. Nothing in the library changes on install. Papers alr
 - When 미분류 is emptied, its sidebar entry disappears and the open list's title falls back to `서고 0편`.
 - The first passage search after launch takes about 2.5 s while the in-memory sign bits load.
 - A "ResearchBunny quit unexpectedly" dialog was reported on quitting 0.3.7, cause not yet known.
+
+## Installation
+
+- Backed up the previous app and a consistent SQLite snapshot under `~/Library/Application Support/ResearchBunny/app-backups/20261101-042607-filter-negate-0.3.28`.
+  - The snapshot passed the integrity check and matches the live library: schema 3, **12,554 works**, **9,367 attachments**, **9,404 shelf files**, 7 projects, 5 collections with 537 memberships.
+  - No process had the library open.
+  - The replaced 0.3.27 bundle is kept there as `ResearchBunny-0.3.27-installed.app` (signature verified). The bundle taken out of `/Applications` went to the Trash.
+- Replaced `/Applications/ResearchBunny.app` with version **0.3.28** (bundle hash `3px0ctvmq31ab`). All **242 files** match the package and strict signature verification passed. The app was not running and was not launched afterwards.
+
+Artifacts, built from `2546dc5`: `out/electrobun/stable-macos-arm64-ResearchBunny.dmg` (SHA-256 `269d30eb…a86d2cb9`) and `out/electrobun/stable-macos-arm64-ResearchBunny.app.tar.zst` (`5276abae…e5ca5181`), also copied to the main checkout's `out/electrobun`. Local validation logs are under `.qa/release-0.3.28/`.
+
+Local ad-hoc signing on macOS Apple Silicon; no Developer ID signing or Apple notarization.
