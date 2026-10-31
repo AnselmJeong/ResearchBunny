@@ -88,6 +88,7 @@ caffeinate -i bun scripts/passages.ts --worker <dist/runtime 사본>/pdf-worker.
 - 코드: `src/service/passages/answer.ts`(`PassageAnswerer`, `quoteIn`, `checkedNumbers`), RPC `passageAsk`·`passageAskCancel`과 `answer` 진행 이벤트, `src/renderer/components/PassageAnswer.tsx`.
 - 실제 서고 확인(2026-10-30, Codex 계정 기본 모델, 라이브러리 읽기 전용): 질문 셋에 각각 32–35초가 걸렸다. 질문은 가속 iTBS와 기존 rTMS의 반응률, 리튬 중단 뒤 재발 예측 인자, 강박장애의 not-just-right experience와 감각 처리였다. 매번 구절 20개를 보내 5–6개를 인용했고, 확인에서 뺀 인용은 없었다. 답은 연구 설계(무작위 비교, 후향 코호트, 메타분석)를 밝히고, 구절이 직접 비교하지 않은 내용은 그렇다고 적었다.
 - 테스트(`tests/integration/passages.test.ts`): 인용문 접기·말줄임표·순서·바꿔 쓴 문장, 수치 고르기, 그리고 가짜 AI로 검색어 사용, 구절 번호와 논문당 3개, 인용 확인과 번호 다시 매기기, 근거 없는 수치, 진행 이벤트, 기억한 답과 `fresh`, 형식이 틀린 계획, 근거 부족, 취소.
+- 2026-10-31: 근거 번호표가 버튼 기본 높이(30px)를 물려받아 줄보다 높았다. 번호표 높이를 16px로 고정했다(`.answer-cite`의 `min-height: 0`).
 
 ## 다음 단계
 

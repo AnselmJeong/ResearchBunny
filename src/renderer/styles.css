@@ -4058,7 +4058,7 @@ html[data-theme="dark"] .passage-text mark { background: #5c5129; }
 .answer-text p { margin: 0 0 12px; }
 .answer-statement.unverified, .answer-statement.uncited { color: var(--muted); }
 .answer-statement.unverified { text-decoration: underline dotted color-mix(in srgb, var(--muted) 60%, transparent); text-underline-offset: 3px; }
-.answer-cite { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 16px; margin: 0 0 0 2px; padding: 0 4px; border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 4px; background: transparent; color: var(--accent); font-size: 10.5px; font-weight: 600; line-height: 1; vertical-align: 2px; font-variant-numeric: tabular-nums; }
+.answer-cite { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 16px; min-height: 0; margin: 0 0 0 2px; padding: 0 4px; border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 4px; background: transparent; color: var(--accent); font-size: 10.5px; font-weight: 600; line-height: 1; vertical-align: 2px; font-variant-numeric: tabular-nums; }
 .answer-cite:hover { background: var(--accent); color: var(--panel); }
 .answer-warn { margin-left: 3px; color: var(--warning, #b07a1c); vertical-align: -1px; }
 .answer-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 4px 0 18px; padding-bottom: 14px; border-bottom: 1px solid var(--border); font-size: 11.5px; color: var(--muted); }
