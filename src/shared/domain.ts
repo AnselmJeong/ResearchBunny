@@ -197,13 +197,13 @@ export function relatedness(
   anchors: Work[],
   question: string,
 ): Map<string, { score: number | null; seedIds: string[]; deferred: boolean }> {
-  const docs = [...candidates, ...anchors].map((w) =>
-    tokens(`${w.title} ${w.abstract || ""}`),
-  );
-  const queries = [
-    tokens(question),
-    ...anchors.map((w) => tokens(`${w.title} ${w.abstract || ""}`)),
-  ].filter((t) => t.length);
+  const asked = tokens(question),
+    anchorTokens = anchors.map((w) => tokens(`${w.title} ${w.abstract || ""}`));
+  const docs = [
+    ...candidates.map((w) => tokens(`${w.title} ${w.abstract || ""}`)),
+    ...anchorTokens,
+  ];
+  const queries = [asked, ...anchorTokens].filter((t) => t.length);
   const all = [...docs, ...queries],
     df = new Map<string, number>();
   for (const doc of all)
@@ -218,23 +218,28 @@ export function relatedness(
       );
     return counts;
   };
-  const cosine = (a: Map<string, number>, b: Map<string, number>) => {
-    let dot = 0,
-      aa = 0,
-      bb = 0;
-    for (const [t, v] of a) {
-      dot += v * (b.get(t) || 0);
-      aa += v * v;
-    }
-    for (const v of b.values()) bb += v * v;
+  const squares = (v: Map<string, number>) => {
+    let sum = 0;
+    for (const x of v.values()) sum += x * x;
+    return sum;
+  };
+  // Each query's norm is summed once, not once per candidate; whole archives and shelf folders are scored too.
+  const cosine = (a: Map<string, number>, aa: number, b: Map<string, number>, bb: number) => {
+    let dot = 0;
+    for (const [t, v] of a) dot += v * (b.get(t) || 0);
     return aa && bb ? dot / Math.sqrt(aa * bb) : 0;
   };
-  const qvec = queries.map(vector),
-    av = anchors.map((w) => vector(tokens(`${w.title} ${w.abstract || ""}`)));
+  const qv = vector(asked),
+    qNorm = squares(qv),
+    av = anchorTokens.map(vector),
+    anchorNorms = av.map(squares);
   return new Map(
     candidates.map((w, i) => {
-      const v = vector(docs[i]);
-      const text = Math.max(0, ...qvec.map((q) => cosine(v, q)));
+      const v = vector(docs[i]),
+        vv = squares(v);
+      // An anchor is a query too, so one cosine per anchor serves both the score and its seed links.
+      const toAnchors = av.map((a, j) => cosine(v, vv, a, anchorNorms[j]));
+      const text = Math.max(0, cosine(v, vv, qv, qNorm), ...toAnchors);
       const wt = new Set(w.topics.map((t) => t.id));
       const topic = Math.max(
         0,
@@ -253,7 +258,7 @@ export function relatedness(
           seedIds: anchors
             .filter(
               (a, j) =>
-                cosine(v, av[j]) > 0.1 || a.topics.some((t) => wt.has(t.id)),
+                toAnchors[j] > 0.1 || a.topics.some((t) => wt.has(t.id)),
             )
             .map((a) => a.id),
           deferred: !w.abstract && (!score || score < 0.15),

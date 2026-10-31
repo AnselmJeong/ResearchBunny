@@ -74,7 +74,7 @@ export class ShelfQueries {
     if (identifier) {
       const id = this.db.findIdentifier(identifier[0], identifier[1]);
       const hits = id && allowed.has(id) ? [id] : [];
-      return { hits: this.hits(hits, new Map(hits.map((h) => [h, 1])), [], []), semantic: false, identifier: true };
+      return { hits: this.hits(hits, new Map(hits.map((h) => [h, 1])), [], [], new Map()), semantic: false, identifier: true };
     }
     const lexical: string[] = [];
     const fts = ftsQuery(query);
@@ -83,6 +83,7 @@ export class ShelfQueries {
         if (allowed.has(row.work_id) && lexical.length < 100) lexical.push(row.work_id);
     let semantic: string[] = [];
     let used = false;
+    const similarity = new Map<string, number>();
     const vector = await this.shelf.embedText("query", "", query, signal).catch(() => null);
     const key = this.shelf.currentModelKey();
     if (vector && key) {
@@ -99,13 +100,20 @@ export class ShelfQueries {
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .slice(0, opts.limit)
       .map(([id]) => id);
-    return { hits: this.hits(ranked, scores, lexical, semantic), semantic: used };
+    // The fused score only ranks; the list shows each hit's own cosine, lexical hits included.
+    if (vector && key)
+      for (const id of ranked) {
+        const stored = this.shelf.vectors.vector(id);
+        if (stored?.length === vector.length) similarity.set(id, stored.reduce((dot, v, i) => dot + v * vector[i], 0));
+      }
+    return { hits: this.hits(ranked, scores, lexical, semantic, similarity), semantic: used };
   }
-  private hits(ids: string[], scores: Map<string, number>, lexical: string[], semantic: string[]): ShelfHit[] {
+  private hits(ids: string[], scores: Map<string, number>, lexical: string[], semantic: string[], similarity: Map<string, number>): ShelfHit[] {
     const folders = this.folders(ids);
     return ids.map((workId) => ({
       workId,
       score: Math.round((scores.get(workId) || 0) * 10000) / 10000,
+      similarity: similarity.has(workId) ? Math.round(similarity.get(workId)! * 1000) / 1000 : null,
       lexicalRank: lexical.includes(workId) ? lexical.indexOf(workId) + 1 : null,
       semanticRank: semantic.includes(workId) ? semantic.indexOf(workId) + 1 : null,
       folderId: folders.get(workId)?.folderId || "",

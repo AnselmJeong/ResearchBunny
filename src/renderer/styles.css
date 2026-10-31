@@ -925,10 +925,16 @@ small {
   padding: 4px;
   font-size: 12px;
 }
+/* The word boxes give way first, so 조건 반전 and 필터 초기화 stay on their row. */
 .filter-row input.word-filter {
-  width: 175px;
+  flex: 1 1 110px;
+  min-width: 100px;
+  max-width: 175px;
   font-size: 12px;
   padding: 6px 8px;
+}
+.filter-row:has(.filter-end) select {
+  max-width: 130px;
 }
 .filter-row input[type="checkbox"] {
   width: 12px;
@@ -936,6 +942,35 @@ small {
 }
 .filter-row .text-button {
   font-size: 12px;
+}
+/* 조건 반전 and 필터 초기화 close the row on the right; a narrow panel wraps them together. */
+.filter-row .filter-end {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+/* 조건 반전 reads as a switch rather than one more option. */
+.filter-row .negate-toggle {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+}
+.filter-row .negate-toggle input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+}
+.filter-row .negate-toggle:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.filter-row .negate-toggle:has(input:disabled) {
+  opacity: 0.5;
+  cursor: default;
 }
 .filter-panel > p {
   font-size: 12px;
@@ -953,21 +988,6 @@ small {
 }
 .filter-status strong {
   color: var(--text);
-}
-.filter-status-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0 14px;
-  flex-shrink: 0;
-}
-.filter-status .text-button {
-  font-size: 12px;
-  min-height: 20px;
-}
-.filter-status .text-button[aria-pressed="true"] {
-  color: var(--accent);
-  font-weight: 600;
 }
 .selection-bar {
   display: flex;
@@ -1006,7 +1026,7 @@ small {
 .table-heading,
 .paper-row {
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) 42px 54px 26px;
+  grid-template-columns: 20px minmax(0, 1fr) 50px 40px 64px 26px;
   align-items: center;
   gap: 15px;
   padding-left: 27px;
@@ -1020,9 +1040,27 @@ small {
   border-bottom: 1px solid var(--border);
   background: var(--bg);
 }
-.table-heading > span:nth-child(3),
-.table-heading > span:nth-child(4) {
-  text-align: right;
+/* 유사도 · 연도 · 피인용수 sort their column, largest first. */
+.table-heading .column-sort,
+.table-heading .column-sort:hover {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.table-heading .column-sort:hover {
+  color: var(--accent);
+}
+.table-heading .column-sort[aria-pressed="true"] {
+  color: var(--accent);
+  font-weight: 600;
 }
 .table-heading input,
 .paper-row > input {
@@ -1124,6 +1162,7 @@ small {
   margin-top: 6px;
   line-height: 1.5;
 }
+.similarity-cell,
 .year-cell,
 .citation-cell {
   text-align: right;
@@ -2224,7 +2263,7 @@ html[data-theme="dark"] .graph-wrap {
     padding-left: 20px;
     padding-right: 16px;
     gap: 10px;
-    grid-template-columns: 17px minmax(0, 1fr) 35px 45px 23px;
+    grid-template-columns: 17px minmax(0, 1fr) 42px 34px 54px 23px;
   }
   .paper-meta > span:first-child {
     max-width: 150px;
@@ -2633,7 +2672,7 @@ html[data-theme="dark"] .graph-wrap {
 }
 .library-workspace .table-heading,
 .library-workspace .paper-row {
-  grid-template-columns: 18px minmax(0, 1fr) 36px 66px 24px;
+  grid-template-columns: 18px minmax(0, 1fr) 50px 40px 64px 24px;
 }
 .paper-row {
   min-height: 96px;
@@ -2671,6 +2710,7 @@ html[data-theme="dark"] .graph-wrap {
   background: var(--accent);
   width: 3px;
 }
+.similarity-cell,
 .year-cell,
 .citation-cell {
   font-size: 12px;

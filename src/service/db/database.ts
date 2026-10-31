@@ -29,6 +29,7 @@ import {
   similarityEdges,
   wordMatcher,
   citekeyFor,
+  relatedness,
 } from "../../shared/domain";
 import type { ShelfSearchResult } from "../../shared/shelf";
 import { citationWarnings, graphNodeIds } from "../../shared/graph";
@@ -39,6 +40,8 @@ export class Library {
   db: Database;
   /** Title/year hints for search results that match an unresolved shelf file. */
   shelfHints?: (works: Work[]) => Map<string, ShelfMembership>;
+  /** 초기 관심 scores of the last few lists, kept while their papers and the 초기 관심 stay the same. */
+  private interestScores = new Map<string, { key: string; scores: ReturnType<typeof relatedness> }>();
   constructor(public root: string) {
     mkdirSync(root, { recursive: true });
     mkdirSync(join(root, "attachments"), { recursive: true });
@@ -795,6 +798,31 @@ export class Library {
     }
     return result;
   }
+  /** Each paper's 초기 관심 relatedness within `works`, or null when the project has no 초기 관심 yet. */
+  private interest(projectId: string, scopeKey: string, works: Work[]) {
+    const profile = this.seedHistory(projectId)[0];
+    const question = profile?.queries?.join(" ") || profile?.question || this.project(projectId).question;
+    const anchors = (profile?.ids || []).flatMap((id) => {
+      try {
+        return [this.get(id)];
+      } catch {
+        return []; // a seed merged or deleted since
+      }
+    });
+    if (!anchors.length && !question.trim()) return null;
+    // Scoring a whole shelf takes a few hundred milliseconds, so lists reuse it until a paper's text changes.
+    const hash = createHash("sha1").update(question);
+    for (const w of [...anchors, ...works])
+      hash.update(`\u0002${w.id}\u0001${w.title}\u0001${w.abstract || ""}\u0001${w.topics.map((t) => t.id).join()}`);
+    const key = hash.digest("hex"), cacheKey = `${projectId}:${scopeKey}`;
+    const cached = this.interestScores.get(cacheKey);
+    if (cached?.key === key) return cached.scores;
+    const scores = relatedness(works, anchors, question);
+    this.interestScores.delete(cacheKey);
+    this.interestScores.set(cacheKey, { key, scores });
+    if (this.interestScores.size > 8) this.interestScores.delete(this.interestScores.keys().next().value!);
+    return scores;
+  }
   list(args: {
     projectId: string;
     scope: string;
@@ -852,7 +880,13 @@ export class Library {
         ? this.shelfScope(scopeId || "all").map((id) => ({ id }))
         : (this.db.prepare(sql).all(...params) as { id: string }[]);
     const hits = new Map(search?.hits.map((hit) => [hit.workId, hit]));
-    let works = this.views(projectId, rows.map((r) => r.id), scope === "run" ? scopeId : undefined);
+    // Shelf folders and runs list works regardless of project state; trash shows only in its own view.
+    // The inbox is the exception: it lists every PDF waiting to be sorted, as its count does.
+    let works = this.views(projectId, rows.map((r) => r.id), scope === "run" ? scopeId : undefined)
+      .filter((w) => scope === "trash" || w.state.screening !== "trash" || (scope === "shelf" && scopeId === "inbox"));
+    // Outside a run or a search, 유사도 is each paper's closeness to the 초기 관심, scored as a run scores its candidates.
+    // The list search box only narrows the list, so the scores come from the whole scope.
+    const interest = scope === "run" || search ? null : this.interest(projectId, `${scope}:${scopeId || ""}`, works);
     if (scope === "run" && this.shelfHints) {
       const hints = this.shelfHints(works.filter((w) => !w.shelf));
       for (const w of works) if (!w.shelf && hints.has(w.id)) w.shelf = hints.get(w.id);
@@ -870,10 +904,27 @@ export class Library {
     // 조건 반전 needs a condition to flip; with none set the list is the plain one.
     const negate = !!args.filters.negate && filterConditions(args.filters).length > 0;
     for (const w of works) {
-      // Shelf folders and runs list works regardless of project state; trash shows only in its own view.
-      // The inbox is the exception: it lists every PDF waiting to be sorted, as its count does.
-      if (scope !== "trash" && w.state.screening === "trash" && !(scope === "shelf" && scopeId === "inbox")) continue;
-      const failed = conditionReasons(w, args.filters, w.evidence),
+      const hit = hits.get(w.id), near = interest?.get(w.id);
+      w.evidence ??= {
+        origins: [],
+        seedIds: [],
+        sharedIds: [],
+        denominator: 0,
+        relation: "local",
+        // 유사도 is the query's cosine; the fused rank score means nothing on its own.
+        score: hit ? hit.similarity ?? null : near?.score ?? null,
+        reasons: hit
+          ? [search?.identifier ? "식별자 일치"
+            : hit.semanticRank && hit.lexicalRank ? "의미와 검색어 모두 일치"
+            : hit.semanticRank ? "의미가 가까움" : "검색어 일치"]
+          : [],
+        hidden: [],
+        // Outside a run only 초기 관심으로 좁히기 asks for the judgment, so only then is a paper 판단 보류.
+        deferred: !!near?.deferred && args.filters.relevance,
+        scope: scope === "shelf" ? "서고" : "로컬 아카이브",
+      };
+      // A search hit's score is its closeness to the query, not to the 초기 관심, so 초기 관심으로 좁히기 leaves it be.
+      const failed = conditionReasons(w, args.filters, hit ? undefined : w.evidence),
         left = viewReasons(w, args.filters);
       // A collection lists every paper put in it: marking one 제외 in review does not hide it there.
       if (scope === "trash" || scope === "excluded" || scope === "collection") {
@@ -883,36 +934,22 @@ export class Library {
       if (!left.length) scoped++;
       const shown = !left.length && (negate ? failed.length > 0 : !failed.length);
       const reasons = shown ? [] : [...(negate ? (failed.length ? [] : ["필터 조건에 맞음 (조건 반전)"]) : failed), ...left];
-      const hit = hits.get(w.id);
-      if (w.evidence) w.evidence.hidden = reasons;
-      else
-        w.evidence = {
-          origins: [],
-          seedIds: [],
-          sharedIds: [],
-          denominator: 0,
-          relation: "local",
-          score: hit?.score ?? null,
-          reasons: hit
-            ? [search?.identifier ? "식별자 일치"
-              : hit.semanticRank && hit.lexicalRank ? "의미와 검색어 모두 일치"
-              : hit.semanticRank ? "의미가 가까움" : "검색어 일치"]
-            : [],
-          hidden: reasons,
-          deferred: false,
-          scope: scope === "shelf" ? "서고" : "로컬 아카이브",
-        };
+      w.evidence.hidden = reasons;
       if (w.evidence.deferred) deferred++;
       if (!shown) hidden++;
       if (shown || args.showHidden) kept.push(w);
     }
-    if (scope === "shelf" && args.sort === "rank" && !search)
+    // A folder lists newest first; the header sorts are stable, so this also breaks their ties.
+    if (scope === "shelf" && !search)
       kept.sort((a, b) => (b.year || 0) - (a.year || 0) || a.title.localeCompare(b.title));
     // Shelf matches stay in their own pinned group instead of competing on score.
     const pinned = scope === "run"
       ? kept.filter((w) => w.evidence?.relation === "shelf").sort((a, b) => (b.evidence?.shelf?.score ?? 0) - (a.evidence?.shelf?.score ?? 0))
       : [];
     if (pinned.length) kept.splice(0, kept.length, ...kept.filter((w) => w.evidence?.relation !== "shelf"));
+    // Papers without a score keep their order below the scored ones.
+    if (args.sort === "similarity")
+      kept.sort((a, b) => (b.evidence?.score ?? -2) - (a.evidence?.score ?? -2));
     if (args.sort === "year")
       kept.sort((a, b) => (b.year || 0) - (a.year || 0));
     if (args.sort === "citations")

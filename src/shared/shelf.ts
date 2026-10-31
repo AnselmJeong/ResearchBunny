@@ -281,6 +281,8 @@ export interface ShelfRelated {
 export interface ShelfHit {
   workId: string;
   score: number;
+  /** Cosine between the query and the paper's embedding; null without one. */
+  similarity?: number | null;
   lexicalRank: number | null;
   semanticRank: number | null;
   folderId: string;

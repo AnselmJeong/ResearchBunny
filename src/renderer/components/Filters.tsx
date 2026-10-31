@@ -53,12 +53,9 @@ function NumericFilter({ field, value, onChange, label, min, max, placeholder, s
 export function Filters({
   value,
   onChange,
-  collection = false,
 }: {
   value: FilterValues;
   onChange: (value: FilterValues) => void;
-  /** A collection lists every paper put in it, so 제외 문헌 숨김 has nothing to hide there. */
-  collection?: boolean;
 }) {
   const [resetVersion, setResetVersion] = useState(0);
   const conditions = filterConditions(value);
@@ -155,53 +152,28 @@ export function Filters({
           <option value="hide">서고에 있는 논문 숨기기</option>
           <option value="only">서고에 있는 논문만</option>
         </select>
-      </div>
-      <div className="filter-row">
-        {(
-          [
-            ["hasAbstract", "초록 있음"],
-            ["hasPdf", "보관 PDF"],
-            ["openAccess", "OA 링크"],
-            ["hideSaved", "저장 문헌 숨김"],
-            ["hideExcluded", "제외 문헌 숨김"],
-            ["hideRetracted", "철회 후보 숨김"],
-          ] as const
-        ).filter(([key]) => !(collection && key === "hideExcluded")).map(([key, label]) => (
-          <label key={key} className="check">
+        <span className="filter-end">
+          {/* NOT over every condition; the 숨김 options and the reading tab stay as they are. */}
+          <label className="check negate-toggle"
+            data-help={conditions.length ? "조건에 맞지 않는 문헌을 봅니다." : "조건을 하나 이상 정하면 뒤집을 수 있습니다."}>
             <input
               type="checkbox"
-              checked={value[key]}
-              onChange={(e) => set(key, e.target.checked)}
+              checked={!!value.negate && conditions.length > 0}
+              disabled={!conditions.length}
+              onChange={(e) => set("negate", e.target.checked)}
             />
-            {label}
+            조건 반전 (NOT)
           </label>
-        ))}
-      </div>
-      <div className="filter-row">
-        {/* NOT over every condition above; the 숨김 options and the reading tab stay as they are. */}
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={!!value.negate && conditions.length > 0}
-            disabled={!conditions.length}
-            onChange={(e) => set("negate", e.target.checked)}
-          />
-          조건 반전 (NOT)
-        </label>
-        <span className="subtle">
-          {conditions.length
-            ? "위 조건에 맞지 않는 문헌을 보여 줍니다. 숨김 항목은 뒤집지 않습니다."
-            : "조건을 하나 이상 정하면 뒤집을 수 있습니다."}
+          <button
+            className="text-button"
+            onClick={() => {
+              setResetVersion(v => v + 1);
+              onChange({ ...DEFAULT_FILTERS });
+            }}
+          >
+            필터 초기화
+          </button>
         </span>
-        <button
-          className="text-button"
-          onClick={() => {
-            setResetVersion(v => v + 1);
-            onChange({ ...DEFAULT_FILTERS });
-          }}
-        >
-          필터 초기화
-        </button>
       </div>
       <p className="subtle">
         관련성은 이 후보 집합에서 계산한 텍스트·주제 기준입니다. 초록이 부족한

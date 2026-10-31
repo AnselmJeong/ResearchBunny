@@ -174,7 +174,7 @@ export const schemas = {
     offset: z.number().int().min(0).default(0),
     limit: z.number().int().min(1).max(500).default(100),
     sort: z
-      .enum(["rank", "year", "citations", "title", "updated"])
+      .enum(["rank", "similarity", "year", "citations"])
       .default("rank"),
     graph: z.boolean().default(false),
   }),

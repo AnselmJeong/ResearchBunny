@@ -14,7 +14,7 @@ import {
   filterReasons,
   similarityEdges,
 } from "../../src/shared/domain";
-import { DEFAULT_FILTERS, defaultState } from "../../src/shared/types";
+import { DEFAULT_FILTERS, defaultState, type Run } from "../../src/shared/types";
 import { parseBib, exportBib } from "../../src/service/interchange/bibtex";
 import {
   createBackup,
@@ -716,6 +716,12 @@ test("backtracking preserves selections, view state, branches and restart state"
     }).views["archive:"].scope,
     "archive",
   );
+  // Views saved with the old title or edit-time sort keep their place and list in their own order.
+  const legacy = JSON.parse(JSON.stringify({ navigation: rememberView(history, cited) }));
+  for (const view of Object.values(legacy.navigation.views) as { sort: string }[]) view.sort = "title";
+  const kept = restoreNavigation(legacy);
+  assert.deepEqual(kept.keys, history.keys);
+  assert.equal(kept.views["run:search"].sort, "rank");
   // A new launch keeps each view's place and selection but not the last session's search words.
   const searched = visitView(history, cited, defaultView({ scope: "shelf", scopeId: "folder", localQuery: "accelerated TMS", offset: 50, selected: ["e"] }));
   const fresh = withoutSearches(searched);
@@ -847,11 +853,65 @@ test("reading filters apply before pagination and preserve the archived inventor
       db.list({ ...args, filters: DEFAULT_FILTERS, limit: 50 }).total,
       4,
     );
-    assert.equal(schemas.list.parse(args).filters.reading, "reading");
+    // The title order is internal now; the list contract takes only the header sorts.
+    const request = { ...args, sort: "rank" };
+    assert.equal(schemas.list.parse(request).filters.reading, "reading");
     assert.equal(
-      schemas.list.parse({ ...args, filters: DEFAULT_FILTERS }).filters.reading,
+      schemas.list.parse({ ...request, filters: DEFAULT_FILTERS }).filters.reading,
       undefined,
     );
+  }));
+
+test("유사도 sorts a run by its relevance score and leaves unscored lists in their own order", () =>
+  fixture((db) => {
+    const projectId = db.projects()[0].id;
+    const works = [1, 2, 3, 4].map((n) => db.upsert(fromOpenAlex(raw(n, `Score fixture ${n}`))).work);
+    const at = new Date().toISOString();
+    const run: Run = { id: "score-run", projectId, mode: "search", query: "q", seedProfileId: null, inputIds: [], filters: { ...DEFAULT_FILTERS }, status: "completed", createdAt: at, updatedAt: at, calls: 0, maxCalls: 1, maxCandidates: 10, total: 4, count: 4, message: "", tasks: [], rankingVersion: "test" };
+    db.saveRun(run);
+    [0.2, 0.9, null, 0.5].forEach((score, i) => db.candidate(run, works[i], { origins: [], seedIds: [], sharedIds: [], denominator: 0, relation: "search", score, reasons: [], hidden: [], deferred: false, scope: "OpenAlex" }));
+    // The run's own rank can disagree with the score, as when citation links lift a paper.
+    works.forEach((w, i) => db.db.prepare("UPDATE candidates SET rank=? WHERE run_id=? AND work_id=?").run(4 - i, run.id, w.id));
+    const order = (scope: string, sort: string, scopeId?: string) =>
+      db.list({ projectId, scope, scopeId, query: "", filters: DEFAULT_FILTERS, showHidden: false, offset: 0, limit: 10, sort })
+        .works.map((w) => works.findIndex((x) => x.id === w.id));
+    assert.deepEqual(order("run", "rank", run.id), [0, 1, 2, 3]);
+    assert.deepEqual(order("run", "similarity", run.id), [1, 3, 0, 2]);
+    db.mutate(projectId, works.map((w) => w.id), { screening: "included" });
+    assert.deepEqual(order("archive", "similarity"), order("archive", "rank"));
+    assert.equal(schemas.list.parse({ projectId, scope: "archive", filters: DEFAULT_FILTERS, sort: "similarity" }).sort, "similarity");
+  }));
+
+test("outside a run 유사도 scores papers against the 초기 관심, which 초기 관심으로 좁히기 then narrows by", () =>
+  fixture((db) => {
+    const projectId = db.projects()[0].id;
+    const [seed, near, far] = [
+      raw(1, "Psilocybin and synaptic plasticity", [], "psilocybin increases dendritic spine density and synaptic plasticity"),
+      raw(2, "Ketamine and synaptic plasticity", [], "ketamine rapidly restores dendritic spine density and synaptic plasticity"),
+      raw(3, "Hip fracture surgery outcomes", [], "orthopedic outcomes after hip fracture in elderly patients"),
+    ].map((r) => db.upsert(fromOpenAlex(r)).work);
+    const bare = db.upsert(fromOpenAlex({ ...raw(4, "Untitled note"), abstract_inverted_index: null })).work;
+    const works = [far, bare, near, seed];
+    db.mutate(projectId, works.map((w) => w.id), { screening: "included" });
+    const list = (filters = DEFAULT_FILTERS, sort = "similarity") =>
+      db.list({ projectId, scope: "archive", query: "", filters, showHidden: false, offset: 0, limit: 10, sort });
+    // No 초기 관심 yet: nothing to score against.
+    assert.ok(list().works.every((w) => w.evidence?.score === null));
+    db.setSeeds(projectId, [seed.id], "psychedelic synaptic plasticity", {});
+    const scored = list();
+    assert.deepEqual(scored.works.map((w) => w.id).slice(0, 2), [seed.id, near.id]);
+    assert.ok(scored.works.every((w) => typeof w.evidence?.score === "number"));
+    const score = (id: string) => scored.works.find((w) => w.id === id)!.evidence!.score!;
+    assert.ok(score(near.id) > score(far.id));
+    // The list search box narrows the list without changing the scores.
+    const searched = db.list({ projectId, scope: "archive", query: "ketamine", filters: DEFAULT_FILTERS, showHidden: false, offset: 0, limit: 10, sort: "similarity" });
+    assert.equal(searched.works[0].evidence!.score, score(near.id));
+    // Only the filter asks for the judgment: then a paper without an abstract is 판단 보류 and stays.
+    assert.ok(scored.works.every((w) => !w.evidence!.deferred));
+    const narrowed = list({ ...DEFAULT_FILTERS, relevance: true, strictness: "strict" });
+    assert.deepEqual(new Set(narrowed.works.map((w) => w.id)), new Set([seed.id, near.id, bare.id]));
+    assert.equal(narrowed.deferred, 1);
+    assert.deepEqual(narrowed.works.find((w) => w.id === far.id), undefined);
   }));
 
 

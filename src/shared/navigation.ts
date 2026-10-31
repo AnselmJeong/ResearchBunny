@@ -30,9 +30,8 @@ const viewSchema = z.object({
     .default({}),
   query: z.string().default(""),
   localQuery: z.string().default(""),
-  sort: z
-    .enum(["rank", "year", "citations", "title", "updated"])
-    .default("rank"),
+  // The list headers sort by 유사도, 연도 or 피인용수; older views sorted by title or edit time.
+  sort: z.enum(["rank", "similarity", "year", "citations"]).catch("rank"),
   searchSort: z.enum(["relevance", "citations", "year"]).default("relevance"),
   semantic: z.boolean().default(false),
   filtersOpen: z.boolean().default(false),

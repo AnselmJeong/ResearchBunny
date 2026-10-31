@@ -29,7 +29,8 @@ export function ShelfTree({ shelf, scope, scopeId, navigate, onSetup }: {
   navigate: (scope: "shelf", id?: string) => void;
   onSetup: () => void;
 }) {
-  const [open, setOpen] = useState(true);
+  // The shelf starts folded so the sidebar opens tidy; its folders' own open state is remembered.
+  const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState<string[]>(loadOpen);
   useEffect(() => { try { localStorage.setItem(OPEN_KEY, JSON.stringify(expanded)); } catch { /* Optional view preference. */ } }, [expanded]);
   if (!shelf.configured)

@@ -552,6 +552,11 @@ test("the shelf list query is a ranked search scoped to the folder, and filters 
     expect(found.works[0]).toMatchObject({ id: smith.work_id, evidence: { reasons: ["의미와 검색어 모두 일치"] } });
     expect(found.works.map((w) => w.id)).not.toContain(park.work_id);
     expect(found.total).toBe(found.ids.length);
+    // 유사도 is the query's cosine (a semantic hit clears the 0.65 floor), not the fused rank score, and sorts by it.
+    expect(found.works[0].evidence!.score!).toBeGreaterThanOrEqual(0.65);
+    const similar: ListResult = await service.call("list", { projectId, scope: "shelf", scopeId: SHELF_ALL, query: "interoceptive prediction errors anxiety heartbeat", filters: DEFAULT_FILTERS, showHidden: false, offset: 0, limit: 50, sort: "similarity" });
+    const scores = similar.works.map((w) => w.evidence?.score ?? -2);
+    expect(scores).toEqual([...scores].sort((a, b) => b - a));
 
     // A folder search only looks inside that folder (and its subfolders).
     const domainB = await search("hearing cognitive impairment interoceptive anxiety", park.folder_id);

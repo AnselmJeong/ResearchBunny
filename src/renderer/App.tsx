@@ -11,6 +11,7 @@ import {
   ArrowRight,
   ArrowLeft,
   ArrowRightLeft,
+  ArrowDown,
   Bookmark,
   BookmarkMinus,
   BookOpen,
@@ -180,9 +181,7 @@ export function App() {
     [localQuery, setLocalQuery] = useState(""),
     // The shelf search embeds the query, so it runs on Enter instead of on every keystroke.
     [searchDraft, setSearchDraft] = useState(""),
-    [sort, setSort] = useState<
-      "rank" | "year" | "citations" | "title" | "updated"
-    >("rank"),
+    [sort, setSort] = useState<WorkspaceView["sort"]>("rank"),
     [searchSort, setSearchSort] = useState<"relevance" | "citations" | "year">(
       "relevance",
     ),
@@ -647,6 +646,14 @@ export function App() {
   const trail = scope === "run" ? runPath(snapshot?.runs || [], scopeId) : [];
   // In the shelf the list query is a ranked search, not a word filter.
   const shelfSearch = scope === "shelf" && !!localQuery.trim();
+  // A run and a shelf search list by relevance; other lists keep their own order.
+  const listOrder = shelfSearch || scope === "run" ? "관련도순" : "기본 순서";
+  // A run's relevance score, a shelf search's closeness to the query, elsewhere closeness to the 초기 관심.
+  const similarityBasis = scope === "run" ? "이 탐색의 관련성 점수입니다."
+    : shelfSearch ? "검색어와 뜻이 가까운 정도입니다."
+    : "초기 관심(seed·연구 질문)과 가까운 정도입니다.";
+  // Lists outside a run and a search have no 유사도 until the project has a 초기 관심.
+  const scored = list.works.some((w) => typeof w.evidence?.score === "number");
   const passageMode = shelfSearch && shelfMode === "passages";
   const answerMode = shelfSearch && shelfMode === "answer";
   const chooseShelfMode = (mode: ShelfMode) => {
@@ -1846,18 +1853,6 @@ export function App() {
                     <SlidersHorizontal size={14} />
                     필터{conditions.length > 0 && <span>{negating ? "NOT" : conditions.length}</span>}
                   </button>
-                  <select
-                    aria-label="목록 정렬"
-                    value={sort}
-                    onChange={(e) => setSort(e.target.value as typeof sort)}
-                  >
-                    {/* A run's own order is its relevance rank, so it says so. */}
-                    <option value="rank">{shelfSearch || scope === "run" ? "관련도순" : "기본 순서"}</option>
-                    <option value="year">최신순</option>
-                    <option value="citations">피인용수순</option>
-                    <option value="title">제목순</option>
-                    <option value="updated">최근 편집순</option>
-                  </select>
                   <button
                     className="icon-button"
                     title="문헌 직접 등록"
@@ -1911,9 +1906,7 @@ export function App() {
                     </span>
                   </div>
                 )}
-                {filtersOpen && (
-                  <Filters value={filters} onChange={setFilters} collection={scope === "collection"} />
-                )}
+                {filtersOpen && <Filters value={filters} onChange={setFilters} />}
                 {conditions.length > 0 && (
                   <div className="filter-status">
                     <span>
@@ -1921,30 +1914,6 @@ export function App() {
                       {negating ? `(${conditions.join(" · ")})` : conditions.join(" · ")}
                       {` → ${negating ? "조건에 맞지 않는" : "조건에 맞는"} 문헌 ${list.total.toLocaleString()}편 / ${list.scoped.toLocaleString()}편`}
                       {list.deferred ? ` · 관련성 판단 보류 ${list.deferred}편` : ""}
-                    </span>
-                    <span className="filter-status-actions">
-                      <button
-                        className="text-button"
-                        aria-pressed={negating}
-                        data-help={negating
-                          ? "조건 반전을 끄고 필터 조건에 맞는 문헌을 다시 봅니다."
-                          : "필터 조건 전체에 NOT을 붙여, 조건에 맞지 않는 문헌만 봅니다. 숨김 항목과 읽기 상태 탭은 뒤집지 않습니다."}
-                        onClick={() => {
-                          setFilters({ ...filters, negate: !negating });
-                          setOffset(0);
-                        }}
-                      >
-                        {negating ? "조건 반전 해제" : "조건 반전 (NOT)"}
-                      </button>
-                      <button
-                        className="text-button"
-                        onClick={() => {
-                          setFilters({ ...DEFAULT_FILTERS, reading: filters.reading, hideExcluded: filters.hideExcluded });
-                          setOffset(0);
-                        }}
-                      >
-                        조건 지우기
-                      </button>
                     </span>
                   </div>
                 )}
@@ -2167,8 +2136,36 @@ export function App() {
                             선택 반전
                           </button>
                         </div>
-                        <span>연도</span>
-                        <span>{scope === "run" ? "인용" : "읽기 상태"}</span>
+                        {(
+                          [
+                            ["similarity", "유사도", `유사도가 높은 문헌부터 봅니다. ${similarityBasis}`],
+                            ["year", "연도", "최근 문헌부터 봅니다."],
+                            ["citations", "피인용수", "피인용수가 많은 문헌부터 봅니다."],
+                          ] as const
+                        ).map(([key, label, help]) => {
+                          // A header sorts its column, largest first; pressed again it gives the list's own order back.
+                          const off = key === "similarity" && !scored;
+                          const active = sort === key && !off;
+                          return (
+                            <button
+                              key={key}
+                              type="button"
+                              className="column-sort"
+                              aria-pressed={active}
+                              disabled={off}
+                              data-help={off
+                                ? scope === "run" || shelfSearch ? "이 목록에는 유사도가 없습니다." : "초기 관심(seed·연구 질문)을 정하면 유사도가 보입니다."
+                                : active ? `원래 순서(${listOrder})로 되돌립니다.` : help}
+                              onClick={() => {
+                                setSort(active ? "rank" : key);
+                                setOffset(0);
+                              }}
+                            >
+                              {label}
+                              {active && <ArrowDown size={11} aria-hidden />}
+                            </button>
+                          );
+                        })}
                         <span />
                       </div>
                       <div className="paper-list">
@@ -2264,11 +2261,12 @@ export function App() {
                                 )
                               )}
                             </button>
+                            <span className="similarity-cell">
+                              {typeof w.evidence?.score === "number" ? w.evidence.score.toFixed(2) : "—"}
+                            </span>
                             <span className="year-cell">{w.year || "—"}</span>
                             <span className="citation-cell">
-                              {scope === "run"
-                                ? (w.citations?.toLocaleString() ?? "—")
-                                : READ[w.state.reading]}
+                              {w.citations?.toLocaleString() ?? "—"}
                             </span>
                             <div className="row-actions">
                               <button
