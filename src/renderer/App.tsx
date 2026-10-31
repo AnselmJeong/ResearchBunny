@@ -239,7 +239,9 @@ export function App() {
     lastIndex = useRef<number | null>(null),
     searchInput = useRef<HTMLInputElement>(null),
     discoveryStarting = useRef(false),
-    toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined),
+    // The genealogy workspace on screen, which shows its own completion.
+    shownGenealogy = useRef<string | null>(null);
   // The inspector follows its list; see anchorInspector.
   const inspectorAnchor = useRef<InspectorAnchor>({ id: null, listed: false, key: "" });
   const [navigation, setNavigation] = useState(() => restoreNavigation({}));
@@ -327,12 +329,14 @@ export function App() {
   );
   const refresh = useCallback(() => setRevision((r) => r + 1), []);
   const snapshotRefresh = useRef<ReturnType<typeof refreshQueue> | null>(null);
+  shownGenealogy.current = dialog === "settings" ? null : genealogyId;
   useEffect(
     () =>
       window.bunny.onEvent((event) => {
         // Passage indexing and answers report progress often; only their own panels listen.
         if (event.type === "chat" || event.type === "passages" || event.type === "answer") return;
         if (event.type === "attention") { flash(event.message); return; }
+        if (event.type === "genealogy" && event.finished && shownGenealogy.current !== event.id) flash(`${event.finished.title} · ${event.finished.body}`);
         if (event.type === "service-error")
           flash(event.message || "자료 서비스 오류", true);
         // Source probes and shelf indexing progress change status, not the list or graph.

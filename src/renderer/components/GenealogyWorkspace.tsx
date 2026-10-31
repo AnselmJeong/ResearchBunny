@@ -16,6 +16,7 @@ import {
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { GenealogySettingsForm } from "./GenealogySettingsForm";
+import { Modal } from "./Modal";
 import { numberCitations } from "../../shared/citations";
 import type { Settings } from "../../shared/types";
 
@@ -542,16 +543,86 @@ function Checks({ id, view, busy, onRun, onError }: { id: string; view: Genealog
   );
 }
 
+const duration = (from: string, to: string) => {
+  const minutes = Math.round((Date.parse(to) - Date.parse(from)) / 60000);
+  if (!(minutes >= 1)) return "1분 미만";
+  return minutes < 60 ? `${minutes}분` : `${Math.floor(minutes / 60)}시간${minutes % 60 ? ` ${minutes % 60}분` : ""}`;
+};
+
+/** Says the report is done, with what it holds and its files. */
+function Finished({ view, onOpen, onReveal, onChecks, onClose }: { view: GenealogyView; onOpen: (kind: "epub" | "pdf" | "markdown") => void; onReveal: () => void; onChecks: () => void; onClose: () => void }) {
+  const { genealogy: g, outputs: o } = view;
+  const sections = view.outline?.chapters.flatMap((c) => c.sections) ?? [];
+  const written = sections.filter((s) => s.status === "written" || s.status === "edited").length;
+  const open = g.completed.check ? view.checks.filter((c) => !c.ok).length : null;
+  return (
+    <Modal title="계보 리포트를 완성했습니다" onClose={onClose}>
+      <div className="genealogy-finished">
+        <span className="genealogy-finished-icon">
+          <Check size={22} />
+        </span>
+        <div>
+          <strong>{g.title}</strong>
+          <p className="subtle">작업 폴더의 build에 {[o.epub && "EPUB", o.pdf && "PDF", "Markdown·bib"].filter(Boolean).join("·")} 파일을 만들었습니다.</p>
+        </div>
+      </div>
+      <dl className="genealogy-finished-stats">
+        <div>
+          <dt>본문</dt>
+          <dd>{sections.length ? `${written}/${sections.length}절` : "—"}</dd>
+        </div>
+        <div>
+          <dt>인용 문헌</dt>
+          <dd>{o.cited !== undefined ? `${o.cited}편` : "—"}</dd>
+        </div>
+        <div>
+          <dt>검증</dt>
+          <dd>{open === null ? "실행하지 않음" : open ? `확인할 항목 ${open}개` : "모든 항목 통과"}</dd>
+        </div>
+        {g.job && (
+          <div>
+            <dt>이번 실행</dt>
+            <dd>
+              {duration(g.job.startedAt, g.job.updatedAt)}
+              {g.job.calls > 0 ? ` · AI ${g.job.calls}회` : ""}
+            </dd>
+          </div>
+        )}
+      </dl>
+      {o.errors.map((e, i) => (
+        <p key={i} className="notice">
+          {e}
+        </p>
+      ))}
+      <footer className="modal-footer">
+        {!!open && <button onClick={onChecks}>검증 결과 보기</button>}
+        <button onClick={onReveal}>
+          <FolderOpen size={15} />
+          작업 폴더
+        </button>
+        {o.epub && <button onClick={() => onOpen("epub")}>EPUB 열기</button>}
+        <button className="primary" onClick={() => onOpen(o.pdf ? "pdf" : "markdown")}>
+          <BookOpen size={15} />
+          {o.pdf ? "PDF 열기" : "Markdown 열기"}
+        </button>
+      </footer>
+    </Modal>
+  );
+}
+
 export function GenealogyWorkspace({ id, onError, onDeleted, app }: { id: string; onError: (error: unknown) => void; onDeleted: () => void; app: Pick<Settings, "codexModel" | "claudeModel" | "ollamaModel"> }) {
   const [view, setView] = useState<GenealogyView | null>(null);
   const [tab, setTab] = useState<Tab>("papers");
   const [draft, setDraft] = useState<GenealogySettings | null>(null);
+  const [finished, setFinished] = useState(false);
   const load = useCallback(() => window.bunny.genealogyView({ id }).then(setView).catch(onError), [id, onError]);
   useEffect(() => {
     void load();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const off = window.bunny.onEvent((event) => {
       if (event.type !== "genealogy" || event.id !== id) return;
+      // The run has rendered the report: show it with the files it made.
+      if (event.finished) return void load().then(() => setFinished(true));
       // Progress arrives often; one refresh per quarter second is enough.
       timer ??= setTimeout(() => {
         timer = undefined;
@@ -651,6 +722,24 @@ export function GenealogyWorkspace({ id, onError, onDeleted, app }: { id: string
         )}
         {tab === "manuscript" && <Manuscript id={id} view={view} busy={running} onError={onError} onRewrite={(uid) => void window.bunny.genealogyRewrite({ id, uid }).then(() => load()).catch(onError)} />}
         {tab === "checks" && <Checks id={id} view={view} busy={running} onError={onError} onRun={(step) => void run(step, false)} />}
+        {finished && (
+          <Finished
+            view={view}
+            onClose={() => setFinished(false)}
+            onOpen={(kind) => {
+              setFinished(false);
+              void window.bunny.genealogyOpenOutput({ id, kind }).catch(onError);
+            }}
+            onReveal={() => {
+              setFinished(false);
+              void window.bunny.genealogyReveal({ id }).catch(onError);
+            }}
+            onChecks={() => {
+              setFinished(false);
+              setTab("checks");
+            }}
+          />
+        )}
         {tab === "settings" && (
           <>
             <GenealogySettingsForm value={draft ?? g.settings} onChange={setDraft} app={app} />

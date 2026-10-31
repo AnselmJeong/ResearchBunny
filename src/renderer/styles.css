@@ -3924,6 +3924,16 @@ html[data-theme="dark"] .selection-bar .primary {
 .genealogy-job { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 28px 14px; padding: 9px 12px; border-radius: 8px; background: var(--soft); border: 1px solid var(--border); }
 .genealogy-job.failed { border-color: var(--danger); color: var(--danger); }
 .genealogy-job.paused { border-color: #c9a35a; }
+.genealogy-job.completed { border-color: transparent; background: var(--accent-soft); }
+.genealogy-job.completed > svg { color: var(--accent); }
+.genealogy-finished { display: flex; align-items: center; gap: 14px; }
+.genealogy-finished strong { font-size: 15px; font-weight: 600; }
+.genealogy-finished p { margin: 4px 0 0; }
+.genealogy-finished-icon { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 42px; border-radius: 50%; color: var(--accent); background: var(--accent-soft); }
+.genealogy-finished-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 20px 0 0; }
+.genealogy-finished-stats div { padding: 10px 12px; border-radius: 8px; background: var(--soft); }
+.genealogy-finished-stats dt { font-size: 11.5px; color: var(--muted); }
+.genealogy-finished-stats dd { margin: 3px 0 0; font-size: 14px; font-weight: 500; }
 .genealogy-job span { min-width: 0; }
 .genealogy-progress { flex: 1 1 140px; max-width: 260px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
 .genealogy-progress > span { display: block; height: 100%; background: var(--accent); }

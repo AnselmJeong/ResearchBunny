@@ -15,6 +15,7 @@ import {
   type GenealogyCard,
   type GenealogyJob,
   type GenealogyProvider,
+  type CheckItem,
   type GenealogyOutputs,
   type Outline,
   type OutlineChapter,
@@ -229,6 +230,7 @@ export class GenealogyEngine {
         step = following;
       }
       this.progress(g, { status: "completed", calls: meter.calls });
+      if (step === "render") this.deps.emit({ type: "genealogy", id, finished: this.finished(g) });
     } catch (error) {
       const e = error instanceof AppError ? error : null;
       if (signal.aborted) this.progress(g, { status: "cancelled", calls: meter.calls, message: "취소됨 · 이미 만든 결과는 유지됩니다." });
@@ -241,6 +243,17 @@ export class GenealogyEngine {
           message: e?.message || (error instanceof Error ? `작업을 완료하지 못했습니다: ${error.message}` : "작업을 완료하지 못했습니다."),
         });
     }
+  }
+
+  /** What the finished report holds, for the notice that it is done. */
+  private finished(g: Genealogy) {
+    const outputs = this.store.state<GenealogyOutputs>(g.id, "outputs") ?? EMPTY_OUTPUTS;
+    const open = g.completed.check ? (this.store.state<CheckItem[]>(g.id, "checks") ?? []).filter((c) => !c.ok).length : null;
+    const files = [outputs.epub && "EPUB", outputs.pdf && "PDF"].filter(Boolean).join("·") || "Markdown";
+    const parts = [g.title, files, `인용 문헌 ${outputs.cited ?? 0}편`];
+    if (open !== null) parts.push(open ? `검증에서 확인할 항목 ${open}개` : "검증 통과");
+    if (outputs.errors.length) parts.push(`오류 ${outputs.errors.length}건`);
+    return { title: "계보 리포트를 완성했습니다", body: parts.join(" · ") };
   }
 
   /** Runs one step; a returned line is shown with its completion. */
@@ -1429,7 +1442,7 @@ export class GenealogyEngine {
     const tools = this.deps.tools?.() ?? { pandoc: null, typst: null };
     this.progress(g, { message: "원고와 bib 정리 중", done: 0, total: 3 });
     const files = await this.assembleFiles(g);
-    const outputs: GenealogyOutputs = { markdown: join(g.workspace, files.markdown), bib: join(g.workspace, files.bib), epub: null, pdf: null, renderedAt: now(), errors: [] };
+    const outputs: GenealogyOutputs = { markdown: join(g.workspace, files.markdown), bib: join(g.workspace, files.bib), epub: null, pdf: null, renderedAt: now(), errors: [], cited: files.cited };
     if (!tools.pandoc) outputs.errors.push("pandoc을 찾지 못해 EPUB·PDF를 만들지 못했습니다. Homebrew로 pandoc을 설치하면(brew install pandoc) 다음 렌더에서 만듭니다.");
     else {
       this.progress(g, { message: "EPUB 만드는 중", done: 1, total: 3 });

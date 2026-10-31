@@ -458,7 +458,9 @@ export type AppEvent = {
   type: "changed" | "progress" | "service-error" | "shelf";
   runId?: string;
   message?: string;
-} | { type: "chat"; session: import("./chat").ChatSession } | { type: "genealogy"; id: string }
+} | { type: "chat"; session: import("./chat").ChatSession }
+  /** `finished` comes once, when a run has rendered the report. */
+  | { type: "genealogy"; id: string; finished?: { title: string; body: string } }
   /** The app's Chrome needs the person (robot check, login); `pid` lets main bring that Chrome forward. */
   | { type: "attention"; message: string; pid?: number }
   | { type: "passages"; job: import("./passages").PassageJob }

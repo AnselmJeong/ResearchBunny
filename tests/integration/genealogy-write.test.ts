@@ -136,6 +136,14 @@ test("writing follows the outline, carries summaries forward, then checks and re
     if (tools.typst) expect(outputs.pdf && existsSync(outputs.pdf)).toBe(true);
     expect(outputs.errors).toEqual([]);
   } else expect(outputs.errors[0]).toContain("pandoc");
+  // One notice that the report is done, with what it holds.
+  const finished = f.events.flatMap((e) => (e.type === "genealogy" && e.finished ? [e] : []));
+  expect(finished).toHaveLength(1);
+  expect(finished[0]).toMatchObject({ id: g.id, finished: { title: "계보 리포트를 완성했습니다" } });
+  expect(finished[0].finished!.body).toStartWith(`${g.title} · `);
+  expect(finished[0].finished!.body).toContain(`인용 문헌 ${engine.store.state<{ cited: number }>(g.id, "outputs")!.cited}편`);
+  const open = [...checks.values()].filter((c) => !c.ok).length;
+  expect(finished[0].finished!.body).toContain(open ? `검증에서 확인할 항목 ${open}개` : "검증 통과");
 });
 
 test("a chapter the user edited is kept, and a rewritten section goes beside it", async () => {
@@ -176,6 +184,8 @@ test("a section the safeguards stop stays unwritten, the rest are written, and r
   // The section after the stopped one does not see it among the previous sections.
   expect(calls[2].previous).toBe(1);
   const first = engine.store.sectionTexts(g.id).get(outline.chapters[0].sections[0].uid);
+  // A run that stops short says nothing about a finished report.
+  expect(f.events.some((e) => e.type === "genealogy" && !!e.finished)).toBe(false);
 
   refuse.clear();
   calls.length = 0;

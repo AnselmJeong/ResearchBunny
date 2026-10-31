@@ -32,6 +32,8 @@ let libraryRoot = join(root(), "library");
 let window: BrowserWindow | null = null;
 const emit = (event: AppEvent) => {
   if (event.type === "attention") attention(event.message, event.pid);
+  // A report runs for hours; say so when it is done, even with the app in the background.
+  if (event.type === "genealogy" && event.finished) Utils.showNotification({ title: event.finished.title, body: event.finished.body });
   if (window) hostRpc.send.event(event);
 };
 /** The app's Chrome needs the person: hand it focus if ResearchBunny is in front, else say so in a notification. */

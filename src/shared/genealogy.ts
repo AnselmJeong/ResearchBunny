@@ -302,6 +302,8 @@ export interface GenealogyOutputs {
   pdf: string | null;
   renderedAt: string | null;
   errors: string[];
+  /** Works the rendered report cites. */
+  cited?: number;
 }
 
 export interface GenealogySummary {
