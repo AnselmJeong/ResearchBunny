@@ -104,7 +104,7 @@ export class GenealogyAI {
       request.signal.throwIfAborted();
       reply = await this.raw(
         request as JsonRequest<unknown>,
-        `${request.instruction}\n\nYour previous reply was rejected: ${problem}. Return the complete answer again as one JSON object that matches the schema and every rule above.`,
+        `${request.instruction}\n\nYour previous reply was rejected: ${problem}. Return the complete answer again as one JSON object, with nothing before or after it, that matches the schema and every rule above.`,
         request.input,
       );
     }

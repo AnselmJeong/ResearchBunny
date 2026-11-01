@@ -43,12 +43,14 @@ if (args.includes("--version")) {
     const answer = '{"queries":["synthetic literature"]}';
     event({ type: "message_start", message: { model: "claude-opus-5-5" } });
     if (scenario === "refusal-thinking") event({ type: "content_block_delta", delta: { type: "thinking_delta", thinking: "private" } });
+    // Stopped after a whole answer, with a rewrite that no message_start opens.
+    else if (scenario === "refusal-whole") event({ type: "content_block_delta", delta: { type: "text_delta", text: '{"queries":["stopped"]}' } });
     else event({ type: "content_block_delta", delta: { type: "text_delta", text: '{"queries":["partial' } });
     event({ type: "message_delta", delta: { stop_reason: "refusal", stop_details: { type: "refusal", category: "bio" } } });
     if (scenario === "refusal-final") send({ type: "result", subtype: "success", is_error: false, result: '{"queries":["partial' });
     else {
       send({ type: "system", subtype: "model_refusal_fallback", trigger: "refusal", original_model: "claude-opus-5-5", fallback_model: "claude-opus-5", api_refusal_category: "bio" });
-      event({ type: "message_start", message: { model: "claude-opus-5" } });
+      if (scenario !== "refusal-whole") event({ type: "message_start", message: { model: "claude-opus-5" } });
       event({ type: "content_block_delta", delta: { type: "text_delta", text: answer } });
       event({ type: "message_delta", delta: { stop_reason: "end_turn" } });
       send({ type: "result", subtype: "success", is_error: false, result: answer });

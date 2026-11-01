@@ -96,6 +96,13 @@ test("a stop before any text streams only the rewritten answer", async () => {
   expect(await collect(client.stream(request))).toBe('{"queries":["synthetic literature"]}');
 });
 
+test("a rewrite without its own message start does not carry the stopped answer", async () => {
+  const { client } = await fixture("refusal-whole");
+  // Without a schema nothing is taken out of the text, so only the rewrite may be in it.
+  expect(await client.complete(request)).toBe('{"queries":["synthetic literature"]}');
+  expect(JSON.parse(await client.complete({ ...request, outputSchema: { type: "object" } }))).toEqual({ queries: ["synthetic literature"] });
+});
+
 test("an answer left stopped fails with the reason, not as a format error", async () => {
   const { client, home } = await fixture("refusal-final");
   await expect(client.complete({ ...request, outputSchema: { type: "object" } })).rejects.toThrow("안전장치가 응답을 멈췄습니다 (분류: bio)");
@@ -106,6 +113,20 @@ test("jsonReply strips fences and surrounding prose", () => {
   expect(jsonReply('```json\n{"a":1}\n```')).toBe('{"a":1}');
   expect(jsonReply('결과입니다.\n{"a":{"b":2}}\n끝')).toBe('{"a":{"b":2}}');
   expect(jsonReply(' {"a":1} ')).toBe('{"a":1}');
+});
+
+test("jsonReply takes the answer out of a reply with more after it", () => {
+  const answer = '{"markdown":"본문 {중괄호}와 \\"따옴표\\" [@key]","missingSources":[{"need":"x"}]}';
+  // Each of these fails JSON.parse with "Unable to parse JSON string".
+  expect(jsonReply(`${answer}\n\n참고: 인용은 allowedKeys만 썼습니다.`)).toBe(answer);
+  expect(jsonReply(`${answer}}`)).toBe(answer);
+  expect(jsonReply(`${answer.replace("본문", "초안")}\n${answer}`)).toBe(answer);
+  expect(jsonReply(`\`\`\`json\n${answer}\n}\n\`\`\``)).toBe(answer);
+  expect(jsonReply(`\`\`\`json\n${answer}\n\`\`\`\n덧붙임 {`)).toBe(answer);
+  // A cut-off answer stays as it is, so the parse error names what is wrong.
+  const cut = '{"markdown":"잘린 답 {"a":1}';
+  expect(jsonReply(cut)).toBe(cut);
+  expect(jsonReply('{"markdown":"잘린 답, "missingSources":[{"need":"x"}]')).toBe('{"markdown":"잘린 답, "missingSources":[{"need":"x"}]');
 });
 
 for (const scenario of ["api-key", "third-party", "signed-out", "old"])

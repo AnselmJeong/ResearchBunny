@@ -44,3 +44,12 @@ AI 연결 방식에 `Claude (Claude subscription)`을 더했다. 추천·분류�
 - 모델이 바뀌는 경우는 이것 하나다. 앱은 `--fallback-model`을 넘기지 않는다. Claude Code가 안전장치 중단 뒤 구독 안에서 스스로 하는 재작성이고, 유료 API로 넘어가지 않는다.
 - `GenealogyAI`는 이 오류를 `AI_REFUSAL`로 바꾸고 형식 수정 재요청을 하지 않는다. 같은 모델에 다시 보내면 대개 다시 멈춘다. JSON 오류의 재요청 문구에는 파서의 오류 내용도 붙인다.
 - 시험: 가짜 CLI 시나리오 `refusal-rewrite`, `refusal-thinking`, `refusal-final`과 `genealogy-llm`의 거절·알림 전달.
+
+## 이후 변경 · JSON 뒤에 더 붙은 답 (2026-11-01)
+
+0.3.25 뒤에도 집필이 `AI 응답을 두 번 받았지만 형식이 맞지 않았습니다: the reply was not valid JSON (JSON Parse error: Unable to parse JSON string)`으로 멈췄다. Bun의 `JSON.parse`는 **완결된 JSON 값 뒤에 다른 글자가 더 있을 때만** 이 문구를 낸다. 잘린 답(`Expected '}'`, `Unterminated string`)과는 다르다. 실패한 답의 원문은 남지 않아 보지 못했다. 그래서 그렇게 될 수 있는 길을 모두 막았다.
+
+- 안전장치가 메시지를 멈추면 그때까지의 글자를 버린다. 다시 쓴 답이 새 `message_start` 없이 이어 오면, 멈춘 답이 완결된 JSON인 경우 `{멈춘 답}{다시 쓴 답}`이 되어 정확히 이 오류가 난다. 가짜 CLI 시나리오 `refusal-whole`이 이 경우를 재현한다. 고치기 전 클라이언트로 돌리면 두 답이 이어 붙어 나온다.
+- `jsonReply`는 답 전체가 JSON이 아니면, 답 안에서 끝까지 닫히고 파싱되는 마지막 객체를 꺼낸다. 문자열과 이스케이프를 따라 읽는다. 답 뒤의 메모, 남는 `}`, 두 번 쓴 답, 코드 울타리 안팎의 덧붙임에서도 답을 꺼낸다. 끝까지 닫히지 않은(잘린) 답은 그대로 두어 파서가 무엇이 틀렸는지 말하게 한다. Codex·Ollama 답도 계보 호출에서는 이 함수를 거친다.
+- 형식 수정 재요청 문구에 `with nothing before or after it`을 더했다.
+- 시험: `claude`의 `refusal-whole`, `jsonReply` 경우들, `genealogy-llm`의 남는 중괄호·뒤 메모(재요청 없이 한 번에 통과).

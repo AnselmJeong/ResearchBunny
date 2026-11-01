@@ -1054,14 +1054,14 @@ export class GenealogyEngine {
     if (!outline) throw new AppError("NOT_READY", "목차를 먼저 만드세요.");
     await this.ensureCorpus(g, outline, signal, meter);
     const total = { done: 0, problems: 0, requests: 0, adopted: 0 };
-    // Sections the safeguards stopped stay unwritten and are not asked again in this run.
-    const refused = new Map<string, string>();
+    // Sections the safeguards stopped, or whose replies stayed unusable, stay unwritten and are not asked again in this run.
+    const unwritten = new Map<string, AppError>();
     const add = (r: { done: number; problems: number; requests: number }) => {
       total.done += r.done;
       total.problems += r.problems;
       total.requests += r.requests;
     };
-    add(await this.writeSections(g, outline, signal, meter, refused));
+    add(await this.writeSections(g, outline, signal, meter, unwritten));
     // What the writer asked for becomes candidates; in automatic mode the found papers join and their sections are rewritten.
     if (g.settings.expansion !== "off")
       for (let pass = 0; pass < 2; pass++) {
@@ -1087,19 +1087,24 @@ export class GenealogyEngine {
         this.progress(g, { message: `집필 요청으로 ${ids.length}편 자동 채택 · 자료 준비와 카드` });
         await this.prepare(g, signal, meter, ids);
         await this.cards(g, signal, meter);
-        const again = await this.writeSections(g, outline, signal, meter, refused);
+        const again = await this.writeSections(g, outline, signal, meter, unwritten);
         add(again);
         if (!again.done) break;
       }
     await this.pruneChapters(g, outline);
     for (const step of ["check", "render"] as const) delete g.completed[step];
     this.store.save(g);
-    if (refused.size)
+    if (unwritten.size) {
+      const [first] = unwritten.values();
+      const reason = /[.!?]$/.test(first.message) ? first.message : `${first.message}.`;
+      // A stopped section is usually stopped again by the same model; an unusable reply often is not.
+      const advice = [...unwritten.values()].some((e) => e.code === "AI_REFUSAL") ? "설정 탭에서 집필 모델을 바꾼 뒤 이어서 진행하면" : "이어서 진행하면";
       throw new AppError(
-        "AI_REFUSAL",
-        `${total.done}절을 쓰고 ${refused.size}절(${[...refused.keys()].join(", ")})은 쓰지 못했습니다: ${[...refused.values()][0]} 써 둔 절은 그대로 있습니다. 설정 탭에서 집필 모델을 바꾼 뒤 이어서 진행하면 남은 절만 씁니다.`,
+        first.code,
+        `${total.done}절을 쓰고 ${unwritten.size}절(${[...unwritten.keys()].join(", ")})은 쓰지 못했습니다: ${reason} 써 둔 절은 그대로 있습니다. ${advice} 남은 절만 씁니다.`,
         true,
       );
+    }
     return `${total.done}절 집필${total.problems ? ` · 검사 표시 ${total.problems}건` : ""}${total.requests ? ` · 근거 요청 ${total.requests}건` : ""}${total.adopted ? ` · 요청 논문 자동 채택 ${total.adopted}편` : ""}`;
   }
 
@@ -1165,7 +1170,7 @@ export class GenealogyEngine {
   }
 
   /** Writes every planned or stale section in outline order and the chapter files they belong to. */
-  private async writeSections(g: Genealogy, outline: Outline, signal: AbortSignal, meter: Meter, refused: Map<string, string>) {
+  private async writeSections(g: Genealogy, outline: Outline, signal: AbortSignal, meter: Meter, unwritten: Map<string, AppError>) {
     const papers = this.store.papers(g.id, true);
     const works = new Map(papers.map((p) => [p.workId, this.deps.db.get(p.workId)]));
     const cards = this.store.cards(g.id);
@@ -1175,7 +1180,7 @@ export class GenealogyEngine {
     const pool = numberPool(cards.values());
     const branches = this.store.state<Branch[]>(g.id, "branches") ?? [];
     const texts = this.store.sectionTexts(g.id);
-    const pending = (s: OutlineSection) => (s.status === "planned" || s.status === "stale") && !refused.has(s.id);
+    const pending = (s: OutlineSection) => (s.status === "planned" || s.status === "stale") && !unwritten.has(s.id);
     const todo = outline.chapters.flatMap((c) => c.sections).filter(pending).length;
     let done = 0;
     let problems = 0;
@@ -1213,12 +1218,12 @@ export class GenealogyEngine {
             }),
             parse: (value) => parseSection(value, section.title, allowed, attempt++ === 0, pool),
           }).catch((error: unknown) => {
-            if (!(error instanceof AppError && error.code === "AI_REFUSAL")) throw error;
+            if (!(error instanceof AppError && (error.code === "AI_REFUSAL" || error.code === "AI_FORMAT"))) throw error;
             return error;
           });
           if (result instanceof AppError) {
             // The section keeps its status and any earlier text; the next sections are still written.
-            refused.set(section.id, result.message);
+            unwritten.set(section.id, result);
             section.problems = [result.message];
             this.store.state(g.id, "outline", outline);
             this.progress(g, { calls: meter.calls });

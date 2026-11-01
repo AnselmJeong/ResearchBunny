@@ -51,6 +51,16 @@ test("an invalid reply gets one corrective retry that names the problem", async 
   expect(instructions[1]).toContain("too_small");
 });
 
+test("a note or a stray brace after the answer is taken as the answer, without a retry", async () => {
+  const db = await library();
+  const replies = ['{"answer":"ok"}}', '{"answer":"ok"}\n\n위 JSON이 답입니다.'];
+  let calls = 0;
+  const ai = new GenealogyAI(db, { claude: { async complete() { calls++; return replies.shift()!; } } });
+  expect(await ai.json({ ...base, route: { provider: "claude", model: "" } })).toEqual({ answer: "ok" });
+  expect(await ai.json({ ...base, route: { provider: "claude", model: "" } })).toEqual({ answer: "ok" });
+  expect(calls).toBe(2);
+});
+
 test("two unusable replies fail as a format error", async () => {
   const db = await library();
   const ai = new GenealogyAI(db, { claude: { async complete() { return "not json"; } } });
