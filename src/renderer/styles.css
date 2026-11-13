@@ -23,6 +23,7 @@
   --graph-seed: #bd8734;
   --graph-citation: #567d9b;
   --graph-related: #af792a;
+  --graph-found: #c9921a;
   --shadow: 0 16px 80px #172a2026;
   --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2368756f' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   color-scheme: light;
@@ -2147,6 +2148,7 @@ html[data-theme="dark"] {
   --graph-seed: #e6b863;
   --graph-citation: #8eb1cb;
   --graph-related: #e6b863;
+  --graph-found: #f0c75e;
   --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a5b2aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   color-scheme: dark;
 }
@@ -2201,6 +2203,7 @@ html[data-theme="dark"] .graph-wrap {
   --graph-seed: #e6b863;
   --graph-citation: #8eb1cb;
   --graph-related: #e6b863;
+  --graph-found: #f0c75e;
     --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a5b2aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
     color-scheme: dark;
   }
@@ -3399,6 +3402,60 @@ html[data-theme="dark"] .selection-bar .primary {
 .graph-edge-key.related { border-top: 2px dashed var(--graph-related); }
 
 .graph-edge-key.questionable { border-top: 3px dotted var(--danger); }
+.graph-find {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 25px;
+  padding: 0 4px 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--muted);
+}
+.graph-find:focus-within { border-color: var(--accent); }
+.graph-controls .graph-find input {
+  width: 150px;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  color: var(--text);
+}
+.graph-controls .graph-find input:focus { outline: none; }
+.graph-find-count { font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.graph-controls .graph-find button { min-height: 21px; padding: 2px; color: var(--muted); }
+.graph-tooltip {
+  position: absolute;
+  z-index: 6;
+  width: max-content;
+  max-width: 300px;
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  box-shadow: 0 6px 20px #0000002a;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+  pointer-events: none;
+  overflow-wrap: anywhere;
+}
+.graph-tooltip.flip { transform: translateX(-100%); }
+.graph-tooltip strong {
+  margin-bottom: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.graph-tooltip-status { color: var(--accent); }
 /* The notice shares the canvas cell; the canvas must be pinned too or auto-placement moves it down a row. */
 .graph-canvas, .graph-empty { grid-row: 1; grid-column: 1; }
 .graph-empty { position: relative; z-index: 5; align-self: center; justify-self: center; display: grid; gap: 6px; max-width: 360px; padding: 0 16px; text-align: center; font-size: 12px; line-height: 1.7; color: var(--muted); pointer-events: none; }

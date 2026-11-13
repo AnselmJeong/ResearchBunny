@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, useMemo } from "react";
-import cytoscape, { type Core, type ElementDefinition } from "cytoscape";
-import { Focus, ZoomIn, ZoomOut, Waypoints, RotateCcw } from "lucide-react";
+import cytoscape, { type Core, type ElementDefinition, type NodeSingular } from "cytoscape";
+import { Focus, ZoomIn, ZoomOut, Waypoints, RotateCcw, Search, ChevronUp, ChevronDown } from "lucide-react";
 import type { WorkView, ArchiveTopic } from "../../shared/types";
 import { archiveNodeColor, subfolderColors, UNCLASSIFIED_COLOR } from "../../shared/classification";
-import { citationWarnings, citationNodeDiameter, incomingCitationCounts, GRAPH_LIMIT } from "../../shared/graph";
+import { citationWarnings, citationNodeDiameter, incomingCitationCounts, graphSearch, GRAPH_LIMIT } from "../../shared/graph";
 import { similarityEdges } from "../../shared/domain";
 import {
   capturePositions,
@@ -11,6 +11,62 @@ import {
   placeGraph,
   individualNodeDragging,
 } from "./graphLayout";
+import { labelGeometry, refreshLabels } from "./graphLabels";
+
+/** Long enough that sweeping the pointer across a dense graph does not flash every neighbourhood. */
+const HOVER_DELAY_MS = 180;
+/** Moving from node to node keeps the preview; leaving the nodes ends it after this grace. */
+const HOVER_LEAVE_MS = 120;
+const TOOLTIP_WIDTH = 300;
+const TOOLTIP_GAP = 12;
+
+const SCREENING_LABEL: Record<WorkView["state"]["screening"], string> = {
+  included: "아카이브에 저장됨",
+  pending: "미저장 후보",
+  excluded: "제외 문헌",
+  trash: "휴지통 문헌",
+};
+
+function authorLine(authors: string[]): string {
+  if (!authors.length) return "저자 미상";
+  // Names are stored "Surname, Given", so a comma cannot also separate them; the inspector uses " · " too.
+  const shown = authors.slice(0, 3).join(" · ");
+  return authors.length > 3 ? `${shown} 외 ${authors.length - 3}명` : shown;
+}
+
+const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+type Hover = { id: string; x: number; y: number; radius: number };
+
+/** The hovered paper's title and facts, beside the node and inside the canvas. */
+function GraphTooltip({ work, hover, area, status, place, inGraph }: {
+  work: WorkView;
+  hover: Hover;
+  area: { width: number; height: number };
+  status: string;
+  place: string | null;
+  inGraph: number;
+}) {
+  const right = hover.x + hover.radius + TOOLTIP_GAP;
+  // Flip to the left of the node only when the right side is short and the left side has room.
+  const flip = right + TOOLTIP_WIDTH > area.width && hover.x - hover.radius - TOOLTIP_GAP - TOOLTIP_WIDTH >= 0;
+  const left = flip ? hover.x - hover.radius - TOOLTIP_GAP : right;
+  const top = Math.max(8, Math.min(hover.y - 18, area.height - 150));
+  return (
+    <div className={`graph-tooltip${flip ? " flip" : ""}`} style={{ left, top }} role="tooltip">
+      <strong>{work.title}</strong>
+      <span>{authorLine(work.authors)}</span>
+      <span>{work.year ?? "연도 미상"}{work.venue ? ` · ${work.venue}` : ""}</span>
+      <span>
+        {work.citations === null ? "피인용 정보 없음" : `피인용 ${work.citations.toLocaleString()}회`}
+        {` · 이 그래프 안 ${inGraph.toLocaleString()}회`}
+      </span>
+      {place && <span>{place}</span>}
+      <span className="graph-tooltip-status">{status}</span>
+    </div>
+  );
+}
+
 export function Graph({
   works,
   topics,
@@ -72,6 +128,12 @@ export function Graph({
     [label, setLabel] = useState(true),
     [similarity, setSimilarity] = useState(true);
   const [topicColors, setTopicColors] = useState(true);
+  const [hover, setHover] = useState<Hover | null>(null);
+  const hoverId = useRef<string | null>(null);
+  const [query, setQuery] = useState(""),
+    [cursor, setCursor] = useState(-1);
+  /** Cytoscape-side handlers the React effects call; set while the instance lives. */
+  const graphApi = useRef<{ drawLabels: () => void; scheduleLabels: () => void; endHover: () => void } | null>(null);
   const visibleEdges = useMemo(() => {
     const ids = new Set(works.map((work) => work.id));
     return edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target));
@@ -109,6 +171,37 @@ export function Graph({
     [display, visibleEdges, warnings],
   );
   const maximumCitations = Math.max(0, ...incomingCitations.values());
+  // Label priority: seeds, then the papers with the most drawn links, then the most cited.
+  const labelOrder = useMemo(() => {
+    const degree = new Map<string, number>();
+    for (const edge of [...citationLinks, ...relatedLinks]) {
+      degree.set(edge.source, (degree.get(edge.source) || 0) + 1);
+      degree.set(edge.target, (degree.get(edge.target) || 0) + 1);
+    }
+    const seedIds = new Set(seeds);
+    return [...display]
+      .sort(
+        (a, b) =>
+          Number(seedIds.has(b.id)) - Number(seedIds.has(a.id)) ||
+          (degree.get(b.id) || 0) - (degree.get(a.id) || 0) ||
+          (b.citations || 0) - (a.citations || 0),
+      )
+      .map((work) => work.id);
+  }, [display, citationLinks, relatedLinks, seeds]);
+  // Matches keep the label order, so Enter visits the best-connected match first.
+  const matches = useMemo(() => {
+    const hits = new Set(graphSearch(display, query));
+    return labelOrder.filter((id) => hits.has(id));
+  }, [display, query, labelOrder]);
+  const labelInputs = useRef({ order: labelOrder, enabled: label, matches, current: null as string | null, selected, inspectId });
+  labelInputs.current = {
+    order: labelOrder,
+    enabled: label,
+    matches,
+    current: cursor >= 0 ? matches[cursor] ?? null : null,
+    selected,
+    inspectId,
+  };
   const workById = new Map(display.map((work) => [work.id, work]));
   const extraCount = display.filter((work) =>
     contextIds.includes(work.id),
@@ -138,15 +231,16 @@ export function Graph({
             height: "data(diameter)",
             label: "data(label)",
             "font-family": "-apple-system, sans-serif",
-            "font-size": 11,
-            "min-zoomed-font-size": 9,
+            // Geometry comes from data so labels keep one on-screen size at every zoom.
+            "font-size": "data(labelSize)",
             "text-background-opacity": 0.92,
-            "text-background-padding": "3px",
+            "text-background-padding": "data(labelPad)",
             "text-background-shape": "roundrectangle",
             color: "#55645d",
             "text-valign": "bottom",
-            "text-margin-y": 8,
-            "text-max-width": "150px",
+            // The typings allow only numbers here, but Cytoscape maps data like any other property.
+            "text-margin-y": "data(labelMargin)" as unknown as number,
+            "text-max-width": "data(labelWidth)",
             "text-wrap": "ellipsis",
             "border-color": "#ffffff",
             "border-width": 3,
@@ -197,12 +291,32 @@ export function Graph({
           },
         },
         {
+          selector: "node.found",
+          style: {
+            "underlay-color": "#d6a121",
+            "underlay-opacity": 0.28,
+            "underlay-padding": 7,
+          },
+        },
+        {
           selector: ".inspected",
           style: {
             "underlay-color": "#34775b",
             "underlay-opacity": 0.12,
             "underlay-padding": 9,
           },
+        },
+        {
+          selector: "node.inspected.found",
+          style: {
+            "underlay-color": "#d6a121",
+            "underlay-opacity": 0.45,
+            "underlay-padding": 10,
+          },
+        },
+        {
+          selector: "node.inspected, node.hovered, node.found",
+          style: { "z-index": 10 },
         },
         {
           selector: "edge.questionable",
@@ -216,6 +330,9 @@ export function Graph({
           },
         },
         { selector: ".faded", style: { opacity: 0.12 } },
+        // A hover preview dims everything outside the hovered paper's neighbourhood, and relights faded neighbours.
+        { selector: ".hover-dim", style: { opacity: 0.12 } },
+        { selector: ".hover-lit.faded", style: { opacity: 1 } },
       ],
     });
     cy.current = instance;
@@ -242,6 +359,8 @@ export function Graph({
         .style({
           "border-color": token("--text"),
         })
+        .selector("node.found, node.inspected.found")
+        .style({ "underlay-color": token("--graph-found") })
         .selector("edge")
         .style({
           "line-color": token("--graph-citation"),
@@ -264,6 +383,70 @@ export function Graph({
     });
     const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");
     themeMedia.addEventListener("change", theme);
+    let frame = 0,
+      hoverTimer = 0,
+      leaveTimer = 0,
+      dragging = false;
+    const drawLabels = () => {
+      const inputs = labelInputs.current;
+      const hovered = hoverId.current;
+      const hoveredNode = hovered ? instance.getElementById(hovered) : null;
+      if (hoveredNode?.empty()) {
+        endHover();
+        return;
+      }
+      const rank = new Map(inputs.order.map((id, index) => [id, index]));
+      const byRank = (a: string, b: string) => (rank.get(a) ?? rank.size) - (rank.get(b) ?? rank.size);
+      const chosen = new Set(inputs.selected);
+      refreshLabels(instance, {
+        order: inputs.order,
+        forced: [inputs.inspectId, hovered].filter((id): id is string => !!id),
+        boosted: [
+          ...(hoveredNode ? hoveredNode.neighborhood("node").map((node) => node.id()).sort(byRank) : []),
+          ...(inputs.current ? [inputs.current] : []),
+          ...inputs.matches,
+          ...inputs.order.filter((id) => chosen.has(id)),
+        ],
+        enabled: inputs.enabled,
+      });
+      if (hoveredNode && hovered) {
+        const { x, y } = hoveredNode.renderedPosition();
+        const radius = hoveredNode.renderedWidth() / 2;
+        setHover((current) =>
+          current?.id === hovered && current.x === x && current.y === y && current.radius === radius
+            ? current
+            : { id: hovered, x, y, radius },
+        );
+      }
+    };
+    const scheduleLabels = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        drawLabels();
+      });
+    };
+    const startHover = (node: NodeSingular) => {
+      if (node.removed()) return;
+      hoverId.current = node.id();
+      const lit = node.closedNeighborhood();
+      instance.batch(() => {
+        instance.elements(".hover-dim, .hover-lit").removeClass("hover-dim hover-lit");
+        instance.elements().difference(lit).addClass("hover-dim");
+        lit.addClass("hover-lit");
+      });
+      drawLabels();
+    };
+    const endHover = () => {
+      window.clearTimeout(hoverTimer);
+      window.clearTimeout(leaveTimer);
+      if (!hoverId.current) return;
+      hoverId.current = null;
+      instance.batch(() => instance.elements(".hover-dim, .hover-lit").removeClass("hover-dim hover-lit"));
+      setHover(null);
+      scheduleLabels();
+    };
+    graphApi.current = { drawLabels, scheduleLabels, endHover };
     instance.on("tap", "node", (e) =>
       callbacks.current.onInspect(e.target.id()),
     );
@@ -281,19 +464,50 @@ export function Graph({
       ]);
     };
     instance.on("select unselect", "node", selection);
-    instance.on("mouseover", "node", (event) =>
-      event.target.addClass("hovered"),
-    );
-    instance.on("mouseout", "node", (event) =>
-      event.target.removeClass("hovered"),
-    );
+    instance.on("mouseover", "node", (event) => {
+      const node = event.target as NodeSingular;
+      node.addClass("hovered");
+      if (dragging) return;
+      window.clearTimeout(hoverTimer);
+      window.clearTimeout(leaveTimer);
+      // An active preview follows the pointer from node to node without waiting again.
+      if (hoverId.current) startHover(node);
+      else hoverTimer = window.setTimeout(() => startHover(node), HOVER_DELAY_MS);
+    });
+    instance.on("mouseout", "node", (event) => {
+      event.target.removeClass("hovered");
+      window.clearTimeout(hoverTimer);
+      window.clearTimeout(leaveTimer);
+      leaveTimer = window.setTimeout(endHover, HOVER_LEAVE_MS);
+    });
+    // Dragging a node or a selection box is no time for a preview.
+    const pause = () => {
+      dragging = true;
+      endHover();
+    };
+    const resume = () => {
+      dragging = false;
+    };
+    instance.on("grabon", "node", pause);
+    instance.on("freeon", "node", resume);
+    instance.on("boxstart", pause);
+    instance.on("boxend", resume);
+    instance.on("viewport", scheduleLabels);
     instance.on("dragfreeon", "node", () => {
       if (!callbacks.current.timeline)
         callbacks.current.onPositions({ ...callbacks.current.positions, ...capturePositions(instance) });
+      scheduleLabels();
     });
-    const resize = new ResizeObserver(() => instance.resize());
+    const resize = new ResizeObserver(() => {
+      instance.resize();
+      scheduleLabels();
+    });
     resize.observe(host.current);
     return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(hoverTimer);
+      window.clearTimeout(leaveTimer);
+      graphApi.current = null;
       themeObserver.disconnect();
       themeMedia.removeEventListener("change", theme);
       resize.disconnect();
@@ -306,30 +520,19 @@ export function Graph({
     const instance = cy.current;
     if (!instance) return;
     syncing.current = true;
+    // A rebuilt graph ends any hover preview; the next pointer move starts a fresh one.
+    graphApi.current?.endHover();
 
-    const degree = new Map<string, number>();
-    for (const edge of edges) {
-      degree.set(edge.source, (degree.get(edge.source) || 0) + 1);
-      degree.set(edge.target, (degree.get(edge.target) || 0) + 1);
-    }
-    const labeled = new Set(
-      [...display]
-        .sort(
-          (a, b) =>
-            Number(seeds.includes(b.id)) - Number(seeds.includes(a.id)) ||
-            (degree.get(b.id) || 0) - (degree.get(a.id) || 0) ||
-            (b.citations || 0) - (a.citations || 0),
-        )
-        .slice(0, 5)
-        .map((w) => w.id),
-    );
     const paperLabel = (w: WorkView) =>
       `${w.authors[0]?.split(",")[0] || w.title.slice(0, 20)} · ${w.year || "연도 미상"}`;
+    const geometry = labelGeometry(instance.zoom());
     const definitions: ElementDefinition[] = display.map((w) => ({
       data: {
         id: w.id,
-        label: labeled.has(w.id) ? paperLabel(w) : "",
+        // Which nodes get a visible label is decided per viewport by refreshLabels.
+        label: "",
         fullLabel: paperLabel(w),
+        ...geometry,
         diameter: citationNodeDiameter(incomingCitations.get(w.id) ?? 0, maximumCitations),
         topicColor: byFolder ? folderPalette!.color(w.id) : archiveNodeColor(w, topics) || UNCLASSIFIED_COLOR,
       },
@@ -385,6 +588,8 @@ export function Graph({
     }
     for (const id of selected) instance.getElementById(id).select();
     syncing.current = false;
+    // Labels in the same task as the rebuild, so no frame shows the graph unlabelled.
+    graphApi.current?.drawLabels();
     // Selection and position updates must not recompute layout.
   }, [
     display,
@@ -424,24 +629,61 @@ export function Graph({
     }
   }, [inspectId, neighbors, works, similarity, showQuestionable]);
   useEffect(() => {
-    cy.current
-      ?.style()
-      .selector("node")
-      .style("label", label ? "data(label)" : "")
-      .selector("node.inspected, node.hovered")
-      .style({
-        label: "data(fullLabel)",
-        "min-zoomed-font-size": 0,
-        "z-index": 10,
-      })
-      .update();
-  }, [label]);
+    const instance = cy.current;
+    if (!instance) return;
+    instance.batch(() => {
+      instance.nodes(".found").removeClass("found");
+      for (const id of matches) instance.getElementById(id).addClass("found");
+    });
+  }, [matches]);
+  useEffect(() => {
+    graphApi.current?.scheduleLabels();
+  }, [labelOrder, label, matches, cursor, selected, inspectId, neighbors, works, similarity, showQuestionable]);
+  const goTo = (step: 1 | -1) => {
+    const instance = cy.current;
+    if (!instance || !matches.length) return;
+    const next = cursor < 0
+      ? (step > 0 ? 0 : matches.length - 1)
+      : (cursor + step + matches.length) % matches.length;
+    setCursor(next);
+    const { x, y } = instance.getElementById(matches[next]).position();
+    const zoom = Math.max(instance.zoom(), 1);
+    instance.stop();
+    // Pan to the node's own centre: centring its bounding box would count the label below it.
+    instance.animate(
+      { zoom, pan: { x: instance.width() / 2 - zoom * x, y: instance.height() / 2 - zoom * y } },
+      { duration: reducedMotion() ? 0 : 300 },
+    );
+    onInspect(matches[next]);
+  };
+  const clearQuery = () => {
+    setQuery("");
+    setCursor(-1);
+  };
+  const hovered = hover ? workById.get(hover.id) : undefined;
+  const hoveredTopic = hovered?.state.screening === "included"
+    ? topics.find((topic) => topic.id === hovered.archiveTopicId)?.name
+    : undefined;
   const years = [...new Set(display.map((w) => w.year))].sort(
     (a, b) => (a ?? 9999) - (b ?? 9999),
   );
   return (
     <div className={`graph-wrap${colorByTopic ? " topic-mode" : ""}`}>
       <div ref={host} className="graph-canvas" aria-label="논문 인용 그래프" />
+      {hover && hovered && (
+        <GraphTooltip
+          work={hovered}
+          hover={hover}
+          area={{ width: host.current?.clientWidth ?? 0, height: host.current?.clientHeight ?? 0 }}
+          inGraph={incomingCitations.get(hovered.id) ?? 0}
+          place={hovered.shelf ? `서고 · ${hovered.shelf.folder}` : hoveredTopic ? `소주제 · ${hoveredTopic}` : null}
+          status={[
+            contextIds.includes(hovered.id) ? "출발 문헌" : "",
+            seeds.includes(hovered.id) ? "초기 seed" : "",
+            SCREENING_LABEL[hovered.state.screening],
+          ].filter(Boolean).join(" · ")}
+        />
+      )}
       {!display.length && (
         <div className="graph-empty" role="status">
           <strong>서로 연결된 논문이 없습니다.</strong>
@@ -456,6 +698,43 @@ export function Graph({
         </div>
       )}
       <div className="graph-controls">
+        <div className="graph-find" title="제목·저자·연도·학술지로 찾습니다. Enter 다음 결과, Shift+Enter 이전 결과, Esc 지우기">
+          <Search size={13} aria-hidden="true" />
+          <input
+            type="search"
+            value={query}
+            placeholder="그래프에서 찾기"
+            aria-label="그래프에서 논문 찾기"
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setCursor(-1);
+            }}
+            onKeyDown={(event) => {
+              // Enter that commits a Hangul composition must not jump yet.
+              if (event.nativeEvent.isComposing) return;
+              if (event.key === "Enter") {
+                event.preventDefault();
+                goTo(event.shiftKey ? -1 : 1);
+              }
+              if (event.key === "Escape") clearQuery();
+            }}
+          />
+          {query.trim() && (
+            <span className="graph-find-count" aria-live="polite">
+              {!matches.length ? "없음" : cursor >= 0 ? `${cursor + 1}/${matches.length}` : `${matches.length}편`}
+            </span>
+          )}
+          {matches.length > 0 && (
+            <>
+              <button title="이전 결과" aria-label="이전 결과" onClick={() => goTo(-1)}>
+                <ChevronUp size={14} />
+              </button>
+              <button title="다음 결과" aria-label="다음 결과" onClick={() => goTo(1)}>
+                <ChevronDown size={14} />
+              </button>
+            </>
+          )}
+        </div>
         <button
           title="확대"
           onClick={() => cy.current?.zoom((cy.current?.zoom() || 1) * 1.2)}
@@ -488,7 +767,7 @@ export function Graph({
           <Waypoints size={15} />
           선택 주변
         </button>
-        <label>
+        <label title="화면에 겹치지 않게 들어가는 만큼, 연결이 많은 논문부터 이름을 붙입니다. 확대하면 더 많이 보입니다.">
           <input
             type="checkbox"
             checked={label}
@@ -630,7 +909,7 @@ export function Graph({
             ? ` · 연결된 ${connected.toLocaleString()}편 중 연결이 많은 ${GRAPH_LIMIT.toLocaleString()}편까지, 필터로 범위를 좁히세요`
             : ""}
         </span>
-        <span>드래그한 노드만 이동 · Shift+드래그로 선택</span>
+        <span>노드에 올리면 제목과 이웃 표시 · 드래그한 노드만 이동 · Shift+드래그로 선택</span>
         {visibleEdges.length > 3000 && <span>인용선 최대 3,000개 표시</span>}
       </div>
     </div>

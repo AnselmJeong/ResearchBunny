@@ -1,4 +1,5 @@
-import { citationWarnings, citationNodeDiameter, graphNodeIds, incomingCitationCounts, resultWindow, GRAPH_LIMIT } from "../../src/shared/graph";
+import { citationWarnings, citationNodeDiameter, graphNodeIds, graphSearch, incomingCitationCounts, resultWindow, GRAPH_LIMIT } from "../../src/shared/graph";
+import { labelGeometry, labelWidth, pickLabels, refreshLabels, LABEL_FONT_PX } from "../../src/renderer/components/graphLabels";
 import { restoreNavigation } from "../../src/shared/navigation";
 import { test, expect } from "bun:test";
 import cytoscape from "cytoscape";
@@ -304,4 +305,69 @@ test("force layout spreads a thousand linked papers quickly and reproducibly", (
     for (let j = i + 1; j < points.length; j++)
       if (Math.hypot(points[i].x - points[j].x, points[i].y - points[j].y) < 24) overlapping++;
   expect(overlapping).toBe(0);
+});
+
+test("graph search matches every word in any order, ignoring case and accents", () => {
+  const works = [
+    { id: "a", title: "Dopamine neurons and prediction error", authors: ["Ménard, Caroline"], year: 2019, venue: "Neuron", citekey: "menard2019" },
+    { id: "b", title: "Prediction in the hippocampus", authors: ["Lodge, Daniel J"], year: 2011, venue: "J Neurosci" },
+    { id: "c", title: "도파민과 보상 예측", authors: ["김철수"], year: 2020 },
+  ];
+  expect(graphSearch(works, "menard")).toEqual(["a"]);
+  expect(graphSearch(works, "ERROR dopamine")).toEqual(["a"]);
+  expect(graphSearch(works, "prediction")).toEqual(["a", "b"]);
+  expect(graphSearch(works, "lodge 2011")).toEqual(["b"]);
+  expect(graphSearch(works, "j neurosci")).toEqual(["b"]);
+  expect(graphSearch(works, "보상 도파민")).toEqual(["c"]);
+  expect(graphSearch(works, "lodge 2019")).toEqual([]);
+  expect(graphSearch(works, "   ")).toEqual([]);
+});
+
+test("labels never overlap except forced ones, stay on screen and respect the limit", () => {
+  const viewport = { width: 800, height: 600 };
+  const at = (id: string, x: number, y: number, forced = false) => ({ id, x, y, radius: 12, text: `${id} · 2020`, forced });
+  // b sits right under a, c is far away, d is off screen, e collides with forced f.
+  const chosen = pickLabels([at("f", 400, 400, true), at("a", 100, 100), at("b", 104, 106), at("c", 600, 100), at("d", 1200, 100), at("e", 402, 402)], viewport);
+  expect([...chosen].sort()).toEqual(["a", "c", "f"]);
+  // A forced label shows even when it overlaps an earlier forced one.
+  expect([...pickLabels([at("x", 10, 10, true), at("y", 12, 12, true)], viewport)].sort()).toEqual(["x", "y"]);
+  // The limit counts optional labels only.
+  const grid = Array.from({ length: 40 }, (_, i) => at(`n${i}`, 60 + (i % 5) * 150, 40 + Math.floor(i / 5) * 70));
+  expect(pickLabels([at("hover", 5, 590, true), ...grid], viewport, 10).size).toBe(11);
+  // Hangul takes about a full em per glyph, Latin less.
+  expect(labelWidth("가나다라")).toBeGreaterThan(labelWidth("abcd"));
+});
+
+test("labels keep one on-screen size at any zoom and follow priority, toggle and fading", () => {
+  const cy = cytoscape({ headless: true, styleEnabled: true, style: [
+    { selector: "node", style: { width: 20, height: 20, label: "data(label)", "font-size": "data(labelSize)" } },
+  ] });
+  try {
+    const ids = ["hub", "mid", "leaf", "far"];
+    cy.add(ids.map((id, i) => ({ data: { id, label: "", fullLabel: `${id} · 2020`, ...labelGeometry(1) }, position: { x: i * 200, y: 100 } })));
+    cy.add({ data: { id: "near", label: "", fullLabel: "near · 2020", ...labelGeometry(1) }, position: { x: 4, y: 104 } });
+    const viewport = { width: 1000, height: 400 };
+    cy.zoom(0.5);
+    cy.pan({ x: 0, y: 0 });
+    let chosen = refreshLabels(cy, { order: ["hub", "near", "mid", "leaf", "far"], enabled: true, viewport });
+    // "near" collides with "hub", which ranks first.
+    expect([...chosen].sort()).toEqual(["far", "hub", "leaf", "mid"]);
+    expect(cy.$id("hub").data("label")).toBe("hub · 2020");
+    expect(cy.$id("near").data("label")).toBe("");
+    expect(cy.$id("hub").data("labelSize") * cy.zoom()).toBeCloseTo(LABEL_FONT_PX);
+    expect(cy.$id("hub").style("font-size")).toBe(`${LABEL_FONT_PX / 0.5}px`);
+
+    // Turning ordinary labels off keeps the forced and boosted ones, and clears the rest.
+    chosen = refreshLabels(cy, { order: ids, enabled: false, forced: ["leaf"], boosted: ["near"], viewport });
+    expect([...chosen].sort()).toEqual(["leaf", "near"]);
+    expect(cy.$id("hub").data("label")).toBe("");
+
+    // Faded papers lose ordinary labels but keep a forced one.
+    cy.$id("mid").addClass("faded");
+    cy.$id("far").addClass("hover-dim");
+    chosen = refreshLabels(cy, { order: ids, enabled: true, forced: ["far"], viewport });
+    expect([...chosen].sort()).toEqual(["far", "hub", "leaf"]);
+  } finally {
+    cy.destroy();
+  }
 });
