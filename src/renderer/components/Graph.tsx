@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, useMemo } from "react";
 import cytoscape, { type Core, type ElementDefinition, type NodeSingular } from "cytoscape";
 import { Focus, ZoomIn, ZoomOut, Waypoints, RotateCcw, Search, ChevronUp, ChevronDown } from "lucide-react";
 import type { WorkView, ArchiveTopic } from "../../shared/types";
-import { archiveNodeColor, subfolderColors, UNCLASSIFIED_COLOR } from "../../shared/classification";
-import { citationWarnings, citationNodeDiameter, incomingCitationCounts, graphSearch, GRAPH_LIMIT } from "../../shared/graph";
+import { archiveNodeColor, subfolderColors, yearColor, UNCLASSIFIED_COLOR, YEAR_RAMP } from "../../shared/classification";
+import { citationWarnings, citationNodeDiameter, incomingCitationCounts, graphSearch, pageRank, rankNodeDiameter, GRAPH_LIMIT } from "../../shared/graph";
 import { similarityEdges } from "../../shared/domain";
 import {
   capturePositions,
@@ -35,17 +35,43 @@ function authorLine(authors: string[]): string {
 }
 
 const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const darkTheme = () => {
+  const theme = document.documentElement.dataset.theme;
+  return theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+};
+
+/** What node colour shows: shelf subfolder or archive topic, publication year, or library state. */
+type ColorMode = "group" | "year" | "state";
+/** What node size shows: citations from papers on this graph, all citations (OpenAlex), or PageRank on this graph. */
+type SizeMode = "inGraph" | "total" | "pagerank";
+
+const SIZE_LEGEND: Record<SizeMode, { text: string; help: string }> = {
+  inGraph: {
+    text: "노드 크기 · 그래프 안 피인용 수 (로그 척도)",
+    help: "현재 표시된 논문 사이에서 받은 인용 수를 로그 척도로 반영합니다. 관련 문헌 연결과 확인 필요 인용은 제외합니다.",
+  },
+  total: {
+    text: "노드 크기 · 전체 피인용 수 (OpenAlex, 로그 척도)",
+    help: "OpenAlex에 기록된 전체 피인용 수를 로그 척도로 반영합니다. 피인용 정보가 없는 논문은 가장 작게 그립니다.",
+  },
+  pagerank: {
+    text: "노드 크기 · 그래프 안 PageRank (로그 척도)",
+    help: "표시된 인용선(확인 필요 인용 제외)만으로 계산한 PageRank입니다. 많이 인용될수록, 그리고 많이 인용되는 논문에게 인용될수록 커집니다. 연구의 질을 뜻하지는 않습니다.",
+  },
+};
 
 type Hover = { id: string; x: number; y: number; radius: number };
 
 /** The hovered paper's title and facts, beside the node and inside the canvas. */
-function GraphTooltip({ work, hover, area, status, place, inGraph }: {
+function GraphTooltip({ work, hover, area, status, place, inGraph, rank }: {
   work: WorkView;
   hover: Hover;
   area: { width: number; height: number };
   status: string;
   place: string | null;
   inGraph: number;
+  /** PageRank as a multiple of the average paper's share, when size shows PageRank. */
+  rank?: number;
 }) {
   const right = hover.x + hover.radius + TOOLTIP_GAP;
   // Flip to the left of the node only when the right side is short and the left side has room.
@@ -61,6 +87,7 @@ function GraphTooltip({ work, hover, area, status, place, inGraph }: {
         {work.citations === null ? "피인용 정보 없음" : `피인용 ${work.citations.toLocaleString()}회`}
         {` · 이 그래프 안 ${inGraph.toLocaleString()}회`}
       </span>
+      {rank !== undefined && <span>PageRank · 평균 논문의 {rank.toFixed(1)}배</span>}
       {place && <span>{place}</span>}
       <span className="graph-tooltip-status">{status}</span>
     </div>
@@ -127,7 +154,9 @@ export function Graph({
     [showQuestionable, setShowQuestionable] = useState(false),
     [label, setLabel] = useState(true),
     [similarity, setSimilarity] = useState(true);
-  const [topicColors, setTopicColors] = useState(true);
+  const [colorMode, setColorMode] = useState<ColorMode>("group"),
+    [sizeMode, setSizeMode] = useState<SizeMode>("inGraph");
+  const [dark, setDark] = useState(darkTheme);
   const [hover, setHover] = useState<Hover | null>(null);
   const hoverId = useRef<string | null>(null);
   const [query, setQuery] = useState(""),
@@ -162,15 +191,42 @@ export function Graph({
     [display, subfolders],
   );
   const byFolder = !!folderPalette?.groups.length;
-  const colorByTopic = topicColors && (byFolder || topics.length > 0);
-  const incomingCitations = useMemo(
-    () => incomingCitationCounts(
-      display.map((work) => work.id),
-      visibleEdges.filter((edge) => !warnings.has(`${edge.source}:${edge.target}`)),
-    ),
-    [display, visibleEdges, warnings],
+  const groupColors = byFolder || topics.length > 0;
+  // Without folders or topics to colour by, the group choice falls back to library state.
+  const colorBy: ColorMode = colorMode === "group" && !groupColors ? "state" : colorMode;
+  const colorByTopic = colorBy === "group";
+  const yearRange = useMemo(() => {
+    const years = display.map((work) => work.year).filter((year): year is number => year !== null);
+    return years.length ? [Math.min(...years), Math.max(...years)] as [number, number] : null;
+  }, [display]);
+  // Questionable citations are hidden by default, so they never size a node.
+  const trustedEdges = useMemo(
+    () => visibleEdges.filter((edge) => !warnings.has(`${edge.source}:${edge.target}`)),
+    [visibleEdges, warnings],
   );
-  const maximumCitations = Math.max(0, ...incomingCitations.values());
+  const incomingCitations = useMemo(
+    () => incomingCitationCounts(display.map((work) => work.id), trustedEdges),
+    [display, trustedEdges],
+  );
+  /** PageRank per paper as a multiple of the average share (1 = average). */
+  const ranks = useMemo(() => {
+    if (sizeMode !== "pagerank") return null;
+    const scores = pageRank(display.map((work) => work.id), trustedEdges);
+    return new Map([...scores].map(([id, score]) => [id, score * scores.size]));
+  }, [sizeMode, display, trustedEdges]);
+  const diameters = useMemo(() => {
+    if (ranks) {
+      const values = [...ranks.values()];
+      const lowest = Math.min(...values), highest = Math.max(...values);
+      return new Map([...ranks].map(([id, rank]) => [id, rankNodeDiameter(rank, lowest, highest)]));
+    }
+    if (sizeMode === "total") {
+      const highest = Math.max(0, ...display.map((work) => work.citations ?? 0));
+      return new Map(display.map((work) => [work.id, citationNodeDiameter(work.citations ?? 0, highest)]));
+    }
+    const highest = Math.max(0, ...incomingCitations.values());
+    return new Map(display.map((work) => [work.id, citationNodeDiameter(incomingCitations.get(work.id) ?? 0, highest)]));
+  }, [ranks, sizeMode, display, incomingCitations]);
   // Label priority: seeds, then the papers with the most drawn links, then the most cited.
   const labelOrder = useMemo(() => {
     const degree = new Map<string, number>();
@@ -353,8 +409,8 @@ export function Graph({
         .style({ "background-color": token("--graph-saved") })
         .selector("node.seed")
         .style({ "background-color": token("--graph-seed") })
-        .selector("node.topic-colored")
-        .style({ "background-color": "data(topicColor)" })
+        .selector("node.color-mapped")
+        .style({ "background-color": "data(mappedColor)" })
         .selector("node:selected")
         .style({
           "border-color": token("--text"),
@@ -374,6 +430,8 @@ export function Graph({
           "target-arrow-color": token("--danger"),
         })
         .update();
+      // Year colours run the other way on a dark surface.
+      setDark(darkTheme());
     };
     theme();
     const themeObserver = new MutationObserver(theme);
@@ -533,14 +591,16 @@ export function Graph({
         label: "",
         fullLabel: paperLabel(w),
         ...geometry,
-        diameter: citationNodeDiameter(incomingCitations.get(w.id) ?? 0, maximumCitations),
-        topicColor: byFolder ? folderPalette!.color(w.id) : archiveNodeColor(w, topics) || UNCLASSIFIED_COLOR,
+        diameter: diameters.get(w.id) ?? 24,
+        mappedColor: colorBy === "year"
+          ? yearColor(w.year, yearRange, dark)
+          : byFolder ? folderPalette!.color(w.id) : archiveNodeColor(w, topics) || UNCLASSIFIED_COLOR,
       },
       position: positions[w.id],
       classes: [
         seeds.includes(w.id) ? "seed" : "",
         w.state.screening === "included" ? "saved" : "",
-        colorByTopic && (byFolder || w.state.screening === "included") ? "topic-colored" : "",
+        colorBy === "year" || (colorBy === "group" && (byFolder || w.state.screening === "included")) ? "color-mapped" : "",
       ].join(" "),
     }));
     for (const edge of citationLinks)
@@ -596,13 +656,14 @@ export function Graph({
     citationLinks,
     relatedLinks,
     warnings,
-    incomingCitations,
-    maximumCitations,
+    diameters,
     seeds,
     timeline,
     layoutRevision,
     topics,
-    colorByTopic,
+    colorBy,
+    yearRange,
+    dark,
     byFolder,
     folderPalette,
   ]);
@@ -676,6 +737,7 @@ export function Graph({
           hover={hover}
           area={{ width: host.current?.clientWidth ?? 0, height: host.current?.clientHeight ?? 0 }}
           inGraph={incomingCitations.get(hovered.id) ?? 0}
+          rank={ranks?.get(hovered.id)}
           place={hovered.shelf ? `서고 · ${hovered.shelf.folder}` : hoveredTopic ? `소주제 · ${hoveredTopic}` : null}
           status={[
             contextIds.includes(hovered.id) ? "출발 문헌" : "",
@@ -783,10 +845,22 @@ export function Graph({
           />
           관련 문헌 연결
         </label>
-        {(byFolder || topics.length > 0) && <label>
-          <input type="checkbox" checked={topicColors} onChange={event => setTopicColors(event.target.checked)} />
-          {byFolder ? "하위 폴더 색상" : "소주제 색상"}
-        </label>}
+        <label title="노드 색이 나타낼 것을 고릅니다.">
+          색
+          <select aria-label="노드 색 기준" value={colorBy} onChange={(event) => setColorMode(event.target.value as ColorMode)}>
+            {groupColors && <option value="group">{byFolder ? "하위 폴더" : "소주제"}</option>}
+            <option value="year">출판 연도</option>
+            <option value="state">저장 상태</option>
+          </select>
+        </label>
+        <label title="노드 크기가 나타낼 것을 고릅니다. 배치는 그대로이니, 노드가 겹치면 배치 초기화를 누르세요.">
+          크기
+          <select aria-label="노드 크기 기준" value={sizeMode} onChange={(event) => setSizeMode(event.target.value as SizeMode)}>
+            <option value="inGraph">그래프 안 피인용</option>
+            <option value="total">전체 피인용</option>
+            <option value="pagerank">PageRank</option>
+          </select>
+        </label>
         {warnings.size > 0 && (
           <label>
             <input
@@ -852,31 +926,46 @@ export function Graph({
           </span>)}
           {hasUnclassified && <span><i className="topic-swatch" style={{ backgroundColor: UNCLASSIFIED_COLOR }} />미분류</span>}
         </div>}
-        {display.some((work) => seeds.includes(work.id)) && (
+        {colorBy === "year" && yearRange && (
+          <span title="출판 연도를 한 가지 색의 진하기로 나타냅니다. 최근 논문일수록 배경과 대비가 큽니다.">
+            <i
+              className="graph-year-ramp"
+              style={{ background: `linear-gradient(to right, ${YEAR_RAMP[dark ? "dark" : "light"].join(", ")})` }}
+            />
+            출판 연도 {yearRange[0]}–{yearRange[1]}
+          </span>
+        )}
+        {colorBy === "year" && display.some((work) => work.year === null) && (
+          <span>
+            <i className="topic-swatch" style={{ backgroundColor: UNCLASSIFIED_COLOR }} />
+            연도 미상
+          </span>
+        )}
+        {colorBy !== "year" && display.some((work) => seeds.includes(work.id)) && (
           <span>
             <i className="graph-key seed" />
             초기 seed
           </span>
         )}
-        {display.some((work) => work.state.screening === "included") && (
+        {colorBy !== "year" && display.some((work) => work.state.screening === "included") && (
           <span>
             <i className="graph-key saved" />
             아카이브에 저장됨
           </span>
         )}
-        {display.some((work) => work.state.screening === "pending") && (
+        {colorBy !== "year" && display.some((work) => work.state.screening === "pending") && (
           <span>
             <i className="graph-key candidate" />
             미저장 후보
           </span>
         )}
-        {display.some((work) => work.state.screening === "excluded") && (
+        {colorBy !== "year" && display.some((work) => work.state.screening === "excluded") && (
           <span>
             <i className="graph-key candidate" />
             제외 문헌
           </span>
         )}
-        {display.some((work) => work.state.screening === "trash") && (
+        {colorBy !== "year" && display.some((work) => work.state.screening === "trash") && (
           <span>
             <i className="graph-key candidate" />
             휴지통 문헌
@@ -886,9 +975,7 @@ export function Graph({
           <i className="graph-edge-key citation" />
           인용 기록 → 인용된 문헌
         </span>
-        <span title="현재 표시된 논문 사이에서 받은 인용 수를 로그 척도로 반영합니다. 관련 문헌 연결과 확인 필요 인용은 제외합니다.">
-          노드 크기 · 그래프 내 피인용 수 (로그 척도)
-        </span>
+        <span title={SIZE_LEGEND[sizeMode].help}>{SIZE_LEGEND[sizeMode].text}</span>
         {similarity && (
           <span>
             <i className="graph-edge-key related" />

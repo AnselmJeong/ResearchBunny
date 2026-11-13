@@ -1,9 +1,9 @@
-import { citationWarnings, citationNodeDiameter, graphNodeIds, graphSearch, incomingCitationCounts, resultWindow, GRAPH_LIMIT } from "../../src/shared/graph";
+import { citationWarnings, citationNodeDiameter, graphNodeIds, graphSearch, incomingCitationCounts, pageRank, rankNodeDiameter, resultWindow, GRAPH_LIMIT } from "../../src/shared/graph";
 import { labelGeometry, labelWidth, pickLabels, refreshLabels, LABEL_FONT_PX } from "../../src/renderer/components/graphLabels";
 import { restoreNavigation } from "../../src/shared/navigation";
 import { test, expect } from "bun:test";
 import cytoscape from "cytoscape";
-import { archiveNodeColor, subfolderColors, TOPIC_COLORS, UNCLASSIFIED_COLOR } from "../../src/shared/classification";
+import { archiveNodeColor, subfolderColors, yearColor, TOPIC_COLORS, UNCLASSIFIED_COLOR, YEAR_RAMP } from "../../src/shared/classification";
 import { defaultState } from "../../src/shared/types";
 import {
   individualNodeDragging,
@@ -86,19 +86,19 @@ test("topic colors distinguish classified, unclassified and unsaved works withou
   expect(archiveNodeColor({ ...saved, state: defaultState() }, topics)).toBeNull();
   const cy = cytoscape({ headless: true, styleEnabled: true, style: [
     { selector: "node", style: { shape: "ellipse", "background-color": "#111111" } },
-    { selector: "node.topic-colored", style: { "background-color": "data(topicColor)" } },
+    { selector: "node.color-mapped", style: { "background-color": "data(mappedColor)" } },
   ] });
   try {
-    reconcileGraph(cy, [{ data: { id: "a", topicColor: TOPIC_COLORS[0] }, classes: "saved seed topic-colored" }]);
+    reconcileGraph(cy, [{ data: { id: "a", mappedColor: TOPIC_COLORS[0] }, classes: "saved seed color-mapped" }]);
     const node = cy.getElementById("a").position({ x: 44, y: 55 }).select();
     expect(node.style("background-color")).toBe("rgb(78,145,208)");
     expect(node.style("shape")).toBe("ellipse");
-    reconcileGraph(cy, [{ data: { id: "a", topicColor: TOPIC_COLORS[1] }, classes: "saved seed topic-colored" }]);
+    reconcileGraph(cy, [{ data: { id: "a", mappedColor: TOPIC_COLORS[1] }, classes: "saved seed color-mapped" }]);
     expect(node.style("background-color")).toBe("rgb(225,147,66)");
     expect(node.position()).toEqual({ x: 44, y: 55 });
     expect(node.selected()).toBe(true);
-    reconcileGraph(cy, [{ data: { id: "a", topicColor: TOPIC_COLORS[1] }, classes: "saved seed" }]);
-    expect(node.hasClass("topic-colored")).toBe(false);
+    reconcileGraph(cy, [{ data: { id: "a", mappedColor: TOPIC_COLORS[1] }, classes: "saved seed" }]);
+    expect(node.hasClass("color-mapped")).toBe(false);
     expect(node.style("background-color")).toBe("rgb(17,17,17)");
   } finally { cy.destroy(); }
 });
@@ -367,6 +367,76 @@ test("labels keep one on-screen size at any zoom and follow priority, toggle and
     cy.$id("far").addClass("hover-dim");
     chosen = refreshLabels(cy, { order: ids, enabled: true, forced: ["far"], viewport });
     expect([...chosen].sort()).toEqual(["far", "hub", "leaf"]);
+  } finally {
+    cy.destroy();
+  }
+});
+
+test("PageRank favours papers cited by well-cited papers and keeps a total of one", () => {
+  // hub is cited by a, b, c; star is cited only by hub; lone is cited by a paper nobody cites.
+  const ids = ["a", "b", "c", "hub", "star", "lone", "d"];
+  const ranks = pageRank(ids, [
+    { source: "a", target: "hub" },
+    { source: "b", target: "hub" },
+    { source: "c", target: "hub" },
+    { source: "hub", target: "star" },
+    { source: "d", target: "lone" },
+    // Ignored: a repeat, a self-citation and a link leaving the graph.
+    { source: "a", target: "hub" },
+    { source: "star", target: "star" },
+    { source: "star", target: "elsewhere" },
+  ]);
+  const total = [...ranks.values()].reduce((sum, value) => sum + value, 0);
+  expect(total).toBeCloseTo(1, 9);
+  expect(ranks.get("hub")!).toBeGreaterThan(ranks.get("lone")!);
+  // One citation from the hub outweighs one citation from an uncited paper.
+  expect(ranks.get("star")!).toBeGreaterThan(ranks.get("lone")!);
+  expect(ranks.get("a")).toBeCloseTo(ranks.get("d")!, 12);
+  expect(pageRank([], []).size).toBe(0);
+  // Without links every paper keeps an equal share.
+  expect([...pageRank(["x", "y"], []).values()]).toEqual([0.5, 0.5]);
+});
+
+test("PageRank sizes start at the lowest score and stay modest in a flat graph", () => {
+  expect(rankNodeDiameter(0.4, 0.4, 12)).toBe(24);
+  expect(rankNodeDiameter(12, 0.4, 12)).toBe(64);
+  expect(rankNodeDiameter(3, 0.4, 12)).toBeGreaterThan(rankNodeDiameter(1, 0.4, 12));
+  // A spread under one average share never reaches full size.
+  expect(rankNodeDiameter(1.2, 0.9, 1.2)).toBeLessThan(50);
+  expect(rankNodeDiameter(NaN, 0.4, 12)).toBe(24);
+});
+
+test("year colours run along the theme's one-hue ramp and leave unknown years grey", () => {
+  expect(yearColor(1990, [1990, 2020], false)).toBe(YEAR_RAMP.light[0]);
+  expect(yearColor(2020, [1990, 2020], false)).toBe(YEAR_RAMP.light[YEAR_RAMP.light.length - 1]);
+  expect(yearColor(2020, [1990, 2020], true)).toBe(YEAR_RAMP.dark[YEAR_RAMP.dark.length - 1]);
+  expect(yearColor(2005, [1990, 2020], false)).toBe(YEAR_RAMP.light[2]);
+  expect(yearColor(null, [1990, 2020], false)).toBe(UNCLASSIFIED_COLOR);
+  expect(yearColor(2000, null, false)).toBe(UNCLASSIFIED_COLOR);
+  // A single year takes the newest colour; years outside the range clamp.
+  expect(yearColor(2000, [2000, 2000], false)).toBe(YEAR_RAMP.light[YEAR_RAMP.light.length - 1]);
+  expect(yearColor(1950, [1990, 2020], false)).toBe(YEAR_RAMP.light[0]);
+  // Between stops the colour is a blend, still a valid hex.
+  expect(yearColor(1994, [1990, 2020], false)).toMatch(/^#[0-9a-f]{6}$/);
+  expect(yearColor(1994, [1990, 2020], false)).not.toBe(YEAR_RAMP.light[0]);
+});
+
+test("laying out the timeline never rewrites the saved network positions it was given", () => {
+  const cy = cytoscape({ headless: true });
+  try {
+    const saved = { a: { x: 5, y: 7 }, b: { x: -40, y: 12 } };
+    const snapshot = JSON.parse(JSON.stringify(saved));
+    reconcileGraph(cy, [
+      { data: { id: "a" }, position: saved.a },
+      { data: { id: "b" }, position: saved.b },
+    ]);
+    // A fresh graph opened in the year view moves the nodes into year lanes.
+    placeGraph(cy, [{ id: "a", year: 2020 }, { id: "b", year: 2021 }], true, null, saved);
+    expect(cy.$id("b").position()).toEqual({ x: 170, y: 0 });
+    expect(saved).toEqual(snapshot);
+    // Returning to the network view restores the untouched coordinates.
+    placeGraph(cy, [{ id: "a", year: 2020 }, { id: "b", year: 2021 }], false, true, saved);
+    expect(capturePositions(cy)).toEqual(snapshot);
   } finally {
     cy.destroy();
   }

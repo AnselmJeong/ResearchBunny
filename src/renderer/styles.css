@@ -3456,6 +3456,8 @@ html[data-theme="dark"] .selection-bar .primary {
   overflow: hidden;
 }
 .graph-tooltip-status { color: var(--accent); }
+.graph-controls select { min-height: 25px; padding: 2px 6px; font-size: 12px; color: var(--text); }
+.graph-year-ramp { display: inline-block; width: 56px; height: 10px; border-radius: 2px; }
 /* The notice shares the canvas cell; the canvas must be pinned too or auto-placement moves it down a row. */
 .graph-canvas, .graph-empty { grid-row: 1; grid-column: 1; }
 .graph-empty { position: relative; z-index: 5; align-self: center; justify-self: center; display: grid; gap: 6px; max-width: 360px; padding: 0 16px; text-align: center; font-size: 12px; line-height: 1.7; color: var(--muted); pointer-events: none; }
