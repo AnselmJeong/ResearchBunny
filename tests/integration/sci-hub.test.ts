@@ -7,7 +7,7 @@ import { Library } from "../../src/service/db/database";
 import { PdfDownloads } from "../../src/service/fulltext/jobs";
 import { ChromeDownloads, type BrowserRetrieval } from "../../src/service/fulltext/chrome";
 import type { BrowserDownload, BrowserTab } from "../../src/service/fulltext/chrome-host";
-import { FulltextEngine, SciHubError, sciHubChallenge, sciHubMirrors, sciHubUrl, type DownloadFetch } from "../../src/service/fulltext/engine";
+import { CookieJar, FulltextEngine, SciHubError, sciHubChallenge, sciHubMirrors, sciHubPdfUrls, sciHubUrl, type DownloadFetch } from "../../src/service/fulltext/engine";
 import { blankWork } from "../../src/shared/domain";
 import { AppError } from "../../src/shared/types";
 
@@ -63,7 +63,10 @@ test("a robot check is reported with its page for Chrome, a missing article is f
     (error: unknown) => error instanceof SciHubError && error.code === "SCIHUB_CHALLENGE" && error.page === "https://sci-hub.kr/https://doi.org/10.1017/s1092852900013754");
   await assert.rejects(engine(async () => html("<title>Sci-Hub: article not found</title>")).sciHub(work, ["https://sci-hub.kr"], path, signal, () => {}),
     (error: unknown) => error instanceof SciHubError && error.code === "SCIHUB_MISSING" && !error.page);
+  // A guard page sent with 403 is still a robot check; a bare 403 is a block. Both keep the page for Chrome.
   await assert.rejects(engine(async () => new Response("<title>DDoS-Guard</title>", { status: 403 })).sciHub(work, ["https://sci-hub.st"], path, signal, () => {}),
+    (error: unknown) => error instanceof SciHubError && error.code === "SCIHUB_CHALLENGE" && !!error.page);
+  await assert.rejects(engine(async () => new Response("Forbidden", { status: 403 })).sciHub(work, ["https://sci-hub.st"], path, signal, () => {}),
     (error: unknown) => error instanceof SciHubError && error.code === "SCIHUB_BLOCKED" && !!error.page);
   const requests: string[] = [];
   const untitled = blankWork({ title: work.title, year: 2008, authors: ["Drevets, Wayne C."] });
@@ -75,6 +78,107 @@ test("a robot check is reported with its page for Chrome, a missing article is f
   assert.equal(requests[1], "https://sci-hub.kr/https://doi.org/10.1017/s1092852900013754");
   await assert.rejects(engine(async () => new Response(JSON.stringify({ message: { items: [] } }))).sciHub(blankWork({ title: "Unknown" }), ["https://sci-hub.kr"], path, signal, () => {}),
     (error: unknown) => error instanceof SciHubError && error.code === "SCIHUB_NO_DOI");
+});
+
+// Trimmed from sci-hub.kr on 2026-11-13: the storage now sits on another host, given protocol-relative.
+const crossHost = (doi: string) => `<!DOCTYPE html><html><head><title>Sci-Hub. The Subgenual Anterior Cingulate Cortex in Mood Disorders / CNS Spectrums, 2008</title>
+<meta name="citation_doi" content="${doi}"><meta name="citation_pdf_url" content="//sci-hub.red/storage/twin/6384/f8d4/drevets2008.pdf"></head>
+<body><button onclick = "recite('ACS')">ACS</button><div class="pdf"><object type = "application/pdf" data = "//sci-hub.red/storage/twin/6384/f8d4/drevets2008.pdf#navpanes=0&view=FitH"></object></div>
+<altcha-widget challengeurl="/captcha/challenge/1"></altcha-widget></body></html>`;
+const redStorage = "https://sci-hub.red/storage/twin/6384/f8d4/drevets2008.pdf";
+const notFound = `<!DOCTYPE html><html><head><title translate = "ko:title">페이지를 찾을 수 없습니다</title></head><body></body></html>`;
+
+test("mirror requests look like a browser's, carry no contact address, send the page as referrer and keep the guard's cookies", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rb-scihub-headers-"));
+  const seen: { url: string; headers: Headers }[] = [];
+  try {
+    const subject = engine(async (url, init) => {
+      seen.push({ url, headers: new Headers(init?.headers) });
+      if (url.startsWith("https://sci-hub.kr/")) return new Response(crossHost("10.1017/S1092852900013754"), { headers: [
+        ["content-type", "text/html"], ["set-cookie", "__ddg1_=abc; Domain=.sci-hub.kr; HttpOnly; Path=/"], ["set-cookie", "session=s1; path=/; SameSite=Lax"],
+        ["set-cookie", "stolen=1; Domain=.example.org; Path=/"]] });
+      if (url === redStorage) return new Response(pdf, { headers: { "content-type": "application/pdf" } });
+      return new Response("not found", { status: 404 });
+    });
+    const result = await subject.sciHub(work, ["https://sci-hub.kr"], join(root, "pdf.part"), new AbortController().signal, () => {});
+    assert.deepEqual(result, { sourceUrl: redStorage, doi: "10.1017/s1092852900013754", method: "http", mirror: "sci-hub.kr" });
+    assert.deepEqual(seen.map(s => s.url), ["https://sci-hub.kr/https://doi.org/10.1017/s1092852900013754", redStorage]);
+    for (const { headers } of seen) {
+      assert.match(headers.get("user-agent")!, /^Mozilla\/5\.0 .*Chrome\//);
+      assert(!/ResearchBunny|mailto|@/.test([...headers.values()].join(" ")), "nothing identifies the app or the person");
+    }
+    assert.equal(seen[1].headers.get("referer"), "https://sci-hub.kr/https://doi.org/10.1017/s1092852900013754");
+    assert.equal(seen[1].headers.get("cookie"), null, "the mirror's cookies stay with the mirror");
+    // The next paper's page on the same mirror sends them back, as the same visitor would.
+    await subject.sciHub(blankWork({ title: "Other", doi: "10.1234/other" }), ["https://sci-hub.kr"], join(root, "b.part"), new AbortController().signal, () => {}).catch(() => {});
+    assert.equal(seen[2].url, "https://sci-hub.kr/https://doi.org/10.1234/other");
+    assert.equal(seen[2].headers.get("cookie"), "__ddg1_=abc; session=s1");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a missing article (404) is final and opens nothing; a robot check elsewhere is what gets reported", async () => {
+  const signal = new AbortController().signal, path = join(tmpdir(), `rb-scihub-404-${Date.now()}.part`);
+  await assert.rejects(engine(async () => new Response(notFound, { status: 404, headers: { "content-type": "text/html" } }))
+    .sciHub(work, ["https://sci-hub.kr"], path, signal, () => {}),
+  (error: unknown) => error instanceof SciHubError && error.code === "SCIHUB_MISSING" && !error.page);
+  const requests: string[] = [];
+  await assert.rejects(engine(async url => {
+    requests.push(url);
+    return url.startsWith("https://sci-hub.kr/") ? html(robot) : new Response(notFound, { status: 404 });
+  }).sciHub(work, ["https://sci-hub.kr", "https://sci-hub.box"], path, signal, () => {}),
+  (error: unknown) => error instanceof SciHubError && error.code === "SCIHUB_CHALLENGE" && error.page!.startsWith("https://sci-hub.kr/"));
+  assert.equal(requests.length, 2, "both mirrors are tried");
+  // A 200 page that names nothing missing and links no PDF is left for a person to look at.
+  await assert.rejects(engine(async () => html("<title>Sci-Hub</title><p>Loading…</p>")).sciHub(work, ["https://sci-hub.kr"], path, signal, () => {}),
+    (error: unknown) => error instanceof SciHubError && error.code === "SCIHUB_NO_LINK" && !!error.page);
+});
+
+test("a guard on the storage stops that mirror's other links; a rate limit moves on to the next mirror", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rb-scihub-guard-"));
+  try {
+    const signal = new AbortController().signal, path = join(root, "pdf.part");
+    const page = `<meta name="citation_pdf_url" content="/storage/a.pdf"><a href="/storage/b.pdf">pdf</a><iframe src="/viewer/c"></iframe>`;
+    const requests: string[] = [];
+    await assert.rejects(engine(async url => {
+      requests.push(url);
+      return url.includes("/storage/") ? new Response("Forbidden", { status: 403 }) : html(page);
+    }).sciHub(work, ["https://sci-hub.kr"], path, signal, () => {}),
+    (error: unknown) => error instanceof SciHubError && error.code === "SCIHUB_BLOCKED" && error.page === "https://sci-hub.kr/https://doi.org/10.1017/s1092852900013754");
+    assert.deepEqual(requests.slice(1), ["https://sci-hub.kr/storage/a.pdf"]);
+
+    requests.length = 0;
+    const result = await engine(async url => {
+      requests.push(url);
+      if (url.startsWith("https://sci-hub.kr/")) return new Response("slow down", { status: 429, headers: { "retry-after": "30" } });
+      if (url.startsWith("https://sci-hub.test/https://doi.org/")) return html(article);
+      return url === storage ? new Response(pdf) : new Response("", { status: 404 });
+    }).sciHub(work, ["https://sci-hub.kr", "https://sci-hub.test"], path, signal, () => {});
+    assert.equal(result.mirror, "sci-hub.test");
+    await assert.rejects(engine(async () => new Response("slow down", { status: 429, headers: { "retry-after": "30" } })).sciHub(work, ["https://sci-hub.kr"], path, signal, () => {}),
+      (error: unknown) => error instanceof SciHubError && error.code === "SCIHUB_RATE_LIMITED" && error.message.includes("Retry-After 30") && !error.page);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("PDF links come from the citation tag, viewer, download links and buttons; guards are recognized by header and markers", () => {
+  const base = "https://sci-hub.kr/https://doi.org/10.1/x";
+  assert.deepEqual(sciHubPdfUrls(crossHost("10.1/x"), base), [redStorage], "one PDF, however many tags point at it");
+  assert.deepEqual(sciHubPdfUrls(`<iframe src="//moscow.sci-hub.example/view/123"></iframe><button onclick="location.href='/downloads/x.pdf?download=true'">↓</button>
+    <embed type="application/pdf" src="/e/1"><iframe src="${base}"></iframe>`, base),
+  ["https://sci-hub.kr/downloads/x.pdf?download=true", "https://sci-hub.kr/e/1", "https://moscow.sci-hub.example/view/123"]);
+  assert.equal(sciHubChallenge("<p>hi</p>", new Headers({ "cf-mitigated": "challenge" })), true);
+  assert.equal(sciHubChallenge(`<form><div class="cf-turnstile"></div><input name="cf-turnstile-response"></form>`), true);
+  assert.equal(sciHubChallenge(`<title>Just a moment...</title>`), true);
+  assert.equal(sciHubChallenge(crossHost("10.1/x")), false);
+});
+
+test("the cookie jar keeps a mirror's cookies to its own site and drops expired ones", () => {
+  const jar = new CookieJar();
+  jar.store("https://sci-hub.kr/x", new Headers([["set-cookie", "a=1; Domain=.sci-hub.kr"], ["set-cookie", "b=2"], ["set-cookie", "c=3; Domain=kr"], ["set-cookie", "d=4; Domain=evil.example"]]));
+  assert.equal(jar.header("https://sci-hub.kr/y"), "a=1; b=2");
+  assert.equal(jar.header("https://zero.sci-hub.kr/y"), "a=1", "host-only cookies stay on their host");
+  assert.equal(jar.header("https://sci-hub.red/y"), "");
+  jar.store("https://sci-hub.kr/x", new Headers([["set-cookie", "a=gone; Domain=.sci-hub.kr; Max-Age=0"], ["set-cookie", "b=old; Expires=Thu, 01 Jan 1970 00:00:00 GMT"]]));
+  assert.equal(jar.header("https://sci-hub.kr/y"), "");
 });
 
 async function library(fn: (db: Library, projectId: string, root: string) => Promise<void>) {

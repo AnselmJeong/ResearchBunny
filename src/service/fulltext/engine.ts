@@ -74,12 +74,16 @@ function decodeHtml(value: string) {
       return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : "";
     });
 }
+function tagAttrs(tag: string) {
+  const attrs: Record<string, string> = {};
+  for (const match of tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g))
+    attrs[match[1].toLowerCase()] = decodeHtml(match[2] ?? match[3] ?? match[4]);
+  return attrs;
+}
 export function htmlPdfUrls(html: string, base: string) {
   const found: unknown[] = [];
   for (const tag of html.match(/<(?:meta|a|iframe|embed|object)\b[^>]*>/gi) || []) {
-    const attrs: Record<string, string> = {};
-    for (const match of tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g))
-      attrs[match[1].toLowerCase()] = decodeHtml(match[2] ?? match[3] ?? match[4]);
+    const attrs = tagAttrs(tag);
     const href = attrs.href || attrs.src || attrs.data;
     if ((attrs.name || attrs.property || "").toLowerCase() === "citation_pdf_url") found.push(publicUrl(attrs.content, base));
     if (href && /\.pdf(?:[?/#]|$)|article-pdf|\/pdf(?:direct)?[/?]/i.test(href)) found.push(publicUrl(href, base));
@@ -134,15 +138,114 @@ export function sciHubMirrors(values: unknown): string[] {
 export function sciHubUrl(mirror: string, doi: string) {
   return `${mirror}/https://doi.org/${encodeURI(doi).replace(/[?#]/g, c => encodeURIComponent(c))}`;
 }
-/** A robot check rather than an article: the article page also carries an ALTCHA form, but with its PDF. */
-export function sciHubChallenge(html: string) {
-  return /<altcha-widget\b|<title[^>]*>\s*(?:ddos-guard|로봇 확인)/i.test(html) && !htmlPdfUrls(html, "https://mirror.invalid/").length;
+// Mirrors sit behind bot guards (DDoS-Guard), so they get a browser's request: no app name and no
+// contact address, which the other routes send to Unpaywall and publishers.
+const BROWSER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+export function sciHubHeaders(referer?: string): Record<string, string> {
+  return {
+    "User-Agent": BROWSER_AGENT,
+    Accept: referer ? "application/pdf,*/*;q=0.8" : "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    ...(referer ? { Referer: referer } : {}),
+  };
 }
-/** A failed Sci-Hub attempt. `page` is set when a person could finish it in Chrome (robot check, blocked or slow mirror). */
+/**
+ * The cookies mirrors set (DDoS-Guard's `__ddg*`, the PHP session), sent back the way a
+ * browser would, so later requests look like the same visitor. In memory only.
+ */
+export class CookieJar {
+  private cookies = new Map<string, { name: string; value: string; domain: string; hostOnly: boolean; expires: number }>();
+  store(url: string, headers: Headers) {
+    const host = new URL(url).hostname.toLowerCase(), now = Date.now();
+    for (const line of headers.getSetCookie?.() ?? []) {
+      const [pair, ...attrs] = line.split(";");
+      const eq = pair.indexOf("=");
+      if (eq < 1) continue;
+      const cookie = { name: pair.slice(0, eq).trim(), value: pair.slice(eq + 1).trim(), domain: host, hostOnly: true, expires: Infinity };
+      let maxAge = false, foreign = false;
+      for (const attr of attrs) {
+        const at = attr.indexOf("="), key = (at < 0 ? attr : attr.slice(0, at)).trim().toLowerCase(), value = at < 0 ? "" : attr.slice(at + 1).trim();
+        if (key === "domain" && value) {
+          const domain = value.replace(/^\./, "").toLowerCase();
+          // A cookie for another site, or for a whole top-level domain, is refused as a browser would.
+          if (!domain.includes(".") || (host !== domain && !host.endsWith(`.${domain}`))) foreign = true;
+          Object.assign(cookie, { domain, hostOnly: false });
+        } else if (key === "max-age" && /^-?\d+$/.test(value)) { cookie.expires = now + Number(value) * 1000; maxAge = true; }
+        else if (key === "expires" && !maxAge && !Number.isNaN(Date.parse(value))) cookie.expires = Date.parse(value);
+      }
+      const key = `${cookie.domain}\t${cookie.name}`;
+      if (foreign) continue;
+      if (cookie.expires <= now) this.cookies.delete(key);
+      else if (this.cookies.has(key) || this.cookies.size < 200) this.cookies.set(key, cookie);
+    }
+  }
+  header(url: string) {
+    const host = new URL(url).hostname.toLowerCase(), now = Date.now();
+    return [...this.cookies.values()]
+      .filter(c => c.expires > now && (host === c.domain || (!c.hostOnly && host.endsWith(`.${c.domain}`))))
+      .map(c => `${c.name}=${c.value}`).join("; ");
+  }
+}
+/**
+ * Where a mirror's article page keeps the PDF: its citation tag, the embedded viewer, a
+ * download link or a button's `location.href`. Embeds without a `.pdf` address come last.
+ */
+export function sciHubPdfUrls(html: string, base: string) {
+  const found: unknown[] = [...htmlPdfUrls(html, base)], embeds: unknown[] = [];
+  for (const tag of html.match(/<(?:iframe|embed|object|button|div|a)\b[^>]*>/gi) || []) {
+    const attrs = tagAttrs(tag);
+    const src = /^<(?:iframe|embed|object)/i.test(tag) ? attrs.src || attrs.data : undefined;
+    if (src) (attrs.type === "application/pdf" || /\.pdf(?:[?#]|$)/i.test(src) ? found : embeds).push(publicUrl(src, base));
+    const onclick = /location\.href\s*=\s*['"]([^'"]+)['"]/.exec(attrs.onclick || "")?.[1];
+    if (onclick) found.push(publicUrl(onclick, base));
+  }
+  const page = publicUrl(base);
+  return urls([...found, ...embeds]).filter(url => url !== page).slice(0, 4);
+}
+// DDoS-Guard's ALTCHA page (sci-hub.kr), Cloudflare, reCAPTCHA, hCaptcha and Turnstile.
+const CHALLENGE = /<altcha-widget\b|<title[^>]*>\s*(?:ddos-guard|로봇 확인|just a moment|attention required|security check)|captcha required|verify (?:that )?you are (?:a )?human|g-recaptcha-response|h-captcha-response|cf-turnstile-response|\/cdn-cgi\/challenge-platform\/|\b(?:id|name)\s*=\s*["']captcha["']/i;
+/** A robot check rather than an article: the article page also carries an ALTCHA form, but with its PDF. */
+export function sciHubChallenge(html: string, headers?: Headers) {
+  return headers?.get("cf-mitigated")?.toLowerCase() === "challenge" ||
+    (CHALLENGE.test(html) && !htmlPdfUrls(html, "https://mirror.invalid/").length);
+}
+/** The mirror's own "no such article" page (sci-hub.kr answers 404 `페이지를 찾을 수 없습니다`). */
+export function sciHubMissing(html: string) {
+  const text = html.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, " ");
+  return /not found|찾을 수 없|не найден|отсутствует/i.test(text);
+}
+/** A failed Sci-Hub attempt. `page` is set when a person could finish it in Chrome (robot check, blocked mirror, a page without a PDF link). */
 export class SciHubError extends AppError {
   constructor(code: string, message: string, public page?: string) { super(code, message); }
 }
-type Fetched = { kind: "pdf"; url: string } | { kind: "html"; url: string; html: string };
+// Which failure to report when every mirror failed: the one a person can act on first.
+const SCIHUB_RANK: Record<string, number> = {
+  SCIHUB_CHALLENGE: 6, SCIHUB_BLOCKED: 5, SCIHUB_RATE_LIMITED: 4, SCIHUB_NO_LINK: 3, SCIHUB_NOT_PDF: 3, SCIHUB_MISSING: 1,
+};
+const sciHubRank = (error: SciHubError) => SCIHUB_RANK[error.code] ?? 2;
+// A guard that stopped one request from a mirror stops the rest of that mirror's links too.
+const SCIHUB_GUARDED = new Set(["SCIHUB_CHALLENGE", "SCIHUB_BLOCKED", "SCIHUB_RATE_LIMITED"]);
+type HtmlFetched = { kind: "html"; url: string; html: string; status: number; headers: Headers };
+type Fetched = { kind: "pdf"; url: string } | HtmlFetched;
+/** Why a mirror answered with a page instead of the PDF, or null for an ordinary page. */
+function sciHubRefusal(fetched: HtmlFetched, host: string, page: string): SciHubError | null {
+  const where = `Sci-Hub 미러(${host})`, status = fetched.status;
+  if (sciHubChallenge(fetched.html, fetched.headers))
+    return new SciHubError("SCIHUB_CHALLENGE", `${where}가 로봇 확인을 요구합니다. Chrome에서 확인을 마치면 내려받을 수 있습니다.`, page);
+  if (status === 401 || status === 403) return new SciHubError("SCIHUB_BLOCKED", `${where}가 접근을 막았습니다 (HTTP ${status}).`, page);
+  if (status === 429) {
+    const after = fetched.headers.get("retry-after");
+    return new SciHubError("SCIHUB_RATE_LIMITED", `${where}가 요청이 많다며 잠시 거절했습니다 (HTTP 429${after ? ` · Retry-After ${after.slice(0, 40)}` : ""}).`);
+  }
+  if (status === 404 || status === 410) return new SciHubError("SCIHUB_MISSING", `${where}에 이 논문의 PDF가 없습니다.`);
+  if (status >= 400) return new SciHubError("SCIHUB_UNAVAILABLE", `${where} 응답 오류 (HTTP ${status}).`);
+  return null;
+}
+type RequestOptions = {
+  requestMs?: number; headers?: Record<string, string>; cookies?: CookieJar;
+  /** Return error responses instead of throwing, so their page can be read (a robot check sent with 403). */
+  acceptStatus?: boolean;
+};
 // Sci-Hub serves whole scanned volumes (30 MB+), so its PDF requests get a longer bound.
 const LIMITS = {requestMs:15000, itemMs:90000, sciHubMs:120000, sciHubPdfMs:60000};
 export class FulltextEngine {
@@ -152,21 +255,27 @@ export class FulltextEngine {
     private networkCheck: (url: string) => Promise<void> = checkAddress,
     limits: Partial<typeof LIMITS> = {},
   ) { this.limits = {...LIMITS, ...limits}; }
-  private async request(value: string, signal: AbortSignal, requestMs = this.limits.requestMs): Promise<{response:Response; signal:AbortSignal}> {
+  /** Mirror cookies, kept for the app's lifetime like a browser session. */
+  private sciHubCookies = new CookieJar();
+  private async request(value: string, signal: AbortSignal, options: RequestOptions = {}): Promise<{response:Response; signal:AbortSignal}> {
     let url = publicUrl(value);
-    const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(requestMs)]);
+    const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(options.requestMs ?? this.limits.requestMs)]);
     for (let i = 0; url && i < 6; i++) {
       requestSignal.throwIfAborted();
       await untilAborted(this.networkCheck(url), requestSignal);
       requestSignal.throwIfAborted();
-      const response = await untilAborted(this.fetcher(url, { headers, signal: requestSignal, redirect: "manual" }), requestSignal);
+      const cookie = options.cookies?.header(url);
+      const response = await untilAborted(this.fetcher(url, {
+        headers: { ...(options.headers ?? headers), ...(cookie ? { Cookie: cookie } : {}) }, signal: requestSignal, redirect: "manual",
+      }), requestSignal);
+      options.cookies?.store(url, response.headers);
       if (response.status >= 300 && response.status < 400) {
         const next = publicUrl(response.headers.get("location"), url);
         void response.body?.cancel().catch(() => {});
         url = next;
         continue;
       }
-      if (!response.ok) {
+      if (!response.ok && !options.acceptStatus) {
         void response.body?.cancel().catch(() => {});
         throw new AppError("DOWNLOAD_HTTP", response.status === 401 || response.status === 403
           ? `로그인·접근 권한 또는 사람 인증이 필요합니다 (HTTP ${response.status}).`
@@ -178,9 +287,9 @@ export class FulltextEngine {
     }
     throw new AppError("DOWNLOAD_REDIRECT", "안전한 원문 주소를 찾지 못했거나 리디렉션이 너무 많습니다.");
   }
-  /** Stream a PDF response to `path`; any other response comes back as its first 2MB of HTML. */
-  private async fetchCandidate(url: string, path: string, signal: AbortSignal, requestMs?: number): Promise<Fetched> {
-    const {response, signal:requestSignal} = await this.request(url, signal, requestMs);
+  /** Stream a PDF response to `path`; any other response (and, with `acceptStatus`, any error) comes back as its first 2MB of HTML. */
+  private async fetchCandidate(url: string, path: string, signal: AbortSignal, options?: RequestOptions): Promise<Fetched> {
+    const {response, signal:requestSignal} = await this.request(url, signal, options);
     const reader = response.body?.getReader();
     if (!reader) throw new AppError("DOWNLOAD_EMPTY", "원문 응답이 비어 있습니다.");
     const prefix: Uint8Array[] = [];
@@ -196,7 +305,7 @@ export class FulltextEngine {
         if (size > MAX_PDF_BYTES) throw new AppError("DOWNLOAD_SIZE", "PDF가 150MB 제한을 초과했습니다.");
       }
       const head = Buffer.concat(prefix);
-      if (!head.subarray(0, 1024).includes(Buffer.from("%PDF-"))) {
+      if (!response.ok || !head.subarray(0, 1024).includes(Buffer.from("%PDF-"))) {
         const parts = [head];
         while (!ended && size <= MAX_HTML_BYTES) {
           signal.throwIfAborted();
@@ -205,7 +314,7 @@ export class FulltextEngine {
           size += chunk.value.length;
           if (size <= MAX_HTML_BYTES) parts.push(Buffer.from(chunk.value));
         }
-        return { kind: "html", url: response.url, html: Buffer.concat(parts).toString("utf8") };
+        return { kind: "html", url: response.url, html: Buffer.concat(parts).toString("utf8"), status: response.status, headers: response.headers };
       }
       const length = Number(response.headers.get("content-length"));
       if (length > MAX_PDF_BYTES) throw new AppError("DOWNLOAD_SIZE", "PDF가 150MB 제한을 초과했습니다.");
@@ -314,8 +423,9 @@ export class FulltextEngine {
   }
   /**
    * The last resort after every other route: each mirror's page for the DOI, then
-   * the PDF it embeds. A robot check is never answered here; it is reported with
-   * the page so the person can pass it in their own Chrome.
+   * the PDF it embeds. Requests look like a browser's and keep the mirror's cookies.
+   * A robot check is never answered here; it is reported with the page so the
+   * person can pass it in Chrome. A missing article (HTTP 404) is final.
    */
   async sciHub(work: Work, mirrors: string[], path: string, signal: AbortSignal, progress: (message: string) => void,
     validate?: (retrieved: RetrievedPdf) => Promise<void>): Promise<RetrievedPdf> {
@@ -328,43 +438,48 @@ export class FulltextEngine {
     if (!doi) throw new SciHubError("SCIHUB_NO_DOI", "DOI를 확인할 수 없어 Sci-Hub 미러에서 찾지 못했습니다.");
     const failures: SciHubError[] = [];
     for (const mirror of mirrors) {
-      const page = sciHubUrl(mirror, doi), host = new URL(page).hostname;
-      // Failures a person can get past in Chrome keep the page; the rest are final for this mirror.
+      const page = sciHubUrl(mirror, doi), host = new URL(page).hostname, where = `Sci-Hub 미러(${host})`;
       const failed = (error: unknown) => {
         signal.throwIfAborted();
         if (error instanceof SciHubError) return error;
         if (error instanceof AppError && ["WRONG_PDF", "AUXILIARY_PDF", "INVALID_PDF", "DOWNLOAD_SIZE"].includes(error.code)) return new SciHubError(error.code, error.message);
-        if (error instanceof AppError && error.code === "DOWNLOAD_HTTP") return new SciHubError("SCIHUB_BLOCKED", `Sci-Hub 미러(${host})가 접근을 막았습니다. ${error.message}`, page);
-        if ((error as NodeJS.ErrnoException)?.code === "ENOTFOUND") return new SciHubError("SCIHUB_UNAVAILABLE", `Sci-Hub 미러(${host}) 주소를 찾을 수 없습니다.`);
-        return new SciHubError("SCIHUB_UNAVAILABLE", `Sci-Hub 미러(${host})에서 PDF를 받지 못했습니다.`, page);
+        if ((error as NodeJS.ErrnoException)?.code === "ENOTFOUND") return new SciHubError("SCIHUB_UNAVAILABLE", `${where} 주소를 찾을 수 없습니다.`);
+        // A slow or dropped connection may still open in Chrome.
+        return new SciHubError("SCIHUB_UNAVAILABLE", `${where}에서 PDF를 받지 못했습니다.`, page);
       };
+      const found = (sourceUrl: string): RetrievedPdf => ({ sourceUrl, doi, method: "http", mirror: host });
       progress(`Sci-Hub 미러 확인 · ${host}`);
-      let found: Fetched;
+      let pdfs: string[];
       try {
-        found = await this.fetchCandidate(page, path, stageSignal);
-        if (found.kind === "html" && !htmlPdfUrls(found.html, found.url).length) throw sciHubChallenge(found.html)
-          ? new SciHubError("SCIHUB_CHALLENGE", `Sci-Hub 미러(${host})가 로봇 확인을 요구합니다. Chrome에서 확인을 마치면 내려받을 수 있습니다.`, page)
-          : new SciHubError("SCIHUB_MISSING", `Sci-Hub 미러(${host})에 이 논문의 PDF가 없습니다.`);
+        const opened = await this.fetchCandidate(page, path, stageSignal, { headers: sciHubHeaders(), cookies: this.sciHubCookies, acceptStatus: true });
+        // The mirror may answer with the PDF itself; usually its page embeds the storage URL.
+        if (opened.kind === "pdf") { const retrieved = found(opened.url); await validate?.(retrieved); return retrieved; }
+        const refusal = sciHubRefusal(opened, host, page);
+        if (refusal) throw refusal;
+        pdfs = sciHubPdfUrls(opened.html, opened.url).slice(0, 3);
+        if (!pdfs.length) throw sciHubMissing(opened.html)
+          ? new SciHubError("SCIHUB_MISSING", `${where}에 이 논문의 PDF가 없습니다.`)
+          : new SciHubError("SCIHUB_NO_LINK", `${where} 페이지에서 PDF 링크를 찾지 못했습니다. Chrome에서 직접 확인할 수 있습니다.`, page);
       } catch (error) { failures.push(failed(error)); continue; }
-      // The mirror may answer with the PDF itself; usually its page embeds the storage URL.
-      const pdfs = found.kind === "pdf" ? [found.url] : htmlPdfUrls(found.html, found.url).slice(0, 3);
       for (const candidate of pdfs) {
         try {
-          let sourceUrl = candidate;
-          if (found.kind === "html") {
-            progress(`Sci-Hub PDF 다운로드 · ${new URL(candidate).hostname}`);
-            const fetched = await this.fetchCandidate(candidate, path, stageSignal, this.limits.sciHubPdfMs);
-            if (fetched.kind === "html") throw new SciHubError("SCIHUB_CHALLENGE", `Sci-Hub 미러(${host})가 PDF 대신 안내 페이지를 보냈습니다. Chrome에서 확인을 마치면 내려받을 수 있습니다.`, page);
-            sourceUrl = fetched.url;
-          }
-          const retrieved: RetrievedPdf = { sourceUrl, doi, method: "http", mirror: host };
+          progress(`Sci-Hub PDF 다운로드 · ${new URL(candidate).hostname}`);
+          const fetched = await this.fetchCandidate(candidate, path, stageSignal,
+            { requestMs: this.limits.sciHubPdfMs, headers: sciHubHeaders(page), cookies: this.sciHubCookies, acceptStatus: true });
+          if (fetched.kind === "html") throw sciHubRefusal(fetched, host, page) ??
+            new SciHubError("SCIHUB_NOT_PDF", `${where}가 PDF 대신 안내 페이지를 보냈습니다. Chrome에서 직접 확인할 수 있습니다.`, page);
+          const retrieved = found(fetched.url);
           await validate?.(retrieved);
           return retrieved;
-        } catch (error) { failures.push(failed(error)); }
+        } catch (error) {
+          const failure = failed(error);
+          failures.push(failure);
+          if (SCIHUB_GUARDED.has(failure.code)) break;
+        }
       }
     }
-    // A robot check is the failure a person can act on; otherwise report the last mirror's.
-    throw failures.find(f => f.code === "SCIHUB_CHALLENGE") || failures.at(-1) ||
-      new SciHubError("SCIHUB_MIRROR", "Sci-Hub 미러가 설정되지 않았습니다.");
+    // Report the failure a person can act on (a robot check first); a missing article is the last resort.
+    const best = failures.reduce<SciHubError | undefined>((top, f) => !top || sciHubRank(f) > sciHubRank(top) ? f : top, undefined);
+    throw best || new SciHubError("SCIHUB_MIRROR", "Sci-Hub 미러가 설정되지 않았습니다.");
   }
 }

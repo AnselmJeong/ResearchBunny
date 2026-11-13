@@ -41,6 +41,19 @@
 - 2026-10-22 확인: `sci-hub.kr`은 브라우저가 아닌 요청에 ALTCHA `로봇 확인` 페이지를 돌려줄 때가 있다. 앱은 로봇 확인에 응답하지 않는다. HTTP 경로는 다음 미러로 넘어가고, `로그인된 Chrome 사용`이 켜져 있으면 미러 페이지를 Chrome 작업 탭에서 연다. 사용자가 Chrome에서 확인을 마치면(30초 대기) 같은 출처의 PDF를 Chrome 세션으로 내려받는다. 미러에 논문이 없거나 PDF 검증에 실패하면 Chrome을 열지 않는다.
 - Chrome 탐지는 Sci-Hub의 로봇 확인(제목 `로봇 확인`, `DDoS-Guard`, PDF 링크 없는 ALTCHA 폼)을 사람 인증으로 처리하고, 논문 페이지의 신고용 ALTCHA 폼은 인증으로 보지 않는다. PDF `object`·`embed`·`iframe` 링크도 후보로 찾는다.
 
+### HTTP 경로 보완 (2026-11-13, SciHubDaemon 참고)
+
+[SciHubDaemon](https://github.com/mateuszhohol/SciHubDaemon)의 요청·판별 방식을 참고해 HTTP 경로를 고쳤다.
+
+- 미러 요청은 브라우저와 같은 User-Agent·Accept·Accept-Language를 보낸다. 이전에는 다른 경로처럼 `ResearchBunny/0.2 (mailto:…)`를 보내 사용자의 메일 주소가 미러에 전달됐다. PDF 요청에는 미러 페이지를 `Referer`로 붙인다.
+- 미러가 주는 쿠키(DDoS-Guard `__ddg*`, `PHPSESSID`, `session`)를 메모리에 두고 같은 사이트 요청에 돌려보낸다(앱이 켜져 있는 동안). 다른 사이트·최상위 도메인 쿠키는 받지 않고, 만료·`Max-Age=0`이면 지운다.
+- 응답 상태로 실패를 나눈다. 404·410은 `SCIHUB_MISSING`(논문 없음)이라 Chrome을 열지 않는다. 이전에는 sci-hub.kr의 404 `페이지를 찾을 수 없습니다`를 접근 차단으로 보고 Chrome 창을 띄워 30초를 기다렸다. 401·403은 `SCIHUB_BLOCKED`, 429는 `SCIHUB_RATE_LIMITED`(Retry-After 표시, 다음 미러로), 5xx는 `SCIHUB_UNAVAILABLE`이다.
+- 로봇 확인은 상태와 무관하게 본문으로 판별한다: ALTCHA·`로봇 확인`·`DDoS-Guard` 외에 `cf-mitigated: challenge` 헤더, Cloudflare `Just a moment`·`/cdn-cgi/challenge-platform/`, reCAPTCHA·hCaptcha·Turnstile 응답 필드. PDF 링크가 있는 논문 페이지는 여전히 로봇 확인으로 보지 않는다.
+- PDF 후보는 `citation_pdf_url`·PDF `object`/`embed`/`iframe`·`.pdf` 링크·버튼의 `location.href`이고, `.pdf`가 아닌 `iframe`/`embed`는 마지막에 둔다. 미러당 3개까지 받는다. 저장소가 로봇 확인·차단·429를 돌려주면 그 미러의 나머지 후보는 건너뛴다.
+- PDF 링크도 없고 `not found`·`찾을 수 없`류 문구도 없는 페이지는 `SCIHUB_NO_LINK`로 Chrome에 넘긴다(사람이 볼 수 있다).
+- 모든 미러가 실패하면 사람이 할 수 있는 실패를 보고한다: 로봇 확인 > 차단 > 429 > 링크 없음·PDF 아님 > 기타 > 논문 없음. 이전에는 로봇 확인이 아니면 마지막 미러의 실패를 보고했다.
+- 2026-11-13 sci-hub.kr 확인: 논문 페이지의 PDF는 다른 호스트(`//sci-hub.red/storage/…`, 프로토콜 상대 주소)를 가리키기도 하고, 응답마다 저장소 경로가 달랐다. 두 주소 형식(`미러/https://doi.org/DOI`, `미러/DOI`) 모두 같은 페이지를 준다. 새 경로로 실제 논문 PDF(34MB)를 받았고, 없는 DOI는 Chrome 없이 `SCIHUB_MISSING`으로 끝났다.
+
 ## 0.2.8: 현재 남은 원문 목록
 
 - `PDF 원문 찾기`는 날짜별 작업 선택 대신 현재 대상 범위의 실제 첨부 상태와 남은 문헌을 보여준다. 새 문헌과 누락·손상된 PDF도 포함하며 책·챕터는 기본 제외한다.
