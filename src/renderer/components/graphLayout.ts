@@ -31,7 +31,11 @@ export function reconcileGraph(
       .remove();
     for (const definition of definitions) {
       const existing = instance.getElementById(definition.data.id!);
-      if (existing.empty()) instance.add(definition);
+      // Cytoscape keeps the position object it is given and moves the node by
+      // mutating it, which would rewrite the caller's saved network layout
+      // (e.g. with timeline coordinates). Hand it a copy.
+      if (existing.empty())
+        instance.add({ ...definition, position: definition.position && { ...definition.position } });
       else {
         existing.data(definition.data);
         existing.toggleClass(
@@ -46,7 +50,7 @@ export function reconcileGraph(
           "saved",
           String(definition.classes).includes("saved"),
         );
-        existing.toggleClass("topic-colored", String(definition.classes).includes("topic-colored"));
+        existing.toggleClass("color-mapped", String(definition.classes).includes("color-mapped"));
       }
     }
   });

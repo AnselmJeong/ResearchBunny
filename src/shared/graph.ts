@@ -49,12 +49,72 @@ export function incomingCitationCounts(
   return new Map([...sources].map(([id, citing]) => [id, citing.size]));
 }
 
+/**
+ * Log-scaled diameter from 24 to 64 model pixels. `floor` is the smallest
+ * value treated as the top of the scale, so a small maximum in a sparse graph
+ * does not draw as a full-size hub.
+ */
+function logDiameter(value: number, maximum: number, floor: number): number {
+  const safe = Number.isFinite(value) ? Math.max(0, value) : 0;
+  const ceiling = Math.max(floor, Number.isFinite(maximum) ? maximum : 0, safe);
+  return 24 + 40 * Math.log1p(safe) / Math.log1p(ceiling);
+}
+
 /** Log-scaled side length (diameter for circles), bounded in model pixels. */
 export function citationNodeDiameter(count: number, maximum: number): number {
-  const safeCount = Number.isFinite(count) ? Math.max(0, count) : 0;
   // Keep a solitary citation from becoming a full-size hub in sparse graphs.
-  const ceiling = Math.max(10, Number.isFinite(maximum) ? maximum : 0, safeCount);
-  return 24 + 40 * Math.log1p(safeCount) / Math.log1p(ceiling);
+  return logDiameter(count, maximum, 10);
+}
+
+/**
+ * Diameter for a PageRank score given as a multiple of the average share.
+ * The scale starts at the graph's lowest score, so papers nobody here cites
+ * stay smallest; a nearly flat graph keeps nearly equal sizes.
+ */
+export function rankNodeDiameter(score: number, lowest: number, highest: number): number {
+  return logDiameter(score - lowest, highest - lowest, 1);
+}
+
+/**
+ * PageRank over citation links (citing → cited): a paper ranks higher when
+ * papers that rank high themselves cite it. A paper citing nothing in the
+ * graph shares its rank evenly, so scores sum to 1. Self-citations, repeated
+ * links and links to papers outside `ids` are ignored.
+ */
+export function pageRank(
+  ids: string[],
+  edges: { source: string; target: string }[],
+  damping = 0.85,
+): Map<string, number> {
+  const n = ids.length;
+  if (!n) return new Map();
+  const index = new Map(ids.map((id, i) => [id, i]));
+  const out: number[][] = ids.map(() => []);
+  const seen = new Set<string>();
+  for (const { source, target } of edges) {
+    const from = index.get(source), to = index.get(target);
+    if (from === undefined || to === undefined || from === to || seen.has(`${from}:${to}`)) continue;
+    seen.add(`${from}:${to}`);
+    out[from].push(to);
+  }
+  let rank = new Float64Array(n).fill(1 / n);
+  for (let iteration = 0; iteration < 100; iteration++) {
+    const next = new Float64Array(n);
+    let dangling = 0;
+    for (let i = 0; i < n; i++) {
+      if (!out[i].length) dangling += rank[i];
+      else for (const to of out[i]) next[to] += rank[i] / out[i].length;
+    }
+    const base = (1 - damping) / n + (damping * dangling) / n;
+    let change = 0;
+    for (let i = 0; i < n; i++) {
+      next[i] = base + damping * next[i];
+      change += Math.abs(next[i] - rank[i]);
+    }
+    rank = next;
+    if (change < 1e-10) break;
+  }
+  return new Map(ids.map((id, i) => [id, rank[i]]));
 }
 
 /** Case- and accent-free text, so "menard" finds "Ménard". */
