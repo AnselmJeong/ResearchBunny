@@ -57,6 +57,27 @@ export function citationNodeDiameter(count: number, maximum: number): number {
   return 24 + 40 * Math.log1p(safeCount) / Math.log1p(ceiling);
 }
 
+/** Case- and accent-free text, so "menard" finds "Ménard". */
+const fold = (text: string) => text.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
+
+/**
+ * Papers on the graph matching every word of `query`, in any order, against
+ * what a node and its tooltip show: title, authors, year, venue and citekey.
+ */
+export function graphSearch(
+  works: { id: string; title: string; authors: string[]; year: number | null; venue?: string; citekey?: string }[],
+  query: string,
+): string[] {
+  const words = fold(query).split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  return works
+    .filter((work) => {
+      const text = fold([work.title, ...work.authors, work.year ?? "", work.venue ?? "", work.citekey ?? ""].join(" "));
+      return words.every((word) => text.includes(word));
+    })
+    .map((work) => work.id);
+}
+
 export function resultWindow(graph: boolean, limit: number, offset: number) {
   return { graph, limit, offset: graph ? 0 : offset };
 }
