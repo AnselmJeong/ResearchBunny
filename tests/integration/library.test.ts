@@ -21,6 +21,7 @@ import {
   restoreBackup,
 } from "../../src/service/interchange/backup";
 import { hashFile, PdfImports } from "../../src/service/interchange/pdf";
+import { toBlob } from "../../src/service/shelf/vectors";
 import { Discovery } from "../../src/service/discovery/engine";
 import { OpenAlex, fromOpenAlex } from "../../src/service/providers/openalex";
 import { validateRecommendations } from "../../src/service/providers/openai";
@@ -939,6 +940,45 @@ test("archive graph draws only linked papers from all 76 and keeps the list wind
   const page = db.list({ ...args, ...resultWindow(false, 50, 0) });
   assert.equal(page.works.length, 50);
   assert.equal(page.graph, undefined);
+}));
+
+test("archive graph links papers by shared references and shelf embeddings, and memoises the links", () => fixture((db) => {
+  const projectId = db.projects()[0].id;
+  // a and b share three references outside the archive; c and d have close embeddings; e has neither.
+  const a = db.upsert(fromOpenAlex(raw(601, "Coupled A", [9001, 9002, 9003, 9004]))).work;
+  const b = db.upsert(fromOpenAlex(raw(602, "Coupled B", [9001, 9002, 9003]))).work;
+  const c = db.upsert(fromOpenAlex(raw(603, "Similar C"))).work;
+  const d = db.upsert(fromOpenAlex(raw(604, "Similar D"))).work;
+  const e = db.upsert(fromOpenAlex(raw(605, "Unlinked E"))).work;
+  db.mutate(projectId, [a, b, c, d, e].map((work) => work.id), { screening: "included" });
+  const vectors: Record<string, number[]> = { [c.id]: [1, 0, 0.02], [d.id]: [0.99, 0.01, 0.03], [e.id]: [0, 1, 0], [a.id]: [0, 0, 1] };
+  for (const [id, vector] of Object.entries(vectors))
+    db.db.prepare("INSERT INTO work_embeddings VALUES(?,?,?,?,?,?,?,?)").run(id, "test-model", "p1", "abstract", "h", 3, toBlob(Float32Array.from(vector)), "2026-11-14T00:00:00Z");
+  const args = { projectId, scope: "archive", query: "", filters: DEFAULT_FILTERS, showHidden: false, sort: "rank", ...resultWindow(true, 50, 0) };
+
+  const withoutEmbeddings = db.list(args);
+  assert.deepEqual(new Set(withoutEmbeddings.works.map((work) => work.id)), new Set([a.id, b.id]));
+  assert.deepEqual(withoutEmbeddings.links?.map(({ kind, shared }) => [kind, shared]), [["coupling", 3]]);
+
+  const graph = db.list(args, undefined, "test-model");
+  assert.deepEqual(new Set(graph.works.map((work) => work.id)), new Set([a.id, b.id, c.id, d.id]));
+  assert.deepEqual(graph.graph, { connected: 4 });
+  const semantic = graph.links!.filter((link) => link.kind === "semantic");
+  assert.deepEqual(semantic.map((link) => [link.source, link.target].sort()), [[c.id, d.id].sort()]);
+  // The same scope, in any order, reuses the computed links; a new embedding or citation computes them again.
+  const ids = [a, b, c, d, e].map((work) => work.id);
+  const first = db.inferredLinks(ids, "test-model");
+  assert.equal(db.inferredLinks([...ids].reverse(), "test-model"), first);
+  assert.deepEqual(first.skipped, []);
+  // Past the limits a kind is left out and reported, not computed.
+  const capped = db.inferredLinks(ids, "test-model", { coupling: 4, semantic: 3 });
+  assert.deepEqual(capped, { links: [], skipped: ["coupling", "semantic"] });
+  db.db.prepare("INSERT INTO work_embeddings VALUES(?,?,?,?,?,?,?,?)").run(b.id, "test-model", "p1", "abstract", "h", 3, toBlob(Float32Array.from([0.98, 0, 0.05])), "2026-11-14T00:00:01Z");
+  const second = db.inferredLinks(ids, "test-model");
+  assert.notEqual(second, first);
+  db.upsert(fromOpenAlex(raw(605, "Unlinked E", [9001, 9002, 9003])));
+  assert.notEqual(db.inferredLinks(ids, "test-model"), second);
+  assert.ok(db.inferredLinks(ids, "test-model").links.some((link) => link.kind === "coupling" && [link.source, link.target].includes(e.id)));
 }));
 
 test("archive find matches every word in any order, not one phrase", () => fixture((db) => {

@@ -13,6 +13,7 @@ import type {
   Evidence,
   LibraryState,
   Filters,
+  InferredLink,
   ListResult,
   Attachment,
   ShelfMembership,
@@ -32,7 +33,8 @@ import {
   relatedness,
 } from "../../shared/domain";
 import type { ShelfSearchResult } from "../../shared/shelf";
-import { citationWarnings, graphNodeIds } from "../../shared/graph";
+import { citationWarnings, couplingLinks, graphNodeIds, semanticLinks } from "../../shared/graph";
+import { fromBlob } from "../shelf/vectors";
 
 const SCHEMA = 3;
 const ROOT_FOLDER_LABEL: Record<string, string> = { "": "수신함" };
@@ -42,6 +44,8 @@ export class Library {
   shelfHints?: (works: Work[]) => Map<string, ShelfMembership>;
   /** 초기 관심 scores of the last few lists, kept while their papers and the 초기 관심 stay the same. */
   private interestScores = new Map<string, { key: string; scores: ReturnType<typeof relatedness> }>();
+  /** Inferred graph links of the last few graphs: a graph refetches the same scope on every filter or view change. */
+  private linkCache = new Map<string, { links: InferredLink[]; skipped: InferredLink["kind"][] }>();
   constructor(public root: string) {
     mkdirSync(root, { recursive: true });
     mkdirSync(join(root, "attachments"), { recursive: true });
@@ -754,6 +758,53 @@ export class Library {
       )
       .all(JSON.stringify(ids)) as { source: string; target: string }[];
   }
+  /**
+   * Links no citation records between `ids`: shared references over each
+   * paper's full reference list, and nearest neighbours by the shelf's
+   * embeddings under `model` (papers without one get no semantic links).
+   * Memoised per scope, library revision and embedding state. Scopes past
+   * `limits` skip that kind rather than stall the graph: on an M2 Max coupling
+   * takes about 0.3 s at 5,000 papers and similarity 0.5 s at 1,500 embedded
+   * papers (it compares every pair).
+   */
+  inferredLinks(
+    ids: string[],
+    model: string | null,
+    limits = { coupling: 5000, semantic: 1500 },
+  ): { links: InferredLink[]; skipped: InferredLink["kind"][] } {
+    if (ids.length < 2) return { links: [], skipped: [] };
+    const listed = JSON.stringify([...new Set(ids)].sort());
+    const embedded = model
+      ? (this.db.prepare("SELECT count(*) AS n,max(created_at) AS at FROM work_embeddings WHERE model=?").get(model) as { n: number; at: string | null })
+      : null;
+    const key = [this.pref<number>("revision") ?? 0, model, embedded?.n, embedded?.at, limits.coupling, limits.semantic, createHash("sha1").update(listed).digest("base64url")].join("|");
+    const cached = this.linkCache.get(key);
+    if (cached) return cached;
+    const skipped: InferredLink["kind"][] = [];
+    const references = new Map<string, string[]>();
+    if (ids.length > limits.coupling) skipped.push("coupling");
+    else for (const row of this.db
+      .prepare("WITH listed(id) AS MATERIALIZED (SELECT value FROM json_each(?)) SELECT c.citing_id AS id,c.cited_external AS ref FROM listed s CROSS JOIN citations c ON c.citing_id=s.id")
+      .all(listed) as { id: string; ref: string }[]) {
+      const list = references.get(row.id);
+      if (list) list.push(row.ref);
+      else references.set(row.id, [row.ref]);
+    }
+    const vectors = new Map<string, Float32Array>();
+    if (model)
+      for (const row of this.db
+        .prepare("SELECT work_id,vector FROM work_embeddings WHERE model=? AND work_id IN (SELECT value FROM json_each(?))")
+        .all(model, listed) as { work_id: string; vector: Uint8Array }[])
+        vectors.set(row.work_id, fromBlob(row.vector));
+    if (vectors.size > limits.semantic) {
+      skipped.push("semantic");
+      vectors.clear();
+    }
+    const result = { links: [...couplingLinks(references), ...semanticLinks(vectors)], skipped };
+    if (this.linkCache.size >= 4) this.linkCache.delete(this.linkCache.keys().next().value!);
+    this.linkCache.set(key, result);
+    return result;
+  }
   /** Shelf work ids for a folder (with descendants) or a virtual shelf folder. */
   shelfScope(scopeId: string): string[] {
     const visible = "f.work_id IS NOT NULL AND f.status!='missing'";
@@ -835,7 +886,7 @@ export class Library {
     sort: string;
     /** Graphs draw linked papers from the whole scope instead of a list page. */
     graph?: boolean;
-  }, search?: ShelfSearchResult): ListResult {
+  }, search?: ShelfSearchResult, embeddingModel: string | null = null): ListResult {
     const { projectId, scope, scopeId } = args;
     let sql =
       "SELECT pw.work_id AS id FROM project_works pw WHERE pw.project_id=?";
@@ -973,9 +1024,11 @@ export class Library {
       const citations = this.edges(pool.map((w) => w.id));
       const warnings = citationWarnings(pool, citations);
       // Questionable citations are hidden by default, so they cannot keep a paper on the graph.
+      const { links: inferred, skipped } = this.inferredLinks(pool.map((w) => w.id), embeddingModel);
       const links = [
         ...citations.filter((e) => !warnings.has(`${e.source}:${e.target}`)),
         ...similarityEdges(pool),
+        ...inferred,
       ];
       const chosen = graphNodeIds([...keptIds], contextIds, links);
       const shown = new Set(chosen.ids), drawn = new Set([...chosen.ids, ...contextIds]);
@@ -991,7 +1044,8 @@ export class Library {
         ids: kept.map((w) => w.id),
         scoped,
         edges: citations.filter((e) => drawn.has(e.source) && drawn.has(e.target)),
-        graph: { connected: chosen.connected },
+        links: inferred.filter((e) => drawn.has(e.source) && drawn.has(e.target)),
+        graph: { connected: chosen.connected, ...(skipped.length ? { skipped } : {}) },
         ...(scope === "shelf" ? { subfolders: this.shelfSubfolders(scopeId || "all", page.map((w) => w.id)) } : {}),
       };
     }

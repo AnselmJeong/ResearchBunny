@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import cytoscape, { type Core, type ElementDefinition, type NodeSingular } from "cytoscape";
 import { Focus, ZoomIn, ZoomOut, Waypoints, RotateCcw, Search, ChevronUp, ChevronDown } from "lucide-react";
-import type { WorkView, ArchiveTopic } from "../../shared/types";
-import { archiveNodeColor, subfolderColors, yearColor, UNCLASSIFIED_COLOR, YEAR_RAMP } from "../../shared/classification";
+import type { WorkView, ArchiveTopic, InferredLink } from "../../shared/types";
+import { archiveNodeColor, subfolderColors, yearColor, TOPIC_COLORS, UNCLASSIFIED_COLOR, YEAR_RAMP } from "../../shared/classification";
+import { louvain, summarizeClusters, type ClusterSummary } from "../../shared/communities";
 import { citationWarnings, citationNodeDiameter, incomingCitationCounts, graphSearch, pageRank, rankNodeDiameter, GRAPH_LIMIT } from "../../shared/graph";
 import { similarityEdges } from "../../shared/domain";
 import {
@@ -40,8 +41,21 @@ const darkTheme = () => {
   return theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
 };
 
-/** What node colour shows: shelf subfolder or archive topic, publication year, or library state. */
-type ColorMode = "group" | "year" | "state";
+/** What node colour shows: shelf subfolder or archive topic, detected cluster, publication year, or library state. */
+type ColorMode = "group" | "cluster" | "year" | "state";
+
+/** How strongly each drawn link ties two papers together when finding clusters: recorded citations count most. */
+const CLUSTER_WEIGHT = { citation: 1, coupling: 0.8, related: 0.6, semantic: 0.5 } as const;
+
+function clusterHelp(cluster: ClusterSummary, titleOf: (id: string) => string | undefined): string {
+  return [
+    cluster.years ? `${cluster.years[0]}–${cluster.years[1]}` : "",
+    cluster.topic ? `OpenAlex 주제: ${cluster.topic}` : "",
+    cluster.group ? `${cluster.group.name}에 ${Math.round(cluster.group.share * 100)}%` : "",
+    `대표 논문: ${cluster.top.map(titleOf).filter(Boolean).join(" / ")}`,
+    "이름을 누르면 이 군집만 강조합니다. 선택은 이 군집의 논문만 선택합니다.",
+  ].filter(Boolean).join("\n");
+}
 /** What node size shows: citations from papers on this graph, all citations (OpenAlex), or PageRank on this graph. */
 type SizeMode = "inGraph" | "total" | "pagerank";
 
@@ -63,7 +77,7 @@ const SIZE_LEGEND: Record<SizeMode, { text: string; help: string }> = {
 type Hover = { id: string; x: number; y: number; radius: number };
 
 /** The hovered paper's title and facts, beside the node and inside the canvas. */
-function GraphTooltip({ work, hover, area, status, place, inGraph, rank }: {
+function GraphTooltip({ work, hover, area, status, place, inGraph, rank, cluster }: {
   work: WorkView;
   hover: Hover;
   area: { width: number; height: number };
@@ -72,6 +86,8 @@ function GraphTooltip({ work, hover, area, status, place, inGraph, rank }: {
   inGraph: number;
   /** PageRank as a multiple of the average paper's share, when size shows PageRank. */
   rank?: number;
+  /** The paper's cluster name, when colour shows clusters. */
+  cluster?: string;
 }) {
   const right = hover.x + hover.radius + TOOLTIP_GAP;
   // Flip to the left of the node only when the right side is short and the left side has room.
@@ -88,6 +104,7 @@ function GraphTooltip({ work, hover, area, status, place, inGraph, rank }: {
         {` · 이 그래프 안 ${inGraph.toLocaleString()}회`}
       </span>
       {rank !== undefined && <span>PageRank · 평균 논문의 {rank.toFixed(1)}배</span>}
+      {cluster && <span>군집 · {cluster}</span>}
       {place && <span>{place}</span>}
       <span className="graph-tooltip-status">{status}</span>
     </div>
@@ -100,8 +117,10 @@ export function Graph({
   subfolders,
   resultTotal,
   connected,
+  skippedLinks,
   contextIds,
   edges,
+  links,
   selected,
   seeds,
   inspectId,
@@ -117,8 +136,12 @@ export function Graph({
   resultTotal: number;
   /** Papers in scope linked to another paper, before the node limit. */
   connected?: number;
+  /** Kinds of inferred link the service left out because the scope is too large. */
+  skippedLinks?: InferredLink["kind"][];
   contextIds: string[];
   edges: { source: string; target: string }[];
+  /** Shared-reference and embedding links between drawn papers. */
+  links?: InferredLink[];
   selected: string[];
   seeds: string[];
   inspectId: string | null;
@@ -153,7 +176,12 @@ export function Graph({
   const [neighbors, setNeighbors] = useState(false),
     [showQuestionable, setShowQuestionable] = useState(false),
     [label, setLabel] = useState(true),
-    [similarity, setSimilarity] = useState(true);
+    [similarity, setSimilarity] = useState(true),
+    [coupling, setCoupling] = useState(true),
+    [semantic, setSemantic] = useState(true);
+  // A legend row previews its cluster on hover and keeps it on click.
+  const [clusterHover, setClusterHover] = useState<number | null>(null),
+    [clusterPin, setClusterPin] = useState<number | null>(null);
   const [colorMode, setColorMode] = useState<ColorMode>("group"),
     [sizeMode, setSizeMode] = useState<SizeMode>("inGraph");
   const [dark, setDark] = useState(darkTheme);
@@ -181,11 +209,29 @@ export function Graph({
     () => similarity ? similarityEdges(works).slice(0, 1000) : [],
     [works, similarity],
   );
+  const inferred = useMemo(() => {
+    const ids = new Set(works.map((work) => work.id));
+    const visible = (links ?? []).filter((link) => ids.has(link.source) && ids.has(link.target));
+    return {
+      coupling: visible.filter((link) => link.kind === "coupling"),
+      semantic: visible.filter((link) => link.kind === "semantic"),
+    };
+  }, [works, links]);
+  const couplingLinks = useMemo(
+    () => coupling ? inferred.coupling.slice(0, 2000) : [],
+    [inferred, coupling],
+  );
+  const semanticLinks = useMemo(
+    () => semantic ? inferred.semantic.slice(0, 2000) : [],
+    [inferred, semantic],
+  );
   // Singletons say nothing in a citation graph; this also drops papers whose links are switched off or capped.
   const display = useMemo(() => {
-    const linked = new Set([...citationLinks, ...relatedLinks].flatMap((edge) => [edge.source, edge.target]));
+    const linked = new Set(
+      [...citationLinks, ...relatedLinks, ...couplingLinks, ...semanticLinks].flatMap((edge) => [edge.source, edge.target]),
+    );
     return works.filter((work) => linked.has(work.id) || contextIds.includes(work.id));
-  }, [works, citationLinks, relatedLinks, contextIds]);
+  }, [works, citationLinks, relatedLinks, couplingLinks, semanticLinks, contextIds]);
   const folderPalette = useMemo(
     () => subfolders ? subfolderColors(display.map((work) => work.id), subfolders) : null,
     [display, subfolders],
@@ -230,7 +276,7 @@ export function Graph({
   // Label priority: seeds, then the papers with the most drawn links, then the most cited.
   const labelOrder = useMemo(() => {
     const degree = new Map<string, number>();
-    for (const edge of [...citationLinks, ...relatedLinks]) {
+    for (const edge of [...citationLinks, ...relatedLinks, ...couplingLinks, ...semanticLinks]) {
       degree.set(edge.source, (degree.get(edge.source) || 0) + 1);
       degree.set(edge.target, (degree.get(edge.target) || 0) + 1);
     }
@@ -243,7 +289,40 @@ export function Graph({
           (b.citations || 0) - (a.citations || 0),
       )
       .map((work) => work.id);
-  }, [display, citationLinks, relatedLinks, seeds]);
+  }, [display, citationLinks, relatedLinks, couplingLinks, semanticLinks, seeds]);
+  // Clusters come from the links on screen, so switching a kind of link off can split or merge them.
+  const membership = useMemo(() => {
+    if (colorBy !== "cluster") return null;
+    return louvain(display.map((work) => work.id), [
+      ...citationLinks
+        .filter((edge) => !warnings.has(`${edge.source}:${edge.target}`))
+        .map((edge) => ({ ...edge, weight: CLUSTER_WEIGHT.citation })),
+      ...relatedLinks.map((edge) => ({ ...edge, weight: CLUSTER_WEIGHT.related })),
+      ...couplingLinks.map(({ source, target }) => ({ source, target, weight: CLUSTER_WEIGHT.coupling })),
+      ...semanticLinks.map(({ source, target }) => ({ source, target, weight: CLUSTER_WEIGHT.semantic })),
+    ]);
+  }, [colorBy, display, citationLinks, warnings, relatedLinks, couplingLinks, semanticLinks]);
+  const clusters = useMemo(() => {
+    if (!membership) return null;
+    const rank = new Map(labelOrder.map((id, index) => [id, index]));
+    const byId = new Map(display.map((work) => [work.id, work]));
+    const topicName = new Map(topics.map((topic) => [topic.id, topic.name]));
+    // Name each cluster's usual folder or topic, so a folder that splits or mixes shows up.
+    const group = (id: string): string | null => {
+      if (subfolders && byFolder) return subfolders[id]?.slice(subfolders[id].lastIndexOf("/") + 1) ?? null;
+      const work = byId.get(id);
+      if (!topics.length || work?.state.screening !== "included") return null;
+      // 미분류 is no hint about where a cluster belongs; the share still counts every member.
+      return topicName.get(work.archiveTopicId ?? "") ?? null;
+    };
+    return summarizeClusters(display, membership, { rank: (id) => rank.get(id) ?? rank.size, group });
+  }, [membership, display, labelOrder, topics, subfolders, byFolder]);
+  const clusterColors = useMemo(() => {
+    if (!membership || !clusters) return null;
+    const colorOf = new Map(clusters.slice(0, TOPIC_COLORS.length).map((cluster, index) => [cluster.id, TOPIC_COLORS[index] as string]));
+    return new Map(display.map((work) => [work.id, colorOf.get(membership.get(work.id)!) ?? UNCLASSIFIED_COLOR]));
+  }, [membership, clusters, display]);
+  const activeCluster = membership ? clusterHover ?? clusterPin : null;
   // Matches keep the label order, so Enter visits the best-connected match first.
   const matches = useMemo(() => {
     const hits = new Set(graphSearch(display, query));
@@ -263,6 +342,8 @@ export function Graph({
     contextIds.includes(work.id),
   ).length;
   const resultCount = display.length - extraCount;
+  // Papers the service found linked whose only links are switched off or past the line caps here.
+  const switchedOff = works.length - display.length;
   const isolatedCount = connected === undefined ? 0 : resultTotal - connected;
   const visibleTopics = topics.filter(topic => display.some(work => work.state.screening === "included" && work.archiveTopicId === topic.id));
   const hasUnclassified = display.some(work => archiveNodeColor(work, topics) === UNCLASSIFIED_COLOR);
@@ -347,6 +428,27 @@ export function Graph({
           },
         },
         {
+          // Undirected and inferred: thicker when more of the two reference lists overlaps.
+          selector: "edge.coupling",
+          style: {
+            "line-color": "#6250d6",
+            width: "mapData(weight, 0, 0.5, 1.2, 3.4)",
+            "target-arrow-shape": "none",
+            opacity: 0.75,
+          },
+        },
+        {
+          selector: "edge.semantic",
+          style: {
+            "line-style": "dashed",
+            "line-dash-pattern": [3, 4],
+            width: 1.6,
+            "line-color": "#c2477f",
+            "target-arrow-shape": "none",
+            opacity: 0.75,
+          },
+        },
+        {
           selector: "node.found",
           style: {
             "underlay-color": "#d6a121",
@@ -385,10 +487,13 @@ export function Graph({
             opacity: 0.95,
           },
         },
+        // Coloured by cluster, links between clusters recede so each cluster's shape reads.
+        { selector: "edge.cross", style: { opacity: 0.22 } },
         { selector: ".faded", style: { opacity: 0.12 } },
-        // A hover preview dims everything outside the hovered paper's neighbourhood, and relights faded neighbours.
+        { selector: ".cluster-dim", style: { opacity: 0.1 } },
+        // A hover preview dims everything outside the hovered paper's neighbourhood, and relights dimmed neighbours.
         { selector: ".hover-dim", style: { opacity: 0.12 } },
-        { selector: ".hover-lit.faded", style: { opacity: 1 } },
+        { selector: ".hover-lit.faded, .hover-lit.cluster-dim, .hover-lit.cross", style: { opacity: 1 } },
       ],
     });
     cy.current = instance;
@@ -424,6 +529,10 @@ export function Graph({
         })
         .selector("edge.similarity")
         .style({ "line-color": token("--graph-related") })
+        .selector("edge.coupling")
+        .style({ "line-color": token("--graph-coupling") })
+        .selector("edge.semantic")
+        .style({ "line-color": token("--graph-semantic") })
         .selector("edge.questionable")
         .style({
           "line-color": token("--danger"),
@@ -592,15 +701,17 @@ export function Graph({
         fullLabel: paperLabel(w),
         ...geometry,
         diameter: diameters.get(w.id) ?? 24,
-        mappedColor: colorBy === "year"
-          ? yearColor(w.year, yearRange, dark)
-          : byFolder ? folderPalette!.color(w.id) : archiveNodeColor(w, topics) || UNCLASSIFIED_COLOR,
+        mappedColor: colorBy === "cluster"
+          ? clusterColors?.get(w.id) ?? UNCLASSIFIED_COLOR
+          : colorBy === "year"
+            ? yearColor(w.year, yearRange, dark)
+            : byFolder ? folderPalette!.color(w.id) : archiveNodeColor(w, topics) || UNCLASSIFIED_COLOR,
       },
       position: positions[w.id],
       classes: [
         seeds.includes(w.id) ? "seed" : "",
         w.state.screening === "included" ? "saved" : "",
-        colorBy === "year" || (colorBy === "group" && (byFolder || w.state.screening === "included")) ? "color-mapped" : "",
+        colorBy === "year" || colorBy === "cluster" || (colorBy === "group" && (byFolder || w.state.screening === "included")) ? "color-mapped" : "",
       ].join(" "),
     }));
     for (const edge of citationLinks)
@@ -618,6 +729,11 @@ export function Graph({
       definitions.push({
         data: { id: `similarity-${edge.source}-${edge.target}`, ...edge },
         classes: "similarity",
+      });
+    for (const { kind, source, target, weight } of [...couplingLinks, ...semanticLinks])
+      definitions.push({
+        data: { id: `${kind}-${source}-${target}`, source, target, weight },
+        classes: kind,
       });
     const oldIds = instance
       .nodes()
@@ -655,6 +771,8 @@ export function Graph({
     display,
     citationLinks,
     relatedLinks,
+    couplingLinks,
+    semanticLinks,
     warnings,
     diameters,
     seeds,
@@ -662,6 +780,7 @@ export function Graph({
     layoutRevision,
     topics,
     colorBy,
+    clusterColors,
     yearRange,
     dark,
     byFolder,
@@ -688,7 +807,7 @@ export function Graph({
           .difference(node.closedNeighborhood())
           .addClass("faded");
     }
-  }, [inspectId, neighbors, works, similarity, showQuestionable]);
+  }, [inspectId, neighbors, works, similarity, coupling, semantic, showQuestionable]);
   useEffect(() => {
     const instance = cy.current;
     if (!instance) return;
@@ -697,9 +816,31 @@ export function Graph({
       for (const id of matches) instance.getElementById(id).addClass("found");
     });
   }, [matches]);
+  // A new set of clusters renumbers them, so a hovered or kept cluster no longer means the same papers.
+  useEffect(() => {
+    setClusterHover(null);
+    setClusterPin(null);
+  }, [membership]);
+  useEffect(() => {
+    const instance = cy.current;
+    if (!instance) return;
+    instance.batch(() => {
+      instance.elements(".cross, .cluster-dim").removeClass("cross cluster-dim");
+      if (!membership) return;
+      instance.edges().forEach((edge) => {
+        const from = membership.get(edge.source().id()), to = membership.get(edge.target().id());
+        if (from !== to) edge.addClass("cross");
+        if (activeCluster !== null && !(from === activeCluster && to === activeCluster)) edge.addClass("cluster-dim");
+      });
+      if (activeCluster !== null)
+        instance.nodes().forEach((node) => {
+          if (membership.get(node.id()) !== activeCluster) node.addClass("cluster-dim");
+        });
+    });
+  }, [membership, activeCluster, display, citationLinks, relatedLinks, couplingLinks, semanticLinks]);
   useEffect(() => {
     graphApi.current?.scheduleLabels();
-  }, [labelOrder, label, matches, cursor, selected, inspectId, neighbors, works, similarity, showQuestionable]);
+  }, [labelOrder, label, matches, cursor, selected, inspectId, neighbors, works, similarity, coupling, semantic, showQuestionable, membership, activeCluster]);
   const goTo = (step: 1 | -1) => {
     const instance = cy.current;
     if (!instance || !matches.length) return;
@@ -738,6 +879,7 @@ export function Graph({
           area={{ width: host.current?.clientWidth ?? 0, height: host.current?.clientHeight ?? 0 }}
           inGraph={incomingCitations.get(hovered.id) ?? 0}
           rank={ranks?.get(hovered.id)}
+          cluster={membership && clusters ? clusters.find((cluster) => cluster.id === membership.get(hovered.id))?.label : undefined}
           place={hovered.shelf ? `서고 · ${hovered.shelf.folder}` : hoveredTopic ? `소주제 · ${hoveredTopic}` : null}
           status={[
             contextIds.includes(hovered.id) ? "출발 문헌" : "",
@@ -845,10 +987,23 @@ export function Graph({
           />
           관련 문헌 연결
         </label>
+        {inferred.coupling.length > 0 && (
+          <label title="참고문헌을 3편 이상 함께 인용한 논문 쌍입니다. 범위 밖 문헌까지 전체 참고문헌으로 계산하며, 논문마다 가장 강한 3쌍까지 그립니다.">
+            <input type="checkbox" checked={coupling} onChange={(event) => setCoupling(event.target.checked)} />
+            서지결합
+          </label>
+        )}
+        {inferred.semantic.length > 0 && (
+          <label title="서고 임베딩이 가까운 논문 쌍입니다. 이 범위의 모든 쌍 가운데 유사도 상위 10%만, 논문마다 가장 가까운 2쌍까지 그립니다.">
+            <input type="checkbox" checked={semantic} onChange={(event) => setSemantic(event.target.checked)} />
+            의미 유사
+          </label>
+        )}
         <label title="노드 색이 나타낼 것을 고릅니다.">
           색
           <select aria-label="노드 색 기준" value={colorBy} onChange={(event) => setColorMode(event.target.value as ColorMode)}>
             {groupColors && <option value="group">{byFolder ? "하위 폴더" : "소주제"}</option>}
+            <option value="cluster">군집 (자동)</option>
             <option value="year">출판 연도</option>
             <option value="state">저장 상태</option>
           </select>
@@ -926,6 +1081,48 @@ export function Graph({
           </span>)}
           {hasUnclassified && <span><i className="topic-swatch" style={{ backgroundColor: UNCLASSIFIED_COLOR }} />미분류</span>}
         </div>}
+        {colorBy === "cluster" && clusters && (
+          <div className="graph-topic-legend graph-cluster-legend" aria-label="군집 범례">
+            {!clusters.length && <span>군집을 이룰 만큼 서로 이어진 논문이 없습니다.</span>}
+            {clusters.slice(0, TOPIC_COLORS.length).map((cluster, index) => (
+              <span
+                key={cluster.id}
+                className={`cluster-row${activeCluster === cluster.id ? " active" : ""}`}
+                onMouseEnter={() => setClusterHover(cluster.id)}
+                onMouseLeave={() => setClusterHover(null)}
+                title={clusterHelp(cluster, (id) => workById.get(id)?.title)}
+              >
+                <button
+                  className="cluster-name"
+                  aria-pressed={clusterPin === cluster.id}
+                  onClick={() => setClusterPin((current) => current === cluster.id ? null : cluster.id)}
+                >
+                  <i className="topic-swatch" style={{ backgroundColor: TOPIC_COLORS[index] }} />
+                  {cluster.label}
+                  <small>
+                    {cluster.ids.length}편
+                    {cluster.group ? ` · ${cluster.group.name} ${Math.round(cluster.group.share * 100)}%` : ""}
+                  </small>
+                </button>
+                <button className="text-button cluster-select" onClick={() => onSelection(cluster.ids)}>
+                  선택
+                </button>
+              </span>
+            ))}
+            {(() => {
+              const named = clusters.slice(0, TOPIC_COLORS.length).reduce((sum, cluster) => sum + cluster.ids.length, 0);
+              const others = clusters.length - Math.min(clusters.length, TOPIC_COLORS.length);
+              const alone = display.length - clusters.reduce((sum, cluster) => sum + cluster.ids.length, 0);
+              return named < display.length && (
+                <span title="큰 군집 10개에만 색을 줍니다.">
+                  <i className="topic-swatch" style={{ backgroundColor: UNCLASSIFIED_COLOR }} />
+                  {[others ? `작은 군집 ${others}개` : "", alone ? `군집에 들지 않은 ${alone}편` : ""].filter(Boolean).join(" · ")}
+                </span>
+              );
+            })()}
+            {clusters.length === 1 && <span>연결이 고르게 이어져 한 군집으로 묶였습니다.</span>}
+          </div>
+        )}
         {colorBy === "year" && yearRange && (
           <span title="출판 연도를 한 가지 색의 진하기로 나타냅니다. 최근 논문일수록 배경과 대비가 큽니다.">
             <i
@@ -941,31 +1138,31 @@ export function Graph({
             연도 미상
           </span>
         )}
-        {colorBy !== "year" && display.some((work) => seeds.includes(work.id)) && (
+        {colorBy !== "year" && colorBy !== "cluster" && display.some((work) => seeds.includes(work.id)) && (
           <span>
             <i className="graph-key seed" />
             초기 seed
           </span>
         )}
-        {colorBy !== "year" && display.some((work) => work.state.screening === "included") && (
+        {colorBy !== "year" && colorBy !== "cluster" && display.some((work) => work.state.screening === "included") && (
           <span>
             <i className="graph-key saved" />
             아카이브에 저장됨
           </span>
         )}
-        {colorBy !== "year" && display.some((work) => work.state.screening === "pending") && (
+        {colorBy !== "year" && colorBy !== "cluster" && display.some((work) => work.state.screening === "pending") && (
           <span>
             <i className="graph-key candidate" />
             미저장 후보
           </span>
         )}
-        {colorBy !== "year" && display.some((work) => work.state.screening === "excluded") && (
+        {colorBy !== "year" && colorBy !== "cluster" && display.some((work) => work.state.screening === "excluded") && (
           <span>
             <i className="graph-key candidate" />
             제외 문헌
           </span>
         )}
-        {colorBy !== "year" && display.some((work) => work.state.screening === "trash") && (
+        {colorBy !== "year" && colorBy !== "cluster" && display.some((work) => work.state.screening === "trash") && (
           <span>
             <i className="graph-key candidate" />
             휴지통 문헌
@@ -982,20 +1179,38 @@ export function Graph({
             관련 문헌 · 방향 없음
           </span>
         )}
+        {couplingLinks.length > 0 && (
+          <span title="함께 인용한 참고문헌이 두 논문의 참고문헌 목록에서 차지하는 비중이 클수록 굵습니다. 인용 기록이 아니라 추정한 관계입니다.">
+            <i className="graph-edge-key coupling" />
+            서지결합 · 공유 참고문헌
+          </span>
+        )}
+        {semanticLinks.length > 0 && (
+          <span title="서고 임베딩(제목·초록 기준)이 가까운 논문 쌍입니다. 인용 기록이 아니라 추정한 관계입니다.">
+            <i className="graph-edge-key semantic" />
+            의미 유사 · 임베딩
+          </span>
+        )}
         {showQuestionable && warnings.size > 0 && (
           <span>
             <i className="graph-edge-key questionable" />
             확인 필요 인용
           </span>
         )}
-        <span title="다른 논문과 인용(확인 필요 인용 제외)이나 관련 문헌으로 이어진 논문만 그립니다.">
+        <span title="다른 논문과 인용(확인 필요 인용 제외), 관련 문헌, 서지결합, 의미 유사로 이어진 논문만 그립니다. 꺼 둔 연결로만 이어진 논문은 따로 셉니다.">
           현재 범위 {resultTotal.toLocaleString()}편 중 {resultCount.toLocaleString()}편 표시
           {extraCount > 0 ? ` · 출발 문헌 ${extraCount}편 추가` : ""}
           {isolatedCount > 0 ? ` · 연결 없는 ${isolatedCount.toLocaleString()}편 숨김` : ""}
+          {switchedOff > 0 ? ` · 꺼 둔 연결로 ${switchedOff.toLocaleString()}편 숨김` : ""}
           {connected !== undefined && connected > GRAPH_LIMIT
             ? ` · 연결된 ${connected.toLocaleString()}편 중 연결이 많은 ${GRAPH_LIMIT.toLocaleString()}편까지, 필터로 범위를 좁히세요`
             : ""}
         </span>
+        {!!skippedLinks?.length && (
+          <span title="서지결합은 5,000편, 의미 유사는 임베딩이 있는 1,500편까지 계산합니다. 모든 쌍을 비교하므로 범위가 크면 그래프가 느려집니다.">
+            범위가 커서 {skippedLinks.map((kind) => kind === "coupling" ? "서지결합" : "의미 유사").join("·")} 연결은 그리지 않았습니다 · 폴더나 필터로 범위를 좁히세요
+          </span>
+        )}
         <span>노드에 올리면 제목과 이웃 표시 · 드래그한 노드만 이동 · Shift+드래그로 선택</span>
         {visibleEdges.length > 3000 && <span>인용선 최대 3,000개 표시</span>}
       </div>

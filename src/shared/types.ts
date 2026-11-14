@@ -390,6 +390,18 @@ export interface Snapshot {
   genealogies: import("./genealogy").GenealogySummary[];
   ui: Record<string, unknown>;
 }
+/**
+ * A link between two papers that no citation records: bibliographic coupling
+ * (`weight` is Salton's cosine over their reference lists, `shared` the count)
+ * or close embeddings (`weight` is the cosine similarity).
+ */
+export interface InferredLink {
+  source: string;
+  target: string;
+  kind: "coupling" | "semantic";
+  weight: number;
+  shared?: number;
+}
 export interface ListResult {
   works: WorkView[];
   context?: WorkView[];
@@ -404,8 +416,13 @@ export interface ListResult {
   /** Papers the conditions were applied to: the view's papers less the reading tab and the 숨김 options. */
   scoped: number;
   edges: { source: string; target: string }[];
-  /** Graph requests: papers in scope linked to another paper; the rest are not drawn. */
-  graph?: { connected: number };
+  /** Graph requests: links between drawn papers inferred from shared references and embeddings. */
+  links?: InferredLink[];
+  /**
+   * Graph requests: papers in scope linked to another paper (the rest are not
+   * drawn), and kinds of inferred link left out because the scope is too large.
+   */
+  graph?: { connected: number; skipped?: InferredLink["kind"][] };
   /** Shelf graphs: each drawn work's subfolder path directly below the listed folder. */
   subfolders?: Record<string, string>;
 }

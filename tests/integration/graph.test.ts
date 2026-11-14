@@ -1,4 +1,5 @@
-import { citationWarnings, citationNodeDiameter, graphNodeIds, graphSearch, incomingCitationCounts, pageRank, rankNodeDiameter, resultWindow, GRAPH_LIMIT } from "../../src/shared/graph";
+import { citationWarnings, citationNodeDiameter, couplingLinks, graphNodeIds, graphSearch, incomingCitationCounts, pageRank, rankNodeDiameter, resultWindow, semanticLinks, GRAPH_LIMIT } from "../../src/shared/graph";
+import { louvain, summarizeClusters } from "../../src/shared/communities";
 import { labelGeometry, labelWidth, pickLabels, refreshLabels, LABEL_FONT_PX } from "../../src/renderer/components/graphLabels";
 import { restoreNavigation } from "../../src/shared/navigation";
 import { test, expect } from "bun:test";
@@ -440,4 +441,120 @@ test("laying out the timeline never rewrites the saved network positions it was 
   } finally {
     cy.destroy();
   }
+});
+
+test("coupling links papers sharing enough references, by Salton strength, without a mesh", () => {
+  const refs = (...names: string[]) => names;
+  const links = couplingLinks(new Map([
+    ["a", refs("r1", "r2", "r3", "r4")],
+    ["b", refs("r1", "r2", "r3", "x1", "x2", "x3", "x4", "x5", "x6")],
+    ["c", refs("r1", "r2", "y1")], // shares only two with a and b
+    ["d", refs("z1")],
+  ]));
+  expect(links).toHaveLength(1);
+  expect(links[0]).toMatchObject({ source: "a", target: "b", kind: "coupling", shared: 3 });
+  expect(links[0].weight).toBeCloseTo(3 / Math.sqrt(4 * 9), 9);
+
+  // A hub coupled with five papers keeps its three strongest, but each paper keeps its only partner.
+  // Each paper shares its own three of the hub's fifteen references, and none with the others.
+  const hub = new Map<string, string[]>([["hub", Array.from({ length: 15 }, (_, k) => `h${k}`)]]);
+  for (let i = 1; i <= 5; i++)
+    hub.set(`p${i}`, [`h${3 * i - 3}`, `h${3 * i - 2}`, `h${3 * i - 1}`, ...Array.from({ length: i }, (_, k) => `own${i}-${k}`)]);
+  expect(couplingLinks(hub)).toHaveLength(5);
+  expect(couplingLinks(hub, { perNode: 1 }).map((link) => link.target)).toEqual(["p1", "p2", "p3", "p4", "p5"]);
+
+  // A reference nearly everyone here cites says nothing about who belongs together.
+  const field = new Map<string, string[]>();
+  for (let i = 0; i < 30; i++) field.set(`f${i}`, ["classic1", "classic2", "classic3", `own${i}`]);
+  expect(couplingLinks(field)).toEqual([]);
+});
+
+test("semantic links keep only the closest pairs of this set, a few per paper", () => {
+  const unit = (...values: number[]) => Float32Array.from(values);
+  const vectors = new Map([
+    ["a", unit(1, 0, 0, 0.05)],
+    ["b", unit(0.98, 0.02, 0, 0.04)],
+    ["c", unit(0, 1, 0, 0)],
+    ["d", unit(0.01, 0.99, 0.02, 0)],
+    ["e", unit(0, 0, 1, 0)],
+    ["f", unit(0.3, 0.3, 0.3, 0.8)],
+  ]);
+  // Of the 15 pairs, the top 10% (two) clear the floor.
+  const links = semanticLinks(vectors);
+  expect(links.map((link) => `${link.source}-${link.target}`).sort()).toEqual(["a-b", "c-d"]);
+  expect(links.every((link) => link.kind === "semantic" && link.weight > 0.9)).toBe(true);
+  expect(semanticLinks(new Map([["solo", unit(1, 0)]]))).toEqual([]);
+});
+
+test("louvain finds two dense groups joined by one bridge, largest first and reproducibly", () => {
+  const ids = ["a1", "a2", "a3", "a4", "b1", "b2", "b3", "alone"];
+  const clique = (names: string[]) => names.flatMap((x, i) => names.slice(i + 1).map((y) => ({ source: x, target: y, weight: 1 })));
+  const edges = [...clique(["a1", "a2", "a3", "a4"]), ...clique(["b1", "b2", "b3"]), { source: "a4", target: "b1", weight: 0.5 }];
+  const groups = louvain(ids, edges);
+  expect(new Set(["a1", "a2", "a3", "a4"].map((id) => groups.get(id)))).toEqual(new Set([0]));
+  expect(new Set(["b1", "b2", "b3"].map((id) => groups.get(id)))).toEqual(new Set([1]));
+  expect(groups.get("alone")).toBe(2);
+  expect(louvain(ids, edges)).toEqual(groups);
+  // No links at all: everyone alone, numbered in order.
+  expect([...louvain(["x", "y"], []).values()]).toEqual([0, 1]);
+});
+
+test("cluster summaries name clusters by distinctive title terms and report their folder share", () => {
+  const works = [
+    { id: "w1", title: "Working memory in prefrontal cortex", year: 1995, topics: [{ name: "Memory" }] },
+    { id: "w2", title: "Prefrontal working memory and persistent activity", year: 2001, topics: [{ name: "Memory" }] },
+    { id: "w3", title: "Working memory capacity", year: 2010, topics: [{ name: "Memory" }] },
+    { id: "d1", title: "Dopamine neurons and reward prediction", year: 1997, topics: [{ name: "Reward" }] },
+    { id: "d2", title: "Reward prediction error signals of dopamine", year: 2005, topics: [] },
+    { id: "lone", title: "Something else entirely", year: null },
+  ];
+  const membership = new Map([["w1", 0], ["w2", 0], ["w3", 0], ["d1", 1], ["d2", 1], ["lone", 2]]);
+  const folder: Record<string, string> = { w1: "WM", w2: "WM", w3: "Other", d1: "Reward", d2: "Reward" };
+  const order = ["w2", "w1", "w3", "d2", "d1", "lone"];
+  const [memory, reward, ...rest] = summarizeClusters(works, membership, {
+    rank: (id) => order.indexOf(id),
+    group: (id) => folder[id] ?? null,
+  });
+  expect(rest).toEqual([]);
+  expect(memory.keywords[0]).toBe("working memory");
+  expect(memory.label.startsWith("working memory")).toBe(true);
+  expect(memory.years).toEqual([1995, 2010]);
+  expect(memory.topic).toBe("Memory");
+  expect(memory.group?.name).toBe("WM");
+  expect(memory.group?.share).toBeCloseTo(2 / 3, 9);
+  expect(memory.top).toEqual(["w2", "w1", "w3"]);
+  expect(reward.keywords).toContain("reward prediction");
+  expect(reward.label).not.toContain("working");
+});
+
+test("cluster names do not repeat a word inside one name or reuse a larger cluster's terms", () => {
+  const titles = [
+    "Reward prediction error in dopamine neurons",
+    "Reward prediction error and learning",
+    "Dopamine reward prediction error signals",
+  ];
+  const works = [
+    ...titles.map((title, i) => ({ id: `a${i}`, title, year: 2000 })),
+    // A smaller half of the same topic with one extra theme of its own.
+    { id: "b0", title: "Reward prediction error under ketamine", year: 2010 },
+    { id: "b1", title: "Ketamine and reward prediction error", year: 2012 },
+    { id: "c0", title: "Sleep spindles and memory", year: 2015 },
+    { id: "c1", title: "Sleep spindles during learning", year: 2016 },
+  ];
+  const membership = new Map([...works.map((work) => [work.id, work.id[0] === "a" ? 0 : work.id[0] === "b" ? 1 : 2] as const)]);
+  const [first, second] = summarizeClusters(works, membership);
+  const words = (label: string) => label.split(" · ").flatMap((term) => term.split(" "));
+  expect(new Set(words(first.label)).size).toBe(words(first.label).length);
+  expect(second.label).not.toBe(first.label);
+  expect(second.keywords).toContain("ketamine");
+});
+
+test("coupling ignores references cited by more than 150 papers, even under half of a large set", () => {
+  const refs = new Map<string, string[]>();
+  // 160 of 400 papers cite the same three works: under half, but past the cap.
+  for (let i = 0; i < 400; i++) refs.set(`p${i}`, i < 160 ? ["wide1", "wide2", "wide3", `own${i}`] : [`own${i}`]);
+  expect(couplingLinks(refs)).toEqual([]);
+  // The same three works shared by only 100 papers do couple them.
+  for (let i = 100; i < 160; i++) refs.set(`p${i}`, [`own${i}`]);
+  expect(couplingLinks(refs).length).toBeGreaterThan(0);
 });

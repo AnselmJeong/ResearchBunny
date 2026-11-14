@@ -335,9 +335,9 @@ export class Service {
         // In the shelf the query is a hybrid (meaning + words) search; elsewhere it filters by substring.
         if (args.scope === "shelf" && args.query?.trim() && this.shelf.root()) {
           const search = await this.shelfQueries.search(args.query.trim(), { limit: 200, folderIds: [args.scopeId || SHELF_ALL] });
-          return this.db.list(args, search);
+          return this.db.list(args, search, this.shelf.currentModelKey());
         }
-        return this.db.list(args);
+        return this.db.list(args, undefined, this.shelf.currentModelKey());
       case "classifyArchive":
         if (this.busy()) throw new AppError("BUSY", "진행 중인 작업이 끝난 뒤 자동 분류하세요.");
         return this.classifier.start(args.projectId);
