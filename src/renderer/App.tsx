@@ -2329,8 +2329,10 @@ export function App() {
                       subfolders={list.subfolders}
                       resultTotal={list.total}
                       connected={list.graph?.connected}
+                      skippedLinks={list.graph?.skipped}
                       contextIds={graphContextIds}
                       edges={list.edges}
+                      links={list.links}
                       selected={selected}
                       seeds={seeds}
                       inspectId={inspectorId}

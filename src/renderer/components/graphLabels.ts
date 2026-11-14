@@ -114,7 +114,7 @@ export function refreshLabels(
     if (seen.has(id)) return;
     const node = instance.getElementById(id);
     if (node.empty() || !node.isNode()) return;
-    if (kind === "ordinary" && (node.hasClass("faded") || node.hasClass("hover-dim"))) return;
+    if (kind === "ordinary" && (node.hasClass("faded") || node.hasClass("hover-dim") || node.hasClass("cluster-dim"))) return;
     seen.add(id);
     const position = node.renderedPosition();
     candidates.push({
