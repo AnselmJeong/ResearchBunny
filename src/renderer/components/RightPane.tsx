@@ -8,6 +8,11 @@ import type { Settings } from "../../shared/types";
 export function RightPane({ settings, onSettings, onClose, context, ...props }: ComponentProps<typeof Inspector> & { context: ChatContextRef; settings: Settings; onSettings: () => void; onClose: () => void }) {
   const [tab, setTab] = useState<"details" | "ai">(() => { try { return localStorage.getItem("researchbunny.rightPaneTab") === "ai" ? "ai" : "details"; } catch { return "details"; } });
   useEffect(() => { try { localStorage.setItem("researchbunny.rightPaneTab", tab); } catch { /* Optional view preference. */ } }, [tab]);
+  // The conversation loads when its tab is first opened for a paper, not for every paper clicked in the list.
+  // Once opened it stays mounted while that paper is shown, so a draft survives a look at the details tab.
+  const chatKey = `${props.projectId}:${props.work?.id ?? "empty"}:${chatScope(context)}`;
+  const [opened, setOpened] = useState<string | null>(null);
+  useEffect(() => { if (tab === "ai") setOpened(chatKey); }, [tab, chatKey]);
   return <aside className="right-pane" aria-label="문헌과 AI">
     <header className="right-pane-header">
       <div role="tablist" aria-label="오른쪽 패널">
@@ -26,7 +31,7 @@ export function RightPane({ settings, onSettings, onClose, context, ...props }: 
       <Inspector {...props} />
     </div>
     <div className="right-pane-content" role="tabpanel" id="right-panel-ai" aria-labelledby="right-tab-ai" hidden={tab !== "ai"}>
-      <AISidebar key={`${props.projectId}:${props.work?.id ?? "empty"}:${chatScope(context)}`} context={context} work={props.work} projectId={props.projectId} settings={settings} onSettings={onSettings} onInspect={props.onInspect} />
+      {(tab === "ai" || opened === chatKey) && <AISidebar key={chatKey} context={context} work={props.work} projectId={props.projectId} settings={settings} onSettings={onSettings} onInspect={props.onInspect} />}
     </div>
   </aside>;
 }

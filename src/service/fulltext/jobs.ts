@@ -77,6 +77,13 @@ export class PdfDownloads {
    * `active` so that it never makes the app refuse a download, a discovery run or a merge, and
    * it steps aside as soon as the person starts one.
    */
+  /** A PDF was attached: earlier runs that list the same paper are brought up to date once, when the run or pass ends. */
+  private historyStale = false;
+  private async settleHistory() {
+    if (!this.historyStale) return;
+    this.historyStale = false;
+    await this.syncHistory().catch(() => {});
+  }
   private recovery = new Map<string, AbortController>();
   private recovering = false;
   private yieldRecovery() { for (const control of this.recovery.values()) control.abort(); }
@@ -120,7 +127,7 @@ export class PdfDownloads {
       delete item.errorCode;
       this.save(run, 'changed');
     });
-    await this.syncHistory();
+    this.historyStale = true;
   }
   /** Store the verified PDF in the shelf inbox; a recovered download's original is then removed. */
   private async store(run: Run, item: PdfDownloadItem, work: Work, path: string, hash: string, signal: AbortSignal, retrieved: RetrievedPdf, downloadedPath?: string) {
@@ -139,7 +146,7 @@ export class PdfDownloads {
     const original = downloadedPath;
     // Remove the download only while it still holds the bytes now on the shelf.
     if (original && await hashFile(original).catch(() => null) === hash) await rm(original, {force:true}).catch(() => {});
-    await this.syncHistory();
+    this.historyStale = true;
   }
   /**
    * Attach PDFs the person saved themselves (their Downloads), and browser downloads set aside
@@ -200,7 +207,7 @@ export class PdfDownloads {
           if (!control.signal.aborted) throw error;
         } finally { await rm(staging, {recursive:true, force:true}); this.recovery.delete(run.id); }
       }
-    } finally { this.recovering = false; }
+    } finally { await this.settleHistory(); this.recovering = false; }
   }
   async syncHistory() {
     if (this.stopping) return;
@@ -520,6 +527,7 @@ export class PdfDownloads {
       this.summarize(run);
       this.save(run, "changed");
       this.active.delete(id);
+      await this.settleHistory();
     }
   }
 }

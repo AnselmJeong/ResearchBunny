@@ -817,10 +817,15 @@ export function Graph({
     });
   }, [matches]);
   // A new set of clusters renumbers them, so a hovered or kept cluster no longer means the same papers.
+  // A refresh that leaves every paper in its cluster recomputes the same map; the kept cluster stays kept.
+  const membershipKey = useMemo(
+    () => membership ? [...membership].map(([id, cluster]) => `${id}:${cluster}`).sort().join("|") : "",
+    [membership],
+  );
   useEffect(() => {
     setClusterHover(null);
     setClusterPin(null);
-  }, [membership]);
+  }, [membershipKey]);
   useEffect(() => {
     const instance = cy.current;
     if (!instance) return;

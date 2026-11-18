@@ -14,7 +14,7 @@ import {
   existsSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { schemas, type Command } from "../shared/contracts";
+import { changesLibrary, schemas, type Command } from "../shared/contracts";
 import { AppError, type Result, type AppEvent, type PdfExportResult } from "../shared/types";
 import type { BunnyRPC } from "../shared/rpc";
 import { dialog, resources } from "../platform/native";
@@ -278,34 +278,7 @@ const hostRpc = BrowserView.defineRPC<BunnyRPC>({
             writeFileSync(join(root(), "commands.log"), `${name}:done\n`, {
               flag: "a",
             });
-          if (
-            ![
-              "pdfInfo", "pdfReadChunk", "chatThreads", "chatSession", "chatSend", "chatCancel", "chatClear", "chatOpenSource", "ollamaModels", "claudeStatus", "claudeModels", "genealogies", "genealogyView", "genealogyReveal", "chooseGenealogyFolder", "genealogyChapter", "genealogyOpenOutput",
-              "snapshot",
-              "projectStats",
-              "list",
-              "inspect",
-              "attachments",
-              "saveUi",
-              "duplicates",
-              "exportPreview",
-              "pdfExportPreview",
-              "pdfDownloadPreview",
-              "missingPdfs",
-              "openChromeLogin",
-              "shelfStatus",
-              "shelfMovePreview",
-              "shelfRelated",
-              "shelfSearch",
-              "workLinks",
-              "shelfFile",
-              "shelfReveal",
-              "chooseShelfRoot",
-              "shelfSortState",
-              "shelfLeaves",
-              "shelfLeafDraft",
-            ].includes(name)
-          )
+          if (changesLibrary(name as Command, input, data))
             emit({ type: "changed" });
           return { ok: true, data };
         } catch (error) {

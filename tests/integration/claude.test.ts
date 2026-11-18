@@ -253,3 +253,14 @@ test("structured AI work uses the Claude subscription without paid API requests,
     service.db.close();
   }
 });
+
+test("the CLI version and sign-in are checked once for a run of requests, and again after sign-out", async () => {
+  const { client, requests } = await fixture("success");
+  for (let i = 0; i < 3; i++) expect(await collect(client.stream(request))).toBe("안녕하세요");
+  const checks = async () => (await requests()).filter((call) => call.args?.includes("--version")).length;
+  expect(await printCalls(requests)).toHaveLength(3);
+  expect(await checks()).toBe(1);
+  await client.logout();
+  await collect(client.stream(request)).catch(() => {});
+  expect(await checks()).toBe(2);
+});

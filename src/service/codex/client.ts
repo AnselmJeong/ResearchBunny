@@ -78,6 +78,12 @@ export class CodexClient {
   private connecting: Promise<CodexTransport> | null = null;
   private starting: CodexTransport | null = null;
   private workers = new Set<CodexClient>();
+  /**
+   * What a turn checks before it starts, shared with the one-request workers: each of them is a
+   * new app-server, and asking it for the account, the model list and the limits again cost four
+   * round trips per request. Kept for a minute, dropped on sign-in, sign-out and any failed turn.
+   */
+  private preflight: { at: number; models?: Awaited<ReturnType<CodexClient["models"]>>; status?: Awaited<ReturnType<CodexClient["status"]>> } = { at: 0 };
   private queue: Promise<void> = Promise.resolve();
   private lifetime = new AbortController();
   private loginId: string | null = null;
@@ -187,6 +193,7 @@ export class CodexClient {
   }
 
   async login(): Promise<string> {
+    this.preflight = { at: 0 };
     const transport = await this.connect();
     if (this.loginId) await this.cancelLogin();
     this.loginError = null;
@@ -218,6 +225,7 @@ export class CodexClient {
   }
 
   async logout(): Promise<void> {
+    this.preflight = { at: 0 };
     this.lifetime.abort();
     this.lifetime = new AbortController();
     for (const worker of this.workers) worker.close();
@@ -296,6 +304,8 @@ export class CodexClient {
       ]);
       signal.throwIfAborted();
       const worker = new CodexClient(this.createTransport);
+      if (Date.now() - this.preflight.at > 60_000) this.preflight = { at: Date.now() };
+      worker.preflight = this.preflight;
       this.workers.add(worker);
       const cancel = () => {
         if (!worker.turnActive) worker.close();
@@ -303,6 +313,9 @@ export class CodexClient {
       signal.addEventListener("abort", cancel, { once: true });
       try {
         yield* worker.streamTurn({ ...request, signal });
+      } catch (error) {
+        this.preflight = { at: 0 };
+        throw error;
       } finally {
         signal.removeEventListener("abort", cancel);
         worker.close();
@@ -323,7 +336,7 @@ export class CodexClient {
   private async *streamTurn(request: CodexRequest): AsyncGenerator<string> {
     const { signal } = request;
     signal?.throwIfAborted();
-    const models = await this.models();
+    const models = (this.preflight.models ??= await this.models());
     const model = request.model
       ? models.find((m) => m.id === request.model)
       : models.find((m) => m.isDefault);
@@ -331,7 +344,7 @@ export class CodexClient {
       throw new Error(
         "선택한 Codex 모델을 사용할 수 없습니다. 설정에서 모델을 다시 선택하세요.",
       );
-    const status = await this.status();
+    const status = (this.preflight.status ??= await this.status());
     const quotaError = codexQuotaError(status, model.id);
     if (quotaError) throw new Error(quotaError);
     const transport = await this.connect();

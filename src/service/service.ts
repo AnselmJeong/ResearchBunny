@@ -238,6 +238,27 @@ export class Service {
     };
     return this.ai.seedQueries(question, run, AbortSignal.timeout(120000), false);
   }
+  private downloadsSynced = 0;
+  private downloadsSyncing?: ReturnType<typeof setTimeout>;
+  /**
+   * Download history against the PDFs now on disk. The window asks for a snapshot every two
+   * seconds while a job runs, and this check stats files on the shelf; it runs at most every
+   * ten seconds, with one more pass afterwards so a change inside that window is still seen.
+   */
+  private async syncDownloads() {
+    const wait = this.downloadsSynced + 10000 - Date.now();
+    if (wait <= 0) {
+      this.downloadsSynced = Date.now();
+      await this.downloads.syncHistory();
+      return;
+    }
+    this.downloadsSyncing ??= setTimeout(() => {
+      this.downloadsSyncing = undefined;
+      this.downloadsSynced = Date.now();
+      void this.downloads.syncHistory().catch(() => {});
+    }, wait);
+    this.downloadsSyncing.unref?.();
+  }
   busy() {
     return this.chat.active.size > 0 || this.answers.active.size > 0 || this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0 || !!this.sorter.active || this.genealogy.active.size > 0;
   }
@@ -275,7 +296,7 @@ export class Service {
         this.db.project(projectId);
         // Opening a project moves it to the top of the list, and the app reopens it next time.
         this.db.openProject(projectId);
-        await this.downloads.syncHistory();
+        await this.syncDownloads();
         const history = this.db.seedHistory(projectId);
         return {
           projects: this.db.projects(),
@@ -838,6 +859,7 @@ export class Service {
       case "shelfLeafDraft":
         return this.sorter.draftDefinition(schemas.shelfLeafDraft.parse(args));
       case "shutdown":
+        clearTimeout(this.downloadsSyncing);
         this.downloads.stopRecoveryMonitor();
         this.shelf.stop();
         this.passages.stop();
