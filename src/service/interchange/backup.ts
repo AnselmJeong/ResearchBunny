@@ -157,6 +157,7 @@ export async function restoreBackup(source: string, destination: string) {
         data: string;
       }[];
       const byId = new Map(manifest.attachments.map((a) => [a.id, a]));
+      const shelved = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shelf_files'").get();
       for (const row of rows) {
         const a = JSON.parse(row.data) as Attachment;
         const item = byId.get(row.id);
@@ -165,7 +166,12 @@ export async function restoreBackup(source: string, destination: string) {
             "BACKUP_MANIFEST",
             "첨부 manifest와 DB가 일치하지 않습니다.",
           );
-        if (item.file) {
+        // A linked PDF that is still where the backup left it (the shelf, a folder on this Mac)
+        // stays a link: copying it in would double the shelf, and pointing it away would lose it.
+        const inPlace = a.mode !== "managed" && (await lstat(a.path).then((info) => info.isFile() && (!a.size || info.size === a.size), () => false));
+        if (inPlace) {
+          a.exists = true;
+        } else if (item.file) {
           const file = await child(source, item.file);
           await verifyPdf(file);
           if ((await hashFile(file)) !== item.hash)
@@ -175,6 +181,15 @@ export async function restoreBackup(source: string, destination: string) {
           a.mode = "managed";
           a.exists = true;
           a.status = "백업에서 복원";
+          // No longer the shelf's file: a later shelf scan must not move this copy's path.
+          if (a.shelfFileId) {
+            if (shelved) db.prepare("UPDATE shelf_files SET attachment_id=NULL WHERE attachment_id=?").run(a.id);
+            delete a.shelfFileId;
+          }
+        } else if (a.shelfFileId) {
+          // The shelf is not connected here; the path is kept so the file is found again when it is.
+          a.exists = false;
+          missing.push(a.name);
         } else {
           a.path = join(destination, "missing", a.id + ".pdf");
           a.exists = false;

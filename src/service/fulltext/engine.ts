@@ -80,6 +80,15 @@ function tagAttrs(tag: string) {
     attrs[match[1].toLowerCase()] = decodeHtml(match[2] ?? match[3] ?? match[4]);
   return attrs;
 }
+/** The PDF the page itself declares as the article's, in its `citation_pdf_url` meta tag. */
+export function citationPdfUrls(html: string, base: string) {
+  const found: unknown[] = [];
+  for (const tag of html.match(/<meta\b[^>]*>/gi) || []) {
+    const attrs = tagAttrs(tag);
+    if ((attrs.name || attrs.property || "").toLowerCase() === "citation_pdf_url") found.push(publicUrl(attrs.content, base));
+  }
+  return urls(found);
+}
 export function htmlPdfUrls(html: string, base: string) {
   const found: unknown[] = [];
   for (const tag of html.match(/<(?:meta|a|iframe|embed|object)\b[^>]*>/gi) || []) {
@@ -371,6 +380,7 @@ export class FulltextEngine {
     const queue = urls([work.oaUrl, ...locations.map((l: any) => l?.pdf_url)]);
     const landings = urls([work.url, ...locations.map((l: any) => l?.landing_page_url)]).slice(0, 3);
     const tried = new Set<string>();
+    const scraped = new Set<string>();
     let lastError: unknown;
     const tryUrl = async (url: string): Promise<RetrievedPdf | null> => {
       if (tried.has(url) || tried.size >= 12) return null;
@@ -379,11 +389,16 @@ export class FulltextEngine {
       try {
         const fetched = await this.fetchCandidate(url, path, itemSignal);
         if (fetched.kind === "html") {
-          queue.push(...urls([...htmlPdfUrls(fetched.html, fetched.url), ...publisherPdfUrls(fetched.url)]));
+          const linked = htmlPdfUrls(fetched.html, fetched.url);
+          // The page's own citation_pdf_url names this article's PDF. Any other PDF link on the page may be
+          // a neighbouring article, a flyer or author guidelines, so what it returns must prove it is this paper.
+          const declared = new Set(citationPdfUrls(fetched.html, fetched.url));
+          for (const link of linked) if (!declared.has(link)) scraped.add(link);
+          queue.push(...urls([...linked, ...publisherPdfUrls(fetched.url)]));
           throw new AppError("DOWNLOAD_NOT_PDF", "PDF 대신 안내·로그인 페이지가 반환되었습니다.");
         }
         const version = locations.find((l: any) => l?.pdf_url === url)?.version;
-        const retrieved: RetrievedPdf = { sourceUrl: fetched.url, doi, method:"http", ...(version ? { version } : {}) };
+        const retrieved: RetrievedPdf = { sourceUrl: fetched.url, doi, method:"http", ...(version ? { version } : {}), ...(scraped.has(url) ? { requireIdentity: true } : {}) };
         await validate?.(retrieved);
         return retrieved;
       } catch (error) { itemSignal.throwIfAborted(); lastError = error; return null; }

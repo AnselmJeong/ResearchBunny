@@ -71,7 +71,15 @@ export class PdfDownloads {
     }, intervalMs);
     this.recoveryTimer.unref();
   }
-  stopRecoveryMonitor() { this.stopping = true; clearInterval(this.recoveryTimer); this.recoveryTimer = undefined; }
+  stopRecoveryMonitor() { this.stopping = true; clearInterval(this.recoveryTimer); this.recoveryTimer = undefined; this.yieldRecovery(); }
+  /**
+   * Background reconciliation of finished runs. It is housekeeping, not a job: it is kept out of
+   * `active` so that it never makes the app refuse a download, a discovery run or a merge, and
+   * it steps aside as soon as the person starts one.
+   */
+  private recovery = new Map<string, AbortController>();
+  private recovering = false;
+  private yieldRecovery() { for (const control of this.recovery.values()) control.abort(); }
   private async directories(run: Run) {
     const directory = run.download!.downloadDirectory || this.db.pref<string>('pdfDownloadDirectory');
     const directories = directory ? [directory] : await downloadDirectories();
@@ -170,21 +178,29 @@ export class PdfDownloads {
     return recovered;
   }
   async recoverCompleted() {
-    if (this.active.size || this.stopping) return;
-    await this.syncHistory();
-    for (const run of this.db.runs()) {
-      // Every download run, with or without the browser: the person may have saved the PDF themselves.
-      if (!run.download || !['completed', 'failed'].includes(run.status) || !run.download.items.some(i => i.status === 'failed' || i.status === 'pending')) continue;
-      const control = new AbortController();
-      this.active.set(run.id, control);
-      const staging = join(this.db.root, 'downloads', run.id);
-      try {
-        await mkdir(staging, {recursive:true});
-        const recovered = await this.reconcile(run, staging, AbortSignal.any([control.signal, AbortSignal.timeout(30000)]));
-        if (recovered) { this.summarize(run); this.save(run, 'changed'); }
-      } finally { await rm(staging, {recursive:true, force:true}); this.active.delete(run.id); }
-      if (this.stopping) return;
-    }
+    // One pass at a time: a second timer tick must not reconcile the same run alongside the first.
+    if (this.active.size || this.recovering || this.stopping) return;
+    this.recovering = true;
+    try {
+      await this.syncHistory();
+      for (const run of this.db.runs()) {
+        if (this.active.size || this.stopping) return;
+        // Every download run, with or without the browser: the person may have saved the PDF themselves.
+        if (!run.download || !['completed', 'failed'].includes(run.status) || !run.download.items.some(i => i.status === 'failed' || i.status === 'pending')) continue;
+        const control = new AbortController();
+        this.recovery.set(run.id, control);
+        // Its own folder: a resume of the same run stages its files under the run's id.
+        const staging = join(this.db.root, 'downloads', `recover-${run.id}`);
+        try {
+          await mkdir(staging, {recursive:true});
+          const recovered = await this.reconcile(run, staging, AbortSignal.any([control.signal, AbortSignal.timeout(30000)]));
+          // A resume that began meanwhile owns the run's state now.
+          if (recovered && !this.active.has(run.id)) { this.summarize(run); this.save(run, 'changed'); }
+        } catch (error) {
+          if (!control.signal.aborted) throw error;
+        } finally { await rm(staging, {recursive:true, force:true}); this.recovery.delete(run.id); }
+      }
+    } finally { this.recovering = false; }
   }
   async syncHistory() {
     if (this.stopping) return;
@@ -306,6 +322,7 @@ export class PdfDownloads {
   }
   start(target: DownloadTarget) {
     if (this.active.size) throw new AppError("BUSY", "원문 확보 작업이 진행 중입니다.");
+    this.yieldRecovery();
     const works = this.targets(target);
     if (!works.length) throw new AppError("DOWNLOAD_EMPTY", "대상 아카이브에 문헌이 없습니다.");
     if (target.downloadDirectory) this.rememberDirectory(target.downloadDirectory);
@@ -328,6 +345,7 @@ export class PdfDownloads {
     if (action === "skip") { this.currentItems.get(id)?.abort(new AppError("DOWNLOAD_SKIPPED", "사용자가 이 문헌을 건너뛰었습니다.")); return; }
     if (action !== "resume") throw new AppError("INVALID", "원문 확보는 재시도로 이어갈 수 있습니다.");
     if (this.active.size) throw new AppError("BUSY", "원문 확보 작업이 진행 중입니다.");
+    this.yieldRecovery();
     const run = this.db.run(id);
     if (!run.download) throw new AppError("INVALID", "원문 확보 작업이 아닙니다.");
     if (useBrowser !== undefined) run.download.useBrowser = useBrowser;

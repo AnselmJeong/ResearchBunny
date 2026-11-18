@@ -968,3 +968,55 @@ test("shelf lookups keep an OpenAlex reserve, keep paid results and resume after
     }
   });
 });
+
+test("a copy takes over when its primary file is deleted, and a stale missing row gives up its path", async () => {
+  await fixture(async ({ service, dir, ollama }) => {
+    await configure(service, dir, ollama.url);
+    const smith = fileOf(service, SMITH)!;
+    expect(JSON.parse(fileOf(service, COPY)!.info).duplicateOf).toBe(smith.id);
+
+    await rm(join(dir, SMITH));
+    await service.call("shelfControl", { action: "scan" });
+    await service.shelf.wait();
+    expect(fileOf(service, SMITH)!.status).toBe("missing");
+    const copy = fileOf(service, COPY)!;
+    // The paper keeps a PDF it can open, its record and its place in the lists.
+    expect(JSON.parse(copy.info).duplicateOf).toBeUndefined();
+    expect(copy).toMatchObject({ work_id: smith.work_id, status: "ok", stage: smith.stage });
+    const attachments = service.db.attachments(smith.work_id);
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]).toMatchObject({ path: join(dir, COPY), shelfFileId: copy.id, exists: true });
+    expect(await hasValidPdf(service.db, smith.work_id)).toBe(true);
+
+    // A new file may take the path a deleted file's row still holds.
+    const kim = fileOf(service, KIM)!;
+    service.shelf.relocate(kim.id, SMITH, Date.now());
+    expect(fileOf(service, SMITH)).toMatchObject({ id: kim.id, status: kim.status });
+    expect(service.db.db.prepare("SELECT count(*) AS n FROM shelf_files WHERE status='missing'").get()).toEqual({ n: 0 });
+  });
+}, 60000);
+
+test("files whose dates changed but not their bytes keep their record and are not looked up again", async () => {
+  await fixture(async ({ service, dir, ollama, calls }) => {
+    await configure(service, dir, ollama.url);
+    const lost = fileOf(service, LOST)!;
+    // A record settled by hand.
+    service.db.db.prepare("UPDATE shelf_files SET stage='resolved',status='ok',info=json_set(info,'$.resolution',json(?)) WHERE id=?")
+      .run(JSON.stringify({ method: "manual", at: new Date().toISOString() }), lost.id);
+    const before = Object.fromEntries([SMITH, KIM, PARK, LOST].map((rel) => [rel, fileOf(service, rel)!]));
+    const callsBefore = { ...calls };
+    const later = new Date(Date.now() + 60000);
+    for (const rel of Object.keys(before)) await utimes(join(dir, rel), later, later);
+
+    await service.call("shelfControl", { action: "scan" });
+    await service.shelf.wait();
+    for (const [rel, row] of Object.entries(before)) {
+      const now = fileOf(service, rel)!;
+      expect(now).toMatchObject({ stage: row.stage, status: row.status, work_id: row.work_id, hash: row.hash });
+      expect(JSON.parse(now.info).stageBeforeRehash).toBeUndefined();
+      expect(JSON.parse(now.info).resolution).toEqual(JSON.parse(row.info).resolution);
+    }
+    expect(calls).toEqual(callsBefore);
+    expect(service.db.db.prepare("SELECT count(*) AS n FROM shelf_files WHERE hashed_mtime!=mtime").get()).toEqual({ n: 0 });
+  });
+}, 60000);

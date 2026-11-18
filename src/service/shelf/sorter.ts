@@ -831,8 +831,13 @@ export class ShelfSorter {
           continue;
         }
         done.add(fileId);
-        if (dir.split("/").some((part) => excluded.has(part.normalize("NFC")))) this.shelf.release(row.id, join(root.path, rel));
-        else this.shelf.relocate(row.id, rel, Math.trunc((await stat(join(root.path, rel)).catch(() => before)).mtimeMs));
+        try {
+          if (dir.split("/").some((part) => excluded.has(part.normalize("NFC")))) this.shelf.release(row.id, join(root.path, rel));
+          else this.shelf.relocate(row.id, rel, Math.trunc((await stat(join(root.path, rel)).catch(() => before)).mtimeMs));
+        } catch {
+          // The file is in its folder; the next scan finds it there. The rest of the batch still moves.
+          skip("옮겼지만 색인에 기록하지 못했습니다. 서고를 다시 스캔하면 반영됩니다.");
+        }
         if (target === SHELF_UNCATEGORIZED) result.uncategorized++;
         else if (target === SHELF_DUPLICATED) result.duplicated++;
         else result.moved++;

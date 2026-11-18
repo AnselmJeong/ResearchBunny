@@ -330,6 +330,10 @@ export class Library {
           citations: old.citations,
           topics: old.topics,
           abstract: old.abstract || work.abstract,
+          // A .bib entry knows none of these; its placeholders must not replace what a provider reported.
+          ...(old.source !== "bibtex" && (old.openalex || Object.keys(old.raw || {}).length)
+            ? { retracted: old.retracted, type: old.type, raw: old.raw, source: old.source, fetchedAt: old.fetchedAt }
+            : {}),
         };
       }
       work = { ...work, ...work.edits } as Work;
@@ -594,8 +598,10 @@ export class Library {
           restore.run(item.collectionId, item.id, item.collectionId, projectId, item.id);
         this.touch();
       } else
+        // A paper deleted since has no state to put back; the step is dropped, not left blocking the ones before it.
         for (const item of JSON.parse(row.data))
-          this.mutate(projectId, [item.id], { pendingDismissed: false, ...item.state }, false);
+          if (this.db.prepare("SELECT 1 FROM works WHERE id=?").get(item.id))
+            this.mutate(projectId, [item.id], { pendingDismissed: false, ...item.state }, false);
       this.db.prepare("DELETE FROM changes WHERE id=?").run(row.id);
     });
     return true;
