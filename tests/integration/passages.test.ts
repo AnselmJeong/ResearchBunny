@@ -183,6 +183,10 @@ test("the store scores int8 vectors exactly after the sign-bit scan, within a sc
     expect(store.counts("m")).toMatchObject({ ok: 19, passages: 190, embedded: 190 });
     expect(store.semantic("m", query, 200, () => true, 1000).some((h) => scope.has(h.id) && store.idsOf(["hash4"]).indexOf(h.id) < 0)).toBe(false);
     expect(store.lexical('"passage" AND "paper"', 3)).toHaveLength(3);
+    // A scope is applied before the limit, so a small folder is not lost behind the global ranking.
+    const scoped4 = store.lexical('"passage" AND "paper"', 3, ["hash4"]);
+    expect(scoped4.length).toBeGreaterThan(0);
+    expect(scoped4.every((r) => r.hash === "hash4")).toBe(true);
   } finally {
     store.close();
     await rm(root, { recursive: true, force: true });

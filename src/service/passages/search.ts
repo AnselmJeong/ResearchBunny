@@ -70,7 +70,8 @@ export class PassageSearch {
     if (fts) {
       // One word of a question matches thousands of passages; keep those holding
       // at least half the words, most words first, then by BM25.
-      const found = this.store.lexical(fts, 400).filter((r) => allowedHash(r.hash));
+      const scope = opts.works ? [...files].filter(([, file]) => opts.works!.has(file.workId)).map(([hash]) => hash) : undefined;
+      const found = this.store.lexical(fts, 400, scope).filter((r) => allowedHash(r.hash));
       const texts = this.store.passages(found.map((r) => r.id));
       const wanted = terms.map(fold);
       const need = wanted.length <= 2 ? 1 : Math.ceil(wanted.length / 2);

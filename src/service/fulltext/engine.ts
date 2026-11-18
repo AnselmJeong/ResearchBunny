@@ -2,7 +2,7 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { open } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-import { normalizeDoi, titleSimilarity } from "../../shared/domain";
+import { doiPath, normalizeDoi, titleSimilarity } from "../../shared/domain";
 import { AppError, type Work } from "../../shared/types";
 
 // Ported from Article_Downloader/downloader.py: DOI cleanup/Crossref lookup,
@@ -401,10 +401,10 @@ export class FulltextEngine {
     if (doi) {
       progress("공개 원문 위치 검색");
       try {
-        const data = await this.json(`https://api.unpaywall.org/v2/${encodeURI(doi)}?email=${encodeURIComponent(email)}`, itemSignal);
+        const data = await this.json(`https://api.unpaywall.org/v2/${doiPath(doi)}?email=${encodeURIComponent(email)}`, itemSignal);
         queue.push(...unpaywallUrls(data));
-        landings.push(...urls([data?.best_oa_location?.url_for_landing_page]), `https://doi.org/${encodeURI(doi)}`);
-      } catch (error) { itemSignal.throwIfAborted(); lastError = error; landings.push(`https://doi.org/${encodeURI(doi)}`); }
+        landings.push(...urls([data?.best_oa_location?.url_for_landing_page]), `https://doi.org/${doiPath(doi)}`);
+      } catch (error) { itemSignal.throwIfAborted(); lastError = error; landings.push(`https://doi.org/${doiPath(doi)}`); }
     }
     while (cursor < queue.length && tried.size < 8) {
       const result = await tryUrl(queue[cursor++]);

@@ -32,8 +32,8 @@ export interface JsonRequest<T> {
   instruction: string;
   input: string;
   schema: Record<string, unknown>;
-  /** Throws when the reply is unusable; one corrective retry follows. */
-  parse: (value: unknown) => T;
+  /** Throws when the reply is unusable; one corrective retry follows. `attempt` is 0 for the first reply, also when that reply was not JSON at all. */
+  parse: (value: unknown, attempt: number) => T;
   signal: AbortSignal;
   meter?: Meter;
   maxOutputTokens?: number;
@@ -96,7 +96,7 @@ export class GenealogyAI {
     let problem = "";
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        return request.parse(JSON.parse(jsonReply(reply)));
+        return request.parse(JSON.parse(jsonReply(reply)), attempt);
       } catch (error) {
         problem = error instanceof SyntaxError ? `the reply was not valid JSON (${error.message})` : errorText(error).slice(0, 800);
       }

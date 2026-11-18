@@ -91,7 +91,9 @@ function extractAuthors(xml: string): string[] {
     .filter(Boolean);
 }
 
-function extractDoi(xml: string): string {
+/** The record's own DOI: reference entries carry `ArticleId IdType="doi"` for the papers they cite. */
+function extractDoi(record: string): string {
+  const xml = record.replace(/<ReferenceList[\s\S]*<\/ReferenceList>/i, "");
   const articleId = xml.match(/<ArticleId\s+[^>]*IdType="doi"[^>]*>([\s\S]*?)<\/ArticleId>/i);
   const electronicId = xml.match(/<ELocationID\s+[^>]*EIdType="doi"[^>]*>([\s\S]*?)<\/ELocationID>/i);
   return decodeXml(articleId?.[1] ?? electronicId?.[1] ?? "");
@@ -107,7 +109,11 @@ export function parsePubMedXml(xml: string): WebSearchResult[] {
 
       const authors = extractAuthors(article);
       const journal = firstTag(article, "Title");
-      const year = firstTag(article, "Year") || firstTag(article, "MedlineDate");
+      // DateCompleted and DateRevised come first in the record; their years are not the publication year.
+      const published = /<PubDate>[\s\S]*?<\/PubDate>/i.exec(article)?.[0] ?? "";
+      const year = firstTag(published, "Year")
+        || firstTag(published, "MedlineDate").match(/\d{4}/)?.[0]
+        || firstTag(/<ArticleDate[\s\S]*?<\/ArticleDate>/i.exec(article)?.[0] ?? "", "Year");
       const doi = extractDoi(article);
       const abstract = extractAbstract(article);
       const citation = [authors.slice(0, 4).join("; "), year, journal]

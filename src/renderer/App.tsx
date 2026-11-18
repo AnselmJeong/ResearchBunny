@@ -942,6 +942,8 @@ export function App() {
       }
       if (editable || dialog) return;
       if (readerActive) return;
+      // A report covers the list; its remembered selection must not be archived or exported from there.
+      if (genealogyId) return;
       if ((e.metaKey || e.ctrlKey) && e.key === "a") {
         e.preventDefault();
         setSelected(list.works.map((w) => w.id));
@@ -962,7 +964,7 @@ export function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selected, list, dialog, projectId, scope, snapshot, readerActive]);
+  }, [selected, list, dialog, projectId, scope, snapshot, readerActive, genealogyId]);
   const genealogy = genealogyId ? snapshot?.genealogies.find((g) => g.id === genealogyId) : undefined;
   const title = genealogy ? genealogy.title :
     scope === "run"

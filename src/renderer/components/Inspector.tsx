@@ -120,6 +120,8 @@ export function Inspector({
   const [doiInput, setDoiInput] = useState("");
   const [resolving, setResolving] = useState(false);
   const shelfFileId = work?.shelf?.match === "identity" ? work.shelf.fileId : null;
+  const shownShelfFile = useRef(shelfFileId);
+  shownShelfFile.current = shelfFileId;
   useEffect(() => {
     setShelfFile(null);
     setDoiInput("");
@@ -133,8 +135,10 @@ export function Inspector({
   const resolveShelf = (action: "candidate" | "doi" | "keep", value?: string) => {
     if (!shelfFileId) return;
     setResolving(true);
-    void window.bunny.shelfResolve({ fileId: shelfFileId, action, value })
-      .then(setShelfFile)
+    // A lookup that returns after another paper was opened must not put its candidates under that paper.
+    const fileId = shelfFileId;
+    void window.bunny.shelfResolve({ fileId, action, value })
+      .then((details) => { if (shownShelfFile.current === fileId) setShelfFile(details); })
       .catch(onError)
       .finally(() => setResolving(false));
   };
@@ -146,7 +150,6 @@ export function Inspector({
     let valid = true;
     setDuplicates(null);
     setAttachments([]);
-    setTags(work?.state.tags.join(", ") || "");
     if (work)
       void window.bunny
         .attachments({ workId: work.id })
@@ -154,6 +157,9 @@ export function Inspector({
         .catch(error => { if (valid) onError(error); });
     return () => { valid = false; };
   }, [work?.id, work?.attachmentCount]);
+  // Tags changed elsewhere (bulk edit, undo) replace the field; a stale copy would be written back on blur.
+  const savedTags = work?.state.tags.join(", ") || "";
+  useEffect(() => setTags(savedTags), [work?.id, savedTags]);
   useEffect(() => {
     if (!work?.evidence) return;
     void Promise.all(

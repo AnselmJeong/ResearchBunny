@@ -288,8 +288,9 @@ function Candidates({ view, busy, onDecide, onUndo }: { view: GenealogyView; bus
   );
 }
 
-function OutlineTab({ view, busy, onSave, onSync, onApprove }: { view: GenealogyView; busy: boolean; onSave: (markdown: string) => void; onSync: () => void; onApprove: () => void }) {
+function OutlineTab({ view, busy, onSave, onSync, onApprove }: { view: GenealogyView; busy: boolean; onSave: (markdown: string) => Promise<boolean>; onSync: () => void; onApprove: () => void }) {
   const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const outline = view.outline;
   const titles = new Map(view.papers.map((p) => [p.key, `${p.authors[0] ?? ""} ${p.year ?? ""}`.trim() || p.key]));
   if (!outline) return <p className="subtle">가지 장부·목차 단계를 실행하면 상세 목차가 여기에 나옵니다.</p>;
@@ -299,7 +300,11 @@ function OutlineTab({ view, busy, onSave, onSync, onApprove }: { view: Genealogy
         <p className="subtle">장(##)·절(###) 제목, 논지, 질문, 증거를 고칠 수 있습니다. rb:section 주석의 keys는 그 절이 기대는 문헌입니다. 저장하면 바뀐 절만 다시 씁니다.</p>
         <textarea value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false} />
         <div className="inline-actions">
-          <button className="primary" disabled={busy} onClick={() => { onSave(draft); setDraft(null); }}>
+          <button className="primary" disabled={busy || saving} onClick={() => {
+            // The editor closes only once the outline is stored; a refused save keeps the text.
+            setSaving(true);
+            void onSave(draft).then((saved) => { if (saved) setDraft(null); }).finally(() => setSaving(false));
+          }}>
             <Save size={14} />
             목차 저장
           </button>
@@ -463,7 +468,11 @@ function Manuscript({ id, view, busy, onRewrite, onError }: { id: string; view: 
         </ul>
         {rendered ? (
           <article className="genealogy-article">
-            <Markdown remarkPlugins={[remarkGfm]} skipHtml>
+            {/* Written by a model from PDF text: links are inert and remote images never load. */}
+            <Markdown remarkPlugins={[remarkGfm]} skipHtml components={{
+              a: ({ children }) => <span>{children}</span>,
+              img: ({ alt }) => <span>{alt}</span>,
+            }}>
               {rendered}
             </Markdown>
           </article>
@@ -706,7 +715,7 @@ export function GenealogyWorkspace({ id, onError, onDeleted, app }: { id: string
           <OutlineTab
             view={view}
             busy={running}
-            onSave={(markdown) => void window.bunny.genealogyOutlineSave({ id, markdown }).then(() => load()).catch(onError)}
+            onSave={(markdown) => window.bunny.genealogyOutlineSave({ id, markdown }).then(() => { void load(); return true; }, (error) => { onError(error); return false; })}
             onSync={() => void window.bunny.genealogyOutlineSave({ id }).then(() => load()).catch(onError)}
             onApprove={() =>
               void window.bunny

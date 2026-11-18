@@ -65,7 +65,20 @@ export function quoteIn(quote: string, text: string) {
 export function checkedNumbers(text: string) {
   return [...new Set((text.match(/\d+(?:[.,]\d+)?/g) || []).filter((n) => /[.,]/.test(n) || Number(n) > 10))];
 }
-const numbersOf = (text: string) => new Set((foldText(text).match(/\d+(?:[.,]\d+)?/g) || []).flatMap((n) => [n, n.replace(",", ".")]));
+/** One number in the spellings that mean the same value: `12,5`/`12.5`, `1,234`/`1234`, `0.050`/`0.05`. */
+function numberForms(n: string): string[] {
+  const dotted = n.replace(",", ".");
+  const value = Number(dotted);
+  return [n, dotted, ...(Number.isFinite(value) ? [String(value)] : []), ...(/^\d{1,3},\d{3}$/.test(n) ? [n.replace(",", "")] : [])];
+}
+export const numbersOf = (text: string) => {
+  const folded = foldText(text);
+  return new Set([
+    ...(folded.match(/\d+(?:[.,]\d+)?/g) || []).flatMap(numberForms),
+    // "p < .05" supports "0.05".
+    ...[...folded.matchAll(/(?<![\d.,])\.(\d+)/g)].flatMap((m) => numberForms(`0.${m[1]}`)),
+  ]);
+};
 
 const paperLabel = (hit: PassageHit) => {
   const first = hit.authors[0]?.split(/\s+/).at(-1) || "Unknown";
@@ -209,7 +222,7 @@ export class PassageAnswerer {
         paragraph: s.paragraph,
         refs,
         status: refs.length ? "cited" : s.sources.length ? "unverified" : "uncited",
-        unsupported: refs.length ? checkedNumbers(s.text).filter((n) => !allowed.has(n) && !allowed.has(n.replace(",", "."))) : [],
+        unsupported: refs.length ? checkedNumbers(s.text).filter((n) => !numberForms(n).some((form) => allowed.has(form))) : [],
       };
     });
     const refs: AnswerRef[] = [...numberOf].sort((a, b) => a[1] - b[1]).map(([source, n]) => ({ n, hit: evidence[source - 1], quotes: quotes.get(source) || [] }));

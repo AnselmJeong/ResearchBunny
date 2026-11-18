@@ -95,6 +95,7 @@ export class PassageStore {
       CREATE TRIGGER IF NOT EXISTS passages_ai AFTER INSERT ON passages BEGIN INSERT INTO passages_fts(rowid,section,text) VALUES(new.id,new.section,new.text); END;
       CREATE TRIGGER IF NOT EXISTS passages_ad AFTER DELETE ON passages BEGIN INSERT INTO passages_fts(passages_fts,rowid,section,text) VALUES('delete',old.id,old.section,old.text); END;
       CREATE TABLE IF NOT EXISTS vectors(passage_id INTEGER PRIMARY KEY REFERENCES passages(id) ON DELETE CASCADE,model TEXT NOT NULL,scale REAL NOT NULL,data BLOB NOT NULL);
+      CREATE INDEX IF NOT EXISTS idx_vectors_model ON vectors(model);
     `);
     this.db.pragma(`user_version = ${SCHEMA}`);
   }
@@ -194,10 +195,11 @@ export class PassageStore {
     return (this.db.prepare("SELECT id FROM passages WHERE hash IN (SELECT value FROM json_each(?))").all(JSON.stringify(hashes)) as { id: number }[]).map((r) => r.id);
   }
   /** BM25 over passage text (section headings weigh double); `query` is an FTS5 expression from ftsQuery. */
-  lexical(query: string, limit: number): { id: number; hash: string }[] {
+  /** `hashes` limits the ranking to those files: a scope filtered after the LIMIT would rarely survive it. */
+  lexical(query: string, limit: number, hashes?: string[]): { id: number; hash: string }[] {
     return this.db.prepare(
-      "SELECT f.rowid AS id,p.hash FROM passages_fts f JOIN passages p ON p.id=f.rowid WHERE passages_fts MATCH ? ORDER BY bm25(passages_fts,2.0,1.0) LIMIT ?",
-    ).all(query, limit) as { id: number; hash: string }[];
+      `SELECT f.rowid AS id,p.hash FROM passages_fts f JOIN passages p ON p.id=f.rowid WHERE passages_fts MATCH ?${hashes ? " AND p.hash IN (SELECT value FROM json_each(?))" : ""} ORDER BY bm25(passages_fts,2.0,1.0) LIMIT ?`,
+    ).all(...(hashes ? [query, JSON.stringify(hashes), limit] : [query, limit])) as { id: number; hash: string }[];
   }
 
   // ---- meaning search ----
