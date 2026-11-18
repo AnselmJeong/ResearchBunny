@@ -184,9 +184,16 @@ test("the outline step builds the ledger and the contents, pauses for approval a
   expect(contents).toStartWith("# 환각제 기전의 계보");
   expect(await readFile(join(done.workspace, "부록A_가지_장부.md"), "utf8")).toContain("| 엔트로피 가지 | 막힘 |");
   expect(() => engine.start(g.id, "continue", true)).toThrow();
+  // A finished report: editing its outline puts the manuscript, the check and the rendered files out of date.
+  const finished = engine.store.get(g.id);
+  finished.completed = { ...finished.completed, write: "x", check: "x", render: "x" };
+  f.store.save(finished);
   await writeFile(join(done.workspace, "00_contents.md"), contents.replace("## 2. 엔트로피 가지", "## 2. 엔트로피 가설의 흥망"));
   const synced = await engine.editOutline(g.id);
   expect(synced!.chapters[1].title).toBe("엔트로피 가설의 흥망");
+  const edited = engine.store.get(g.id).completed;
+  expect(edited).toMatchObject({ prepare: "x", cards: "x", gaps: "x" });
+  expect([edited.write, edited.check, edited.render]).toEqual([undefined, undefined, undefined]);
   expect(await engine.edited(engine.store.get(g.id), "00_contents.md")).toBeNull();
   engine.approve(g.id);
   expect(engine.store.get(g.id).outlineApproved).toBe(true);

@@ -3,7 +3,7 @@ import { copyFile, lstat, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { Library } from "../db/database";
 import type { OpenAlex } from "../providers/openalex";
-import { OllamaLocal } from "../providers/ollama-local";
+import { OllamaLocal, embedEach } from "../providers/ollama-local";
 import type { FetchLike } from "../search/web-search";
 import { extractPdf, hashFile } from "../interchange/pdf";
 import { isAuxiliaryPdf } from "../interchange/pdf-identity";
@@ -604,9 +604,19 @@ export class Shelf {
       signal.throwIfAborted();
       const result = row.size > 100 * 1024 * 1024
         ? { title: "", authors: "", dois: [], pages: null, text: "", status: "100MB 초과 · 추출 생략" }
-        : await extractPdf(join(root.path, row.rel_path), this.workerPath, signal, "shelf");
+        // Fifteen seconds, and longer for large files: the reader loads the whole PDF, slowly over a share.
+        : await extractPdf(join(root.path, row.rel_path), this.workerPath, signal, "shelf", 15000 + Math.min(105000, Math.round(row.size / (1024 * 1024)) * 1000));
       // An unmounted share looks like an unreadable PDF; keep the row for the next scan.
       if (!result.pages) await this.assertOnline(root);
+      if (result.timedOut) {
+        // Out of time is not a verdict on the PDF. It stays waiting for two more tries before the
+        // record is settled from the filename alone.
+        const attempts = (parseInfo(row).extractAttempts ?? 0) + 1;
+        if (attempts < 3) {
+          this.setInfo(row.id, { extractAttempts: attempts });
+          return;
+        }
+      }
       this.afterExtract(row.id, result);
     });
     if (this.resolverActive()) {
@@ -1353,9 +1363,9 @@ export class Shelf {
     for (let i = 0; i < todo.length; i += 32) {
       signal.throwIfAborted();
       const batch = todo.slice(i, i + 32);
-      let vectors: Float32Array[];
+      let vectors: (Float32Array | null)[];
       try {
-        vectors = await this.ollama.embed(config.model, batch.map((t) => t.input), signal);
+        vectors = await embedEach(this.ollama, config.model, batch.map((t) => t.input), signal);
       } catch (error) {
         signal.throwIfAborted();
         this.embeddingPaused = error instanceof AppError && error.code === "OLLAMA_MODEL" ? `${config.model} 모델 없음 · 설정에서 받기` : "Ollama 임베딩 실패 · 다음 스캔에서 재시도";
@@ -1364,8 +1374,10 @@ export class Shelf {
       }
       this.db.transaction(() => {
         batch.forEach((t, n) => {
-          if (!this.exists(t.workId)) return;
-          this.vectors.save(t.workId, model, EMBED_PROMPTS.version, t.basis, t.textHash, vectors[n]);
+          // A paper the model refused on its own is passed over; the ones after it still get vectors.
+          const vector = vectors[n];
+          if (!vector || !this.exists(t.workId)) return;
+          this.vectors.save(t.workId, model, EMBED_PROMPTS.version, t.basis, t.textHash, vector);
           this.embeddedNow++;
         });
       });

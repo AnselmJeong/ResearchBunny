@@ -131,18 +131,43 @@ export class PassageStore {
   /** Replace a PDF's passages. A failure or a scan stores no passages but is remembered so it is not retried every pass. */
   saveDoc(hash: string, chunker: string, title: string, result: Split | { status: "failed"; message: string }) {
     this.transaction(() => {
-      if (this.db.prepare("DELETE FROM passages WHERE hash=?").run(hash).changes) this.bump(true);
+      // A passage whose text did not change keeps its row and so its vector: splitting a library
+      // again after a chunker change must not mean embedding all of it again.
+      const kept = new Map<number, number>();
+      if (!("status" in result)) {
+        const old = new Map((this.db.prepare("SELECT id,seq,section,text FROM passages WHERE hash=?").all(hash) as { id: number; seq: number; section: string; text: string }[]).map((r) => [r.seq, r]));
+        for (const c of result.chunks) {
+          const before = old.get(c.seq);
+          if (before && before.text === c.text && before.section === c.section) kept.set(c.seq, before.id);
+        }
+      }
+      if (this.db.prepare("DELETE FROM passages WHERE hash=? AND id NOT IN (SELECT value FROM json_each(?))").run(hash, JSON.stringify([...kept.values()])).changes) this.bump(true);
       if ("status" in result) {
         this.db.prepare("INSERT OR REPLACE INTO docs(hash,chunker,status,title,message,extracted_at) VALUES(?,?,?,?,?,?)").run(hash, chunker, "failed", title, result.message, now());
         return;
       }
       const status = result.chunks.length ? "ok" : "empty";
-      this.db.prepare("INSERT OR REPLACE INTO docs VALUES(?,?,?,?,?,?,?,?,?,?)")
-        .run(hash, chunker, status, result.pages, result.chars, result.chunks.length, result.referencesExcluded ? 1 : 0, title, null, now());
+      // An update in place: replacing the row would cascade to the passages just kept.
+      this.db.prepare(`INSERT INTO docs VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(hash) DO UPDATE SET chunker=excluded.chunker,status=excluded.status,pages=excluded.pages,
+        chars=excluded.chars,chunks=excluded.chunks,refs_excluded=excluded.refs_excluded,title=excluded.title,message=excluded.message,extracted_at=excluded.extracted_at`)
+        .run(hash, chunker, status, result.pages, result.chars, result.chunks.length, result.referencesExcluded ? 1 : 0, title, result.truncated ? "매우 긴 PDF라 앞부분만 색인했습니다." : null, now());
       const insert = this.db.prepare("INSERT INTO passages(hash,seq,page_start,page_end,section,text) VALUES(?,?,?,?,?,?)");
-      for (const c of result.chunks) insert.run(hash, c.seq, c.pageStart, c.pageEnd, c.section, c.text);
-      if (result.chunks.length) this.bump(false);
+      const pages = this.db.prepare("UPDATE passages SET page_start=?,page_end=? WHERE id=?");
+      for (const c of result.chunks) {
+        const id = kept.get(c.seq);
+        if (id) pages.run(c.pageStart, c.pageEnd, id);
+        else insert.run(hash, c.seq, c.pageStart, c.pageEnd, c.section, c.text);
+      }
+      if (result.chunks.length > kept.size) this.bump(false);
     });
+  }
+  /**
+   * Records that reading a PDF did not finish. Passages it already has stay searchable:
+   * running out of time on a second reading says nothing against the first.
+   */
+  noteUnread(hash: string, chunker: string, title: string, message: string) {
+    const kept = this.db.prepare("UPDATE docs SET chunker=?,message=? WHERE hash=? AND status IN ('ok','empty')").run(chunker, message, hash).changes;
+    if (!kept) this.saveDoc(hash, chunker, title, { status: "failed", message });
   }
   deleteDocs(hashes: string[]) {
     if (!hashes.length) return;

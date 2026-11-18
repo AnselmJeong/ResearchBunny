@@ -76,7 +76,8 @@ export async function genealogyFixture(): Promise<Fixture> {
       return new GenealogyEngine({
         db,
         store,
-        ai: new GenealogyAI(db, clients),
+        // No waiting between tries in tests.
+        ai: new GenealogyAI(db, clients, undefined, [1, 1]),
         oa: { page: async (): Promise<Page> => ({ works: [], cursor: null, total: 0, cached: false, fetchedAt: new Date().toISOString() }) } as never,
         downloads: { active: new Map(), sciHub: () => ({ enabled: false, mirrors: [] }) } as never,
         workerPath: WORKER,

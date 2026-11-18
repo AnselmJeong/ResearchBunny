@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import type Database from "../db/sqlite";
-import { extractPdfLines } from "../interchange/pdf";
+import { extractPdfLines, type PdfLinesFailure } from "../interchange/pdf";
+import { embedEach } from "../providers/ollama-local";
 import type { OllamaLocal } from "../providers/ollama-local";
 import { now } from "../../shared/types";
 import { EMBED_PROMPTS } from "../../shared/shelf";
@@ -13,6 +14,7 @@ import type { PassageStore } from "./store";
 const BATCH = 32;
 /** PDFs read at once: extraction outpaces embedding, so two keep the queue full without loading the NAS. */
 const EXTRACTORS = 2;
+const MAX_PDF_BYTES = 200 * 1024 * 1024;
 /** A lock older than this belongs to a process that is gone. */
 const LOCK_MS = 2 * 60 * 1000;
 
@@ -70,6 +72,8 @@ export class PassageIndexer {
       model: () => string | null;
       onJob?: (job: PassageJob) => void;
       extractors?: number;
+      /** The reader's time limit per PDF; tests shorten it. */
+      extractMs?: number;
       /** Only the first PDFs, for trying a pass on a real shelf. */
       limit?: number;
     },
@@ -266,16 +270,18 @@ export class PassageIndexer {
           });
           continue;
         }
-        let vectors: Float32Array[];
+        let vectors: (Float32Array | null)[];
         try {
-          vectors = await this.ollama.embed(name, batch.map((p) => passageInput(p.title, p.section, p.text)), signal);
+          vectors = await embedEach(this.ollama, name, batch.map((p) => passageInput(p.title, p.section, p.text)), signal);
         } catch (error) {
           signal.throwIfAborted();
           return error instanceof Error ? error.message : "Ollama 임베딩 실패";
         }
-        this.store.saveVectors(model, batch.map((p, i) => ({ id: p.id, vector: vectors[i] })));
+        // A passage the model refused on its own is passed over; the ones after it still get vectors.
+        const saved = batch.flatMap((p, i) => (vectors[i] ? [{ id: p.id, vector: vectors[i]! }] : []));
+        this.store.saveVectors(model, saved);
         after = batch.at(-1)!.id;
-        counts.embedded += batch.length;
+        counts.embedded += saved.length;
         recount();
         this.report({ passages: { done: counts.embedded, total: counts.passages }, rate: this.speed(counts.embedded) });
       }
@@ -308,13 +314,31 @@ export class PassageIndexer {
 
   /** Split one PDF into passages and return how many; "offline" when the shelf disappeared, false when the file changed under us. */
   private async extract(source: PassageSource, signal: AbortSignal): Promise<number | false | "offline"> {
-    const lines = await extractPdfLines(source.path, this.workerPath, signal);
+    if (source.size > MAX_PDF_BYTES) {
+      // The reader loads the whole file; a scanned book of this size would only run out of memory or time.
+      this.store.saveDoc(source.hash, CHUNKER_VERSION, source.title, { status: "failed", message: `${Math.round(MAX_PDF_BYTES / 1024 / 1024)}MB를 넘는 PDF는 본문 색인에서 제외합니다.` });
+      return 0;
+    }
+    let reason: PdfLinesFailure = "unreadable";
+    // Three minutes, and longer for large files: a book over a slow share is not a broken PDF.
+    const lines = await extractPdfLines(source.path, this.workerPath, signal, {
+      timeoutMs: this.options.extractMs ?? 180000 + Math.min(12 * 60000, Math.round(source.size / (1024 * 1024)) * 3000),
+      failed: (why) => { reason = why; },
+    });
     if (!lines) {
       // A failure only counts when the file is still there as indexed; an unmounted share is not a broken PDF.
       if (!(await stat(source.root).catch(() => null))) return "offline";
       const info = await stat(source.path).catch(() => null);
       if (!info || info.size !== source.size || Math.trunc(info.mtimeMs) !== source.mtime) return false;
-      this.store.saveDoc(source.hash, CHUNKER_VERSION, source.title, { status: "failed", message: "PDF를 읽지 못했습니다(암호화·손상·시간 초과)." });
+      // A timeout or a lost reader is tried again on later passes; only then is the PDF given up on.
+      const attempts = Number(/^retry:(\d+)$/.exec(this.store.docs().get(source.hash)?.chunker ?? "")?.[1] ?? 0) + 1;
+      if (reason !== "unreadable") {
+        const again = attempts < 3;
+        this.store.noteUnread(source.hash, again ? `retry:${attempts}` : CHUNKER_VERSION, source.title,
+          again ? "PDF를 읽는 데 시간이 초과되었습니다. 다음 색인에서 다시 시도합니다." : "PDF를 읽는 데 세 번 시간이 초과되었습니다.");
+        return again ? false : 0;
+      }
+      this.store.saveDoc(source.hash, CHUNKER_VERSION, source.title, { status: "failed", message: "PDF를 읽지 못했습니다(암호화·손상)." });
       return 0;
     }
     const result = split(lines);

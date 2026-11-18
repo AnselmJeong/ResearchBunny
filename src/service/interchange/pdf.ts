@@ -89,12 +89,13 @@ const extractedSchema = z.object({
   title: z.string(), authors: z.string(), dois: z.array(z.string()),
   pages: z.number().nullable(), text: z.string(), status: z.string(), emptyPages: z.number().optional(),
 });
-type Extracted = z.infer<typeof extractedSchema>;
+type Extracted = z.infer<typeof extractedSchema> & { /** The reader ran out of time; the PDF itself may be fine. */ timedOut?: boolean };
 export function extractPdf(
   path: string,
   workerPath: string,
   signal: AbortSignal,
   mode: "metadata" | "fulltext" | "shelf" = "metadata",
+  timeoutMs?: number,
 ): Promise<Extracted> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
@@ -114,7 +115,7 @@ export function extractPdf(
       if (error) reject(error);
       else resolve(result!);
     };
-    const fallback = () =>
+    const fallback = (timedOut = false) =>
       done({
         title: "",
         authors: "",
@@ -122,8 +123,9 @@ export function extractPdf(
         pages: null,
         text: "",
         status: "추출 제한 또는 실패 · 수동 확인 필요",
+        ...(timedOut ? { timedOut } : {}),
       });
-    const timer = setTimeout(fallback, mode === "fulltext" ? 60000 : 15000);
+    const timer = setTimeout(() => fallback(true), timeoutMs ?? (mode === "fulltext" ? 60000 : 15000));
     const abort = () =>
       done(undefined, new AppError("CANCELLED", "취소되었습니다."));
     signal.addEventListener("abort", abort, { once: true });
@@ -131,7 +133,7 @@ export function extractPdf(
       const parsed = extractedSchema.safeParse(data);
       if (parsed.success) done(parsed.data); else fallback();
     });
-    worker.once("error", fallback);
+    worker.once("error", () => fallback());
     worker.once("exit", () => {
       if (!settled) fallback();
     });
@@ -141,11 +143,14 @@ const pdfLineSchema = z.object({ t: z.string(), x: z.number(), y: z.number(), w:
 const pdfLinesSchema = z.object({
   pages: z.array(z.object({ width: z.number(), height: z.number(), lines: z.array(pdfLineSchema) })),
   total: z.number(),
+  truncated: z.boolean().optional(),
 });
+/** Why no lines came back: `unreadable` is the PDF itself; a timeout or a lost worker may pass on another try. */
+export type PdfLinesFailure = "timeout" | "worker" | "unreadable";
 export type PdfLine = z.infer<typeof pdfLineSchema>;
 export type PdfLines = z.infer<typeof pdfLinesSchema>;
 /** Every page's text lines with position and size, for passage indexing; null when the PDF cannot be read. */
-export function extractPdfLines(path: string, workerPath: string, signal: AbortSignal): Promise<PdfLines | null> {
+export function extractPdfLines(path: string, workerPath: string, signal: AbortSignal, options: { timeoutMs?: number; failed?: (reason: PdfLinesFailure) => void } = {}): Promise<PdfLines | null> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     const worker = fork(workerPath, [path, "passages"], {
@@ -165,15 +170,20 @@ export function extractPdfLines(path: string, workerPath: string, signal: AbortS
       else resolve(result);
     };
     // Books over SMB take a while; a stuck parser must not hold the queue.
-    const timer = setTimeout(() => done(null), 180000);
+    const fail = (reason: PdfLinesFailure) => {
+      if (!settled) options.failed?.(reason);
+      done(null);
+    };
+    const timer = setTimeout(() => fail("timeout"), options.timeoutMs ?? 180000);
     const abort = () => done(null, new AppError("CANCELLED", "취소되었습니다."));
     signal.addEventListener("abort", abort, { once: true });
     worker.once("message", (data) => {
       const parsed = pdfLinesSchema.safeParse(data);
-      done(parsed.success ? parsed.data : null);
+      if (parsed.success) done(parsed.data);
+      else fail("unreadable");
     });
-    worker.once("error", () => done(null));
-    worker.once("exit", () => done(null));
+    worker.once("error", () => fail("worker"));
+    worker.once("exit", () => fail("worker"));
   });
 }
 export class PdfImports {
