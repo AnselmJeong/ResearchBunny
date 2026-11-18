@@ -1,4 +1,5 @@
 import { createServer, createConnection } from "node:net";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   readlinkSync,
@@ -20,23 +21,23 @@ export async function acquireInstance(
   root: string,
   activate: () => void,
 ): Promise<boolean> {
+  // The Electron build left `SingletonLock -> host-pid`. It counts only while that process is
+  // still ResearchBunny: after a crash the link stays, and the pid is later given to something else.
   const oldLock = join(root, "SingletonLock");
   try {
     const pid = Number(readlinkSync(oldLock).split("-").at(-1));
-    if (pid > 0) {
-      try {
-        process.kill(pid, 0);
-        throw new AppError(
-          "ALREADY_RUNNING",
-          "기존 ResearchBunny를 종료한 뒤 다시 실행하세요.",
-        );
-      } catch (error) {
-        if (
-          error instanceof AppError ||
-          (error as NodeJS.ErrnoException).code !== "ESRCH"
-        )
-          throw error;
-      }
+    const command = pid > 0 && pid !== process.pid
+      ? spawnSync("/bin/ps", ["-o", "comm=", "-p", String(pid)], { encoding: "utf8" }).stdout || ""
+      : "";
+    if (/researchbunny/i.test(command))
+      throw new AppError(
+        "ALREADY_RUNNING",
+        "기존 ResearchBunny를 종료한 뒤 다시 실행하세요.",
+      );
+    try {
+      unlinkSync(oldLock);
+    } catch {
+      /* Read-only folder: the check above repeats next time. */
     }
   } catch (error) {
     if (
