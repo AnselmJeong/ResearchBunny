@@ -53,12 +53,35 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
 /** Structured completions for genealogy work: a stage's route, a corrective retry, and quota errors that pause instead of fail. */
 export class GenealogyAI {
   /** `models`: the model Settings names for each connection, read at every call; a route without a model follows it. */
-  constructor(private db: Library, private clients: GenealogyClients, private models: () => Partial<Record<GenealogyProvider, string>> = () => ({})) {}
+  constructor(
+    private db: Library,
+    private clients: GenealogyClients,
+    private models: () => Partial<Record<GenealogyProvider, string>> = () => ({}),
+    /** Waits before asking again after a dropped connection or a provider hiccup. A report runs for hours; one of these must not end it. */
+    private retryDelays: number[] = [2000, 10000],
+  ) {}
 
   private async raw(request: JsonRequest<unknown>, instruction: string, input: string): Promise<string> {
     const { schema, signal } = request;
     const route = { ...request.route, model: request.route.model || this.models()[request.route.provider] || "" };
     request.meter?.reserve(Buffer.byteLength(instruction + input + JSON.stringify(schema)));
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.once(request, route, instruction, input);
+      } catch (error) {
+        const delay = this.retryDelays[attempt];
+        if (signal.aborted || delay === undefined || !(error instanceof AppError) || error.code !== "AI_PROVIDER") throw error;
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, delay);
+          signal.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+        });
+      }
+    }
+  }
+
+  /** One request. Errors come out as BUDGET (pause), AI_REFUSAL, AI_PROVIDER (worth another try) or the provider's own setup error. */
+  private async once(request: JsonRequest<unknown>, route: ModelRoute, instruction: string, input: string): Promise<string> {
+    const { schema, signal } = request;
     try {
       let reply: string;
       if (route.provider === "codex") {
@@ -81,8 +104,15 @@ export class GenealogyAI {
       this.db.usage(route.provider, request.runId);
       return reply;
     } catch (error) {
-      if (signal.aborted || error instanceof AppError) throw error;
+      if (signal.aborted) throw error;
       const message = errorText(error);
+      if (error instanceof AppError) {
+        // Ollama Cloud reports its HTTP status in one error: a rate limit pauses like the subscriptions do,
+        // and a server error or a cut stream is worth asking again.
+        if (error.code === "OLLAMA_PROVIDER" && /\(429\)/.test(message)) throw new AppError("BUDGET", message, true);
+        if ((error.code === "OLLAMA_PROVIDER" && /\(5\d\d\)/.test(message)) || error.code === "OLLAMA_STREAM") throw new AppError("AI_PROVIDER", message, true);
+        throw error;
+      }
       // A spent subscription pauses the job; it resumes once the limit resets.
       if (LIMIT.test(message)) throw new AppError("BUDGET", message, true);
       // A stopped answer is not a format problem; asking the same model again is usually stopped again.

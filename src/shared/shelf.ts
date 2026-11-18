@@ -170,6 +170,8 @@ export interface ShelfFileInfo {
   };
   candidates?: ShelfCandidate[];
   duplicateOf?: string;
+  /** Times the reader ran out of time on this file. */
+  extractAttempts?: number;
   error?: string;
   /** Set while the file is hidden: the work and status it had. */
   hidden?: { workId: string; status: ShelfStatus; at: string };

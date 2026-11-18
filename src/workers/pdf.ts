@@ -65,7 +65,7 @@ async function extract() {
         pages.push({ width: Math.round(x1 - x0), height: Math.round(y1 - y0), lines: lines.filter((l) => l.t) });
         page.cleanup();
       }
-      process.send?.({ pages, total: pdf.numPages, status: "extracted" });
+      process.send?.({ pages, total: pdf.numPages, status: "extracted", ...(pages.length < pdf.numPages ? { truncated: true } : {}) });
       return;
     }
     if (process.argv[3] === "fulltext") {

@@ -557,7 +557,9 @@ export class GenealogyEngine {
         } catch (error) {
           if (signal.aborted) throw error;
           if (halt) return;
-          if (error instanceof AppError && error.code === "BUDGET") {
+          // A spent quota, a lost connection or a signed-out provider is not this paper's fault: stop here
+          // and leave the remaining papers untouched, so that continuing makes their cards.
+          if (error instanceof AppError && /^(?:BUDGET|AI_PROVIDER|[A-Z]+_UNAVAILABLE|OLLAMA_|CODEX_|CLAUDE_)/.test(error.code)) {
             halt = error;
             stop.abort();
             return;
@@ -670,8 +672,14 @@ export class GenealogyEngine {
       const ids: string[] = [];
       for (const pick of picks) {
         signal.throwIfAborted();
-        ids.push((await this.adopt(g, pick, signal, autoReason(pick))).workId);
+        // One candidate that cannot be fetched now is left a candidate; the others still join.
+        const paper = await this.adopt(g, pick, signal, autoReason(pick)).catch((error: unknown) => {
+          if (signal.aborted) throw error;
+          return null;
+        });
+        if (paper) ids.push(paper.workId);
       }
+      if (!ids.length) break;
       g.rounds++;
       this.store.save(g);
       adopted += ids.length;
@@ -1024,8 +1032,11 @@ export class GenealogyEngine {
     const g = this.store.get(id);
     const text = markdown ?? (await this.edited(g, "00_contents.md"));
     if (text === null) return this.store.state<Outline>(id, "outline");
+    const before = JSON.stringify(this.store.state<Outline>(id, "outline"));
     const outline = parseOutlineMarkdown(text, this.store.state<Outline>(id, "outline"));
     await this.saveOutline(g, outline);
+    // Sections to write again, renamed chapters: the manuscript, its check and the rendered files are out of date.
+    if (JSON.stringify(outline) !== before) this.invalidate(g, "write");
     this.changed(id);
     return outline;
   }
@@ -1070,14 +1081,27 @@ export class GenealogyEngine {
         if (!picks.length) break;
         const ids: string[] = [];
         for (const pick of picks) {
-          const paper = await this.adopt(g, pick, signal, autoReason(pick));
-          ids.push(paper.workId);
           const uids = new Set(pick.requests.map((r) => r.uid));
+          const paper = await this.adopt(g, pick, signal, autoReason(pick)).catch((error: unknown) => {
+            if (signal.aborted) throw error;
+            return null;
+          });
+          if (!paper) {
+            // Not fetched this time: the sections' requests are asked again on the next write.
+            for (const section of outline.chapters.flatMap((c) => c.sections))
+              if (uids.has(section.uid)) for (const m of section.missing) m.resolved = false;
+            continue;
+          }
+          ids.push(paper.workId);
           for (const section of outline.chapters.flatMap((c) => c.sections))
             if (uids.has(section.uid) && section.rewrites < 2) {
               if (!section.keys.includes(paper.key)) section.keys.push(paper.key);
               section.status = "stale";
             }
+        }
+        if (!ids.length) {
+          this.store.state(g.id, "outline", outline);
+          break;
         }
         g.rounds++;
         this.store.save(g);
@@ -1399,7 +1423,11 @@ export class GenealogyEngine {
   private async assembleFiles(g: Genealogy) {
     const outline = this.store.state<Outline>(g.id, "outline");
     if (!outline) throw new AppError("NOT_READY", "목차와 원고를 먼저 만드세요.");
-    const chapters = (await Promise.all(outline.chapters.map((c) => readFile(join(g.workspace, c.file), "utf8").catch(() => null)))).filter((t): t is string => t !== null);
+    const read = await Promise.all(outline.chapters.map((c) => readFile(join(g.workspace, c.file), "utf8").catch(() => null)));
+    // A chapter with written sections but no file would silently drop out of the report.
+    const lost = outline.chapters.find((c, i) => read[i] === null && c.sections.some((s) => s.status === "written"));
+    if (lost) throw new AppError("NOT_READY", `${lost.file} 파일이 없습니다. 집필을 다시 실행해 장 파일을 만든 뒤 조립하세요.`);
+    const chapters = read.filter((t): t is string => t !== null);
     if (!chapters.length) throw new AppError("NOT_READY", "아직 쓴 장이 없습니다. 집필을 먼저 실행하세요.");
     const ledger = await readFile(join(g.workspace, "부록A_가지_장부.md"), "utf8").catch(() => null);
     const name = slug(outline.title || g.title);

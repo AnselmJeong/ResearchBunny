@@ -84,3 +84,34 @@ export class OllamaLocal {
 }
 
 export const modelKey = (name: string, digest: string) => `${name}@${digest.replace(/^sha256:/, "").slice(0, 12) || "unknown"}`;
+
+/**
+ * A batch of embeddings. When the server is up but refuses the batch, each input is sent
+ * alone, so one input it cannot handle does not hold back everything sorted after it.
+ * `null` marks an input that failed on its own; the error is rethrown when none got through.
+ */
+export async function embedEach(
+  ollama: { embed(model: string, inputs: string[], signal: AbortSignal): Promise<Float32Array[]> },
+  model: string,
+  inputs: string[],
+  signal: AbortSignal,
+): Promise<(Float32Array | null)[]> {
+  try {
+    return await ollama.embed(model, inputs, signal);
+  } catch (error) {
+    signal.throwIfAborted();
+    if (!(error instanceof AppError) || error.code !== "OLLAMA_EMBED" || inputs.length < 2) throw error;
+    const out: (Float32Array | null)[] = [];
+    for (const input of inputs) {
+      try {
+        out.push((await ollama.embed(model, [input], signal))[0]);
+      } catch (single) {
+        signal.throwIfAborted();
+        if (!(single instanceof AppError) || single.code !== "OLLAMA_EMBED") throw single;
+        out.push(null);
+      }
+    }
+    if (out.every((vector) => vector === null)) throw error;
+    return out;
+  }
+}

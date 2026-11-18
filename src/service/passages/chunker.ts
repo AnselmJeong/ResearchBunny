@@ -1,11 +1,13 @@
 import type { PdfLine, PdfLines } from "../interchange/pdf";
 
 /** Bump when paragraphs or chunks change: every PDF is split and embedded again. */
-export const CHUNKER_VERSION = "c1";
+export const CHUNKER_VERSION = "c2";
 
 export interface Paragraph {
   text: string;
   page: number;
+  /** The page the paragraph ends on, when it runs over a page break. */
+  pageEnd?: number;
   section: string;
 }
 export interface Chunk {
@@ -21,6 +23,8 @@ export interface Split {
   chars: number;
   referencesExcluded: boolean;
   pages: number;
+  /** The extractor stopped before the end of a very long PDF; only the first part is indexed. */
+  truncated?: boolean;
 }
 
 /** Chunk sizes in characters: about 250–450 tokens of English prose. */
@@ -33,6 +37,8 @@ const REFERENCES = /^(?:\d{1,2}\.?\s*)?(?:references(?:\s+(?:and|&)\s+notes)?|bi
 /** Back matter that only adds noise to retrieval; skipped until the next heading. */
 const BACK_MATTER = /^(?:\d{1,2}\.?\s*)?(?:acknowledge?ments?|funding(?: sources?| information)?|financial support|role of the funding source|conflicts? of interests?|competing interests?|declarations? of (?:competing )?interests?|disclosures?|author contributions?|credit authorship contribution statement|data (?:and code )?availability(?: statement)?|code availability|ethics (?:approval|statement|declarations?)|additional information|supplementary (?:materials?|information)|declaration of generative ai.*)\s*[:.]?$/i;
 const NAMED_SECTION = /^(?:\d{1,2}(?:\.\d{1,2})*\.?\s+)?(?:abstract|summary|introduction|background|methods?|materials and methods|methods and materials|patients and methods|participants|results|findings|discussion|conclusions?|limitations|general discussion|concluding remarks)\s*[:.]?$/i;
+/** Body text that follows a reference list: methods after the main text, appendices, the next chapter of a book. */
+const AFTER_REFERENCES = /^(?:\d{1,2}\.?\s*)?(?:appendix|appendices|online methods|star\s*[★*]?\s*methods|methods summary|experimental (?:procedures|section)|materials and methods|extended data|supplementary (?:methods|notes?|text|discussion|results)|figure legends|chapter\s+(?:\d+|[ivxlc]+))\b/i;
 const NUMBERED_HEADING = /^(?:\d{1,2}(?:\.\d{1,2}){0,3}\.?|[IVX]{1,5}\.)\s+\p{Lu}/u;
 /** Publisher front matter on the first page, and bare links anywhere. */
 const FRONT_NOISE = /^(?:journal homepage|contents lists available|received:?\s|revised:?\s|accepted:?\s|available online|published online|article history|e-?mail|corresponding author|citation:|copyright|©|open access|check for updates)/i;
@@ -116,8 +122,9 @@ function joinLines(lines: string[]) {
 
 /**
  * Paragraphs of a paper's body in reading order, with their page and section.
- * Running heads, folios and back matter are dropped; everything after the
- * references heading is cut once a quarter of the text has passed.
+ * Running heads, folios, back matter and reference lists are dropped. A reference
+ * list ends where body text starts again: methods printed after the main text,
+ * an appendix, or the next chapter of an edited book.
  */
 export function paragraphs(doc: PdfLines): { paragraphs: Paragraph[]; referencesExcluded: boolean } {
   const m = metrics(doc.pages);
@@ -126,15 +133,17 @@ export function paragraphs(doc: PdfLines): { paragraphs: Paragraph[]; references
   const out: Paragraph[] = [];
   let section = "";
   let skipping = false;
+  let inReferences = false;
+  let referencesExcluded = false;
   let seen = 0;
-  let current: { lines: string[]; page: number; size: number } | null = null;
+  let current: { lines: string[]; page: number; pageEnd: number; size: number } | null = null;
   let prev: PdfLine | null = null;
   let prevHeading = false;
   const flush = () => {
     if (current && !skipping) {
       const text = joinLines(current.lines);
       // Tables of numbers, stray symbols and contents pages with dot leaders carry no prose.
-      if (letters(text) >= 12 && letters(text) >= text.length * 0.3 && (text.match(/(?:\s?\.){5,}/g) || []).length < 3) out.push({ text, page: current.page, section });
+      if (letters(text) >= 12 && letters(text) >= text.length * 0.3 && (text.match(/(?:\s?\.){5,}/g) || []).length < 3) out.push({ text, page: current.page, ...(current.pageEnd > current.page ? { pageEnd: current.pageEnd } : {}), section });
     }
     current = null;
   };
@@ -144,9 +153,27 @@ export function paragraphs(doc: PdfLines): { paragraphs: Paragraph[]; references
     for (const [at, line] of page.lines.entries()) {
       if (drop.has(line) || LINK_ONLY.test(line.t) || (pageNo === 1 && FRONT_NOISE.test(line.t))) continue;
       seen += line.t.length;
-      if (isHeading(line, page.lines[at + 1], m)) {
+      const resumes = inReferences && line.t.length <= 80 && AFTER_REFERENCES.test(line.t);
+      if (resumes || isHeading(line, page.lines[at + 1], m)) {
         flush();
-        if (REFERENCES.test(line.t) && seen > total * 0.25) return { paragraphs: out, referencesExcluded: true };
+        if (REFERENCES.test(line.t) && seen > total * 0.25) {
+          referencesExcluded = true;
+          inReferences = skipping = true;
+          prev = line;
+          prevHeading = true;
+          first = false;
+          continue;
+        }
+        if (inReferences) {
+          // A numbered entry of the list ("12. Smith J") can look like a heading; only a real one ends the list.
+          if (!resumes && !NAMED_SECTION.test(line.t) && !BACK_MATTER.test(line.t) && line.h < m.body * 1.12) {
+            prev = line;
+            first = false;
+            continue;
+          }
+          inReferences = false;
+          skipping = BACK_MATTER.test(line.t);
+        }
         // The title, author list and journal banner break paragraphs but name no section.
         const named = pageNo > 1 || NAMED_SECTION.test(line.t) || NUMBERED_HEADING.test(line.t) || BACK_MATTER.test(line.t);
         // A heading wrapped over two lines is one heading.
@@ -176,15 +203,16 @@ export function paragraphs(doc: PdfLines): { paragraphs: Paragraph[]; references
       }
       if (brk) {
         flush();
-        current = { lines: [], page: pageNo, size: line.h };
+        current = { lines: [], page: pageNo, pageEnd: pageNo, size: line.h };
       }
       current!.lines.push(line.t);
+      current!.pageEnd = pageNo;
       prev = line;
       first = false;
     }
   }
   flush();
-  return { paragraphs: out, referencesExcluded: false };
+  return { paragraphs: out, referencesExcluded };
 }
 
 /** Sentences of an over-long paragraph, packed back into pieces near TARGET. */
@@ -231,7 +259,7 @@ export function chunk(paras: Paragraph[]): Chunk[] {
       seq: chunks.length,
       text: parts.map((p) => p.text).join("\n\n"),
       pageStart: parts[0].page,
-      pageEnd: parts.at(-1)!.page,
+      pageEnd: Math.max(...parts.map((p) => p.pageEnd ?? p.page)),
       section: dominant(parts),
     });
     parts = [];
@@ -241,7 +269,7 @@ export function chunk(paras: Paragraph[]): Chunk[] {
     const before = chunks.at(-1);
     if (!before || before.text.length + length > MAX) return false;
     before.text += `\n\n${parts.map((p) => p.text).join("\n\n")}`;
-    before.pageEnd = parts.at(-1)!.page;
+    before.pageEnd = Math.max(before.pageEnd, ...parts.map((p) => p.pageEnd ?? p.page));
     parts = [];
     length = 0;
     return true;
@@ -269,5 +297,5 @@ export function chunk(paras: Paragraph[]): Chunk[] {
 export function split(doc: PdfLines): Split {
   const { paragraphs: paras, referencesExcluded } = paragraphs(doc);
   const chunks = chunk(paras);
-  return { chunks, chars: chunks.reduce((n, c) => n + c.text.length, 0), referencesExcluded, pages: doc.total };
+  return { chunks, chars: chunks.reduce((n, c) => n + c.text.length, 0), referencesExcluded, pages: doc.total, ...(doc.truncated ? { truncated: true } : {}) };
 }
