@@ -21,12 +21,14 @@ import { dialog, resources } from "../platform/native";
 import { Credentials } from "../platform/credentials";
 import { ServiceHost } from "../platform/service-host";
 import { acquireInstance } from "../platform/instance";
+import { createLog } from "../platform/log";
 const root = () =>
   resolve(
     process.env.RESEARCHBUNNY_DATA_DIR ??
       join(homedir(), "Library", "Application Support", "ResearchBunny"),
   );
 mkdirSync(root(), { recursive: true });
+const log = createLog(root(), "main");
 const credentials = new Credentials(root());
 let libraryRoot = join(root(), "library");
 let window: BrowserWindow | null = null;
@@ -307,6 +309,8 @@ const hostRpc = BrowserView.defineRPC<BunnyRPC>({
             emit({ type: "changed" });
           return { ok: true, data };
         } catch (error) {
+          // A refused request has its own message; anything else is a fault worth a trace.
+          if (!(error instanceof AppError)) log("error", `Command ${name} failed`, error);
           return {
             ok: false,
             error: {
@@ -405,6 +409,7 @@ async function main() {
   window.webview.setNavigationRules(["^*", url]);
 }
 main().catch(async (error: unknown) => {
+  log("error", "The app could not start", error);
   await Utils.showMessageBox({
     type: "error",
     title: "ResearchBunny",
