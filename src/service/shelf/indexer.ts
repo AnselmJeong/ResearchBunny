@@ -527,8 +527,11 @@ export class Shelf {
         const changed = row.hashed_size !== null && (row.hashed_size !== file.size || row.hashed_mtime !== file.mtime);
         const info = parseInfo(row);
         const status = row.status === "missing" ? (info.error ? "failed" : ((info as { statusBeforeMissing?: ShelfStatus }).statusBeforeMissing || "provisional")) : row.status;
-        this.db.db.prepare("UPDATE shelf_files SET size=?,mtime=?,seen_at=?,missing_since=NULL,status=?,stage=? WHERE id=?")
-          .run(file.size, file.mtime, stamp, status, changed ? "found" : row.stage, id);
+        // The bytes may be the same (a copy to a new disk, a sync tool touching dates): remember the
+        // stage so that an unchanged hash puts the file back instead of resolving it all over again.
+        const rehash = changed && row.stage !== "found" && row.hash ? JSON.stringify({ ...info, stageBeforeRehash: row.stage }) : row.info;
+        this.db.db.prepare("UPDATE shelf_files SET size=?,mtime=?,seen_at=?,missing_since=NULL,status=?,stage=?,info=? WHERE id=?")
+          .run(file.size, file.mtime, stamp, status, changed ? "found" : row.stage, rehash, id);
       }
       for (const { id, to } of plan.moves) {
         const row = this.file(id)!;
@@ -546,6 +549,7 @@ export class Shelf {
             .run(stamp, JSON.stringify({ ...parseInfo(current), statusBeforeMissing: current.status }), row.id);
         }
       if (markMissing) this.confirmMissing = false;
+      this.promoteCopies(root);
     });
     // New files get filename-based records right away so folders are browsable during indexing.
     // Commit in batches so the service keeps answering the UI during a first 8,000-file scan.
@@ -626,10 +630,70 @@ export class Shelf {
     return this.managed;
   }
 
+  /**
+   * A copy whose primary file is gone becomes the paper's file. Left as a copy of a
+   * missing row, the paper would have no PDF, no passages and no place in its folder.
+   */
+  private promoteCopies(root: RootRow) {
+    const orphans = this.db.db.prepare(
+      `SELECT c.* FROM shelf_files c LEFT JOIN shelf_files p ON p.id=json_extract(c.info,'$.duplicateOf')
+       WHERE c.root_id=? AND c.status!='missing' AND json_extract(c.info,'$.duplicateOf') IS NOT NULL AND (p.id IS NULL OR p.status='missing')
+       ORDER BY c.rel_path`,
+    ).all(root.id) as FileRow[];
+    const heirs = new Map<string, string>();
+    for (const copy of orphans) {
+      const own = parseInfo(copy);
+      const primaryId = own.duplicateOf!;
+      const heir = heirs.get(primaryId);
+      if (heir) {
+        this.setInfo(copy.id, { duplicateOf: heir });
+        continue;
+      }
+      heirs.set(primaryId, copy.id);
+      const primary = this.file(primaryId);
+      const inherited = primary ? (parseInfo(primary) as ShelfFileInfo & { statusBeforeMissing?: ShelfStatus }) : null;
+      // What was read from the primary's bytes holds for these bytes too; the filename is the copy's own.
+      const next: ShelfFileInfo & { statusBeforeMissing?: ShelfStatus } = inherited
+        ? { ...inherited, parsed: own.parsed }
+        : { ...own, resolution: { method: "hash", at: now() } };
+      delete next.duplicateOf;
+      delete next.statusBeforeMissing;
+      this.db.db.prepare("UPDATE shelf_files SET info=?,stage=?,status=?,attachment_id=coalesce(?,attachment_id) WHERE id=?")
+        .run(JSON.stringify(next), inherited ? primary!.stage : "hashed", inherited?.statusBeforeMissing || copy.status, primary?.attachment_id ?? null, copy.id);
+      if (primary) {
+        // The paper's attachment, and project links made from the lost file, now mean this one.
+        this.db.db.prepare("UPDATE shelf_files SET attachment_id=NULL WHERE id=?").run(primary.id);
+        for (const r of this.db.db.prepare("SELECT data FROM attachments WHERE json_extract(data,'$.shelfFileId')=?").all(primary.id) as { data: string }[])
+          this.db.saveAttachment({ ...(JSON.parse(r.data) as Attachment), shelfFileId: copy.id });
+        this.syncAttachmentPath(copy.id, root);
+      }
+      this.ensureAttachment(copy.id, root);
+    }
+    if (orphans.length) this.revision++;
+  }
+  /** A row for a file that is gone must not hold the path a new file is taking. */
+  private clearMissingAt(rootId: string, relPath: string, except?: string) {
+    const stale = this.db.db.prepare("SELECT id,status FROM shelf_files WHERE root_id=? AND rel_path=? AND id!=?").get(rootId, relPath, except ?? "") as { id: string; status: string } | undefined;
+    if (stale?.status === "missing") this.release(stale.id, join(this.rootById(rootId)?.path ?? "", relPath));
+  }
+  private rootById(id: string) {
+    return this.db.db.prepare("SELECT * FROM shelf_roots WHERE id=?").get(id) as RootRow | undefined;
+  }
+
   afterHash(root: RootRow, id: string, hash: string, size: number, mtime: number) {
     this.db.transaction(() => {
-      const current = this.file(id);
+      let current = this.file(id);
       if (!current) return;
+      const before = (parseInfo(current) as ShelfFileInfo & { stageBeforeRehash?: ShelfStage }).stageBeforeRehash;
+      if (before) {
+        if (current.hash === hash) {
+          // Only the dates changed: what was extracted, resolved and decided by hand still stands.
+          this.db.db.prepare("UPDATE shelf_files SET hashed_size=?,hashed_mtime=?,stage=?,info=json_remove(info,'$.stageBeforeRehash') WHERE id=?").run(size, mtime, before, id);
+          return;
+        }
+        this.db.db.prepare("UPDATE shelf_files SET info=json_remove(info,'$.stageBeforeRehash') WHERE id=?").run(id);
+        current = this.file(id)!;
+      }
       const renamed = this.db.db.prepare("SELECT * FROM shelf_files WHERE root_id=? AND hash=? AND status='missing' AND id!=? LIMIT 1").get(root.id, hash, id) as FileRow | undefined;
       if (renamed) {
         // A renamed file: keep the old row (work, embedding, attachment) at the new location.
@@ -677,7 +741,8 @@ export class Shelf {
         extraction: result.status,
       };
       const auxiliary = isAuxiliaryPdf(result) || isAuxiliaryPdf({ title: info.parsed?.title || "", text: "" });
-      const stage: ShelfStage = auxiliary || info.resolution?.method === "hash" || info.resolution?.method === "app" ? "resolved" : "extracted";
+      // A record chosen by hand is not looked up again when the file is read again.
+      const stage: ShelfStage = auxiliary || ["hash", "app", "manual"].includes(info.resolution?.method ?? "") ? "resolved" : "extracted";
       this.db.db.prepare("UPDATE shelf_files SET info=?,stage=?,status=? WHERE id=?")
         .run(JSON.stringify(next), stage, auxiliary ? "auxiliary" : row.status, id);
       if (row.work_id && next.abstract) {
@@ -819,6 +884,7 @@ export class Shelf {
       const id = randomUUID();
       this.db.transaction(() => {
         this.db.db.prepare("INSERT INTO shelf_folders VALUES(?,?,'',NULL,?,1) ON CONFLICT(root_id,rel_path) DO UPDATE SET present=1").run(folderId(root.id, ""), root.id, root.name);
+        this.clearMissingAt(root.id, name);
         const fileInfo: ShelfFileInfo = { parsed: parseShelfFilename(name), resolution: { method: options.method || "app", at: now() } };
         this.db.db.prepare("INSERT INTO shelf_files VALUES(?,?,?,?,?,?,?,?,?,?,NULL,'hashed','ok',?,?,NULL)")
           .run(id, root.id, folderId(root.id, ""), name, info.size, Math.trunc(info.mtimeMs), hash, info.size, Math.trunc(info.mtimeMs), workId, JSON.stringify(fileInfo), now());
@@ -1175,6 +1241,7 @@ export class Shelf {
       for (let rel: string | null = folder; rel !== null; rel = parentRel(rel))
         this.db.db.prepare("INSERT INTO shelf_folders VALUES(?,?,?,?,?,1) ON CONFLICT(root_id,rel_path) DO UPDATE SET present=1")
           .run(folderId(root.id, rel), root.id, rel, parentRel(rel) === null ? null : folderId(root.id, parentRel(rel)!), rel ? basename(rel) : root.name);
+      this.clearMissingAt(root.id, relPath, id);
       // A rename keeps the bytes: carry the hash stamp over so the next scan does not hash and extract again.
       const hashedMtime = row.hashed_mtime !== null && row.hashed_mtime === row.mtime ? mtime : row.hashed_mtime;
       this.db.db.prepare("UPDATE shelf_files SET rel_path=?,folder_id=?,mtime=?,hashed_mtime=?,seen_at=?,missing_since=NULL WHERE id=?")
@@ -1197,6 +1264,8 @@ export class Shelf {
         else this.db.saveAttachment({ ...a, path, name: basename(path), shelfFileId: undefined });
       }
       this.db.db.prepare("DELETE FROM shelf_files WHERE id=?").run(id);
+      const root = this.rootById(row.root_id);
+      if (root) this.promoteCopies(root);
       if (row.work_id) this.dropWorkIfOrphan(row.work_id);
     });
     this.revision++;
