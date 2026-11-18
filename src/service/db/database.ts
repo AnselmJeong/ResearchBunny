@@ -101,6 +101,7 @@ export class Library {
       CREATE INDEX IF NOT EXISTS idx_shelf_files_stage ON shelf_files(stage,status);
       -- Attachments made from a shelf file (its own and project links) follow moves and folder changes.
       CREATE INDEX IF NOT EXISTS idx_attachments_shelf ON attachments(json_extract(data,'$.shelfFileId'));
+      CREATE INDEX IF NOT EXISTS idx_attachments_hash ON attachments(json_extract(data,'$.hash'));
       -- Removing shelf works checks every table that references works(id); without these, each delete scans them.
       CREATE INDEX IF NOT EXISTS idx_identifiers_work ON identifiers(work_id);
       CREATE INDEX IF NOT EXISTS idx_snapshots_work ON metadata_snapshots(work_id);
@@ -613,6 +614,10 @@ export class Library {
             "이 DOI의 문헌이 이미 있습니다. 중복 검토에서 병합하세요.",
           );
         patch.doi = doi;
+        // The DOI being replaced was wrong for this record; left bound, it would claim that paper's import.
+        this.db
+          .prepare("DELETE FROM identifiers WHERE provider='doi' AND work_id=? AND value!=?")
+          .run(id, doi ?? "");
         if (doi)
           this.db
             .prepare("INSERT OR IGNORE INTO identifiers VALUES(?,?,?)")

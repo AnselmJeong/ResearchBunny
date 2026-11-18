@@ -20,6 +20,8 @@ export type Secrets = z.infer<typeof keysSchema> & {
 export class Credentials {
   secrets: Secrets = {};
   private account: string;
+  /** The Keychain item could not be read, so what it holds is unknown; writing would replace it. */
+  private unread = false;
   constructor(private root: string) {
     this.account = createHash("sha256").update(root).digest("hex");
   }
@@ -27,18 +29,23 @@ export class Credentials {
     // Test instances never access the user's Keychain.
     if (process.env.RESEARCHBUNNY_TEST === "1") return;
     try {
-      const result = z
-        .object({ value: z.string().nullable() })
-        .parse(await native({ operation: "read", account: this.account }));
-      this.secrets = {
-        ...(result.value ? keysSchema.parse(JSON.parse(result.value)) : {}),
-        secureStorage: true,
-        credentialMigrationRequired:
-          !result.value && existsSync(join(this.root, "credentials.json")),
-      };
+      await this.read();
     } catch {
+      this.unread = true;
       this.secrets = { secureStorage: false };
     }
+  }
+  private async read() {
+    const result = z
+      .object({ value: z.string().nullable() })
+      .parse(await native({ operation: "read", account: this.account }));
+    this.secrets = {
+      ...(result.value ? keysSchema.parse(JSON.parse(result.value)) : {}),
+      secureStorage: true,
+      credentialMigrationRequired:
+        !result.value && existsSync(join(this.root, "credentials.json")),
+    };
+    this.unread = false;
   }
   /** Creates the app Chrome's cookie key once; it never leaves the Keychain and the service. */
   async ensureBrowserKey() {
@@ -56,6 +63,18 @@ export class Credentials {
         "SECURE_STORAGE",
         "테스트 실행에서는 API 키를 저장하지 않습니다.",
       );
+    // The item is written whole. After a failed read the other keys are not in memory,
+    // so read again first and refuse rather than replace them with one key.
+    if (this.unread) {
+      try {
+        await this.read();
+      } catch {
+        throw new AppError(
+          "SECURE_STORAGE",
+          "Keychain에 저장된 키를 읽지 못해 저장하지 않았습니다. Keychain 접근을 허용한 뒤 앱을 다시 실행하세요.",
+        );
+      }
+    }
     const next = keysSchema.parse(this.secrets);
     if (input.openalexKey !== undefined)
       next.openalex = input.openalexKey.trim() || undefined;

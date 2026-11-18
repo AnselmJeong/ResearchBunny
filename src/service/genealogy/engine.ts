@@ -993,7 +993,6 @@ export class GenealogyEngine {
     });
     this.store.state(g.id, "branches", branches);
     this.progress(g, { message: "상세 목차 만드는 중", done: 1, total: 2, calls: meter.calls });
-    let attempt = 0;
     const result = await this.deps.ai.json({
       route: g.settings.routes.write,
       runId: g.id,
@@ -1003,7 +1002,7 @@ export class GenealogyEngine {
       instruction: outlineInstruction(g.settings),
       input: JSON.stringify({ researchQuestion: g.settings.question, branches, digests, timeline: pack.timeline }),
       // The second answer may leave a few papers out; they are reported instead of refused.
-      parse: (value) => parseOutline(value, keys, attempt++ === 0),
+      parse: (value, attempt) => parseOutline(value, keys, attempt === 0),
     });
     await this.saveOutline(g, result.outline, branches);
     g.outlineApproved = false;
@@ -1190,11 +1189,11 @@ export class GenealogyEngine {
     for (const chapter of outline.chapters) {
       let changed = false;
       const chapterKeys = new Set(chapter.sections.flatMap((s) => s.keys));
+      try {
       for (const section of chapter.sections) {
         if (pending(section)) {
           signal.throwIfAborted();
           this.progress(g, { message: `집필 · ${done + 1}/${todo}절 · ${section.id} ${section.title}`, calls: meter.calls });
-          let attempt = 0;
           const notices: string[] = [];
           const result = await this.deps.ai.json({
             route: g.settings.routes.write,
@@ -1216,7 +1215,7 @@ export class GenealogyEngine {
               previous,
               allowed: allowedList,
             }),
-            parse: (value) => parseSection(value, section.title, allowed, attempt++ === 0, pool),
+            parse: (value, attempt) => parseSection(value, section.title, allowed, attempt === 0, pool),
           }).catch((error: unknown) => {
             if (!(error instanceof AppError && (error.code === "AI_REFUSAL" || error.code === "AI_FORMAT"))) throw error;
             return error;
@@ -1247,6 +1246,11 @@ export class GenealogyEngine {
           }
         }
         if (section.summary) previous.push({ id: section.id, title: section.title, summary: section.summary });
+      }
+      } catch (error) {
+        // A pause, cancel or provider error mid-chapter: the sections already saved must still reach the chapter file.
+        if (changed) await this.writeChapter(g, chapter, texts).catch(() => {});
+        throw error;
       }
       if (changed || !existsSync(join(g.workspace, chapter.file))) await this.writeChapter(g, chapter, texts);
     }

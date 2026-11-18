@@ -130,7 +130,7 @@ async function extract() {
       ...new Set([
         ...arxivDoisIn(text),
         ...(text.match(/10\.\d{4,9}\/[^\s<>"{}]+/gi) || []).map((d) =>
-          d.replace(/[.,;)]+$/, ""),
+          d.replace(/[.,;)]+$/, "").toLowerCase(),
         ),
       ]),
     ].slice(0, 5);

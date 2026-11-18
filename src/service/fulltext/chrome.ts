@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { AppError, type Work } from "../../shared/types";
+import { doiPath } from "../../shared/domain";
 import { cleanDoi, publicUrl, publisherPdfUrls, type RetrievedPdf } from "./engine";
 import type { BrowserHost, BrowserTab } from "./chrome-host";
 
@@ -95,7 +96,7 @@ export class ChromeDownloads implements BrowserRetrieval {
     validate: (candidate: RetrievedPdf) => Promise<void>, { downloads, rejected, start, interactive = true }: RetrievalOptions) {
     const { budgetMs, pollMs, autoMs, challengeMs, loginMs, stallMs, maxMs } = this.timing;
     const doi = cleanDoi(work.doi);
-    const initial = start ? publicUrl(start) : publicUrl(work.url) || (doi ? `https://doi.org/${encodeURI(doi)}` : publicUrl(work.oaUrl));
+    const initial = start ? publicUrl(start) : publicUrl(work.url) || (doi ? `https://doi.org/${doiPath(doi)}` : publicUrl(work.oaUrl));
     if (!initial) throw new AppError('CHROME_NO_URL', 'Chrome에서 열 원문 주소가 없습니다.');
     // Waiting for the person and bytes still arriving extend the deadline; the hard stop bounds even a hung command.
     const started = Date.now(), limit = new AbortController();

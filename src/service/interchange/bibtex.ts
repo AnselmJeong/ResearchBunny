@@ -18,6 +18,7 @@ export function splitBib(text: string): string[] {
   let start = -1,
     depth = 0,
     quoted = false,
+    paren = false,
     escape = false;
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
@@ -26,6 +27,7 @@ export function splitBib(text: string): string[] {
         start = i;
         depth = 0;
         quoted = false;
+        paren = false;
       } else continue;
     }
     if (escape) {
@@ -38,10 +40,12 @@ export function splitBib(text: string): string[] {
     }
     if (c === '"' && depth <= 1) quoted = !quoted;
     if (!quoted) {
+      // Only an entry opened with "(" closes on ")": a key such as S0140-6736(20)30183-5 holds both.
+      if (depth === 0 && (c === "{" || c === "(")) paren = c === "(";
       if (c === "{" || (c === "(" && depth === 0)) depth++;
-      if (c === "}" || (c === ")" && depth === 1)) depth--;
+      if (c === "}" || (c === ")" && depth === 1 && paren)) depth--;
     }
-    if (depth === 0 && (c === "}" || c === ")")) {
+    if (depth === 0 && (c === "}" || (c === ")" && paren))) {
       blocks.push(text.slice(start, i + 1));
       start = -1;
     } else if (
@@ -140,12 +144,13 @@ export function parseBib(text: string): BibEntry[] {
   });
   return [...result, ...errors];
 }
+// One pass: the braces of \textbackslash{} must not be escaped again.
 const escapeBib = (v: string) =>
-  v
-    .replace(/\\/g, "\\textbackslash{}")
-    .replace(/[{}]/g, (c) => `\\${c}`)
-    .replace(/[&%$#_]/g, (c) => `\\${c}`)
-    .replace(/\n/g, " ");
+  v.replace(/[\\{}&%$#_\n]/g, (c) =>
+    c === "\\" ? "\\textbackslash{}" : c === "\n" ? " " : `\\${c}`,
+  );
+/** DOIs and URLs are identifiers, not prose: TeX escapes would become part of them on re-import. */
+const verbatimBib = (v: string) => v.replace(/[{}\n]/g, "");
 export function exportBib(
   works: (Work | WorkView)[],
   opts: {
@@ -170,7 +175,7 @@ export function exportBib(
     const set = (field: string, value: unknown, edited: string) => {
       if (!fields[field] || Object.hasOwn(w.edits, edited)) {
         if (value !== null && value !== undefined && value !== "")
-          fields[field] = escapeBib(String(value));
+          fields[field] = (field === "doi" || field === "url" ? verbatimBib : escapeBib)(String(value));
         else delete fields[field];
       }
     };

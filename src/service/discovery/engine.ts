@@ -405,8 +405,18 @@ export class Discovery {
           this.library.saveRun(run);
           continue;
         }
-        const page =
-          task.pendingPage || (await this.fetchTask(task, signal, () => onCall()));
+        let page: Awaited<ReturnType<Discovery["fetchTask"]>>;
+        try {
+          page = task.pendingPage || (await this.fetchTask(task, signal, () => onCall()));
+        } catch (error) {
+          // A seed OpenAlex has not indexed yet stays unresolved; it must not fail the run on every resume.
+          if (task.kind === "lookup" && task.seedId && !signal.aborted && error instanceof AppError && ["NOT_FOUND", "PROVIDER_SCHEMA"].includes(error.code)) {
+            task.done = true;
+            this.library.saveRun(run);
+            continue;
+          }
+          throw error;
+        }
         signal.throwIfAborted();
         this.library.transaction(() => {
           let processed = 0;

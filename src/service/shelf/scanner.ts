@@ -62,7 +62,12 @@ export async function walk(root: string, exclude: string[], signal: AbortSignal)
     signal.throwIfAborted();
     const batch = await Promise.all(
       pending.slice(i, i + 16).map(async (item) => {
-        const info = await lstat(item.path).catch(() => null);
+        // Only a file that is gone is skipped. An I/O error on a flaky share must stop the walk:
+        // skipped here, a file that is still there would be marked missing.
+        const info = await lstat(item.path).catch((error: NodeJS.ErrnoException) => {
+          if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null;
+          throw error;
+        });
         return info?.isFile() ? { rel: item.rel, folder: item.folder, size: info.size, mtime: Math.trunc(info.mtimeMs) } : null;
       }),
     );

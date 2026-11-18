@@ -774,6 +774,10 @@ export class ShelfSorter {
     create: ShelfNewLeaf[];
   }): Promise<ShelfSortResult> {
     if (this.active) throw new AppError("BUSY", "제안을 만드는 중에는 파일을 옮길 수 없습니다.");
+    // Only the move that set the flag clears it: a second request must not free a move still running.
+    if (this.applying) throw new AppError("BUSY", "파일을 옮기는 중입니다. 끝난 뒤 다시 시도하세요.");
+    this.applying = true;
+    try {
     const root = this.shelf.root(), config = this.shelf.config();
     if (!root || !config) throw new AppError("SHELF_CONFIG", "서고를 먼저 연결하세요.");
     if (!(await rootOnline(root.path))) throw new AppError("SHELF_OFFLINE", "서고 오프라인 · NAS를 연결한 뒤 옮기세요.");
@@ -787,8 +791,7 @@ export class ShelfSorter {
     const ledger = await isDir(join(root.path, "_system"));
     const moveLog = join(root.path, "_system", "move_log.jsonl");
     const added = await this.planLeaves(root.path, taxonomy, options.create);
-    this.applying = true;
-    return this.shelf.hold(async () => {
+    return await this.shelf.hold(async () => {
       const result: ShelfSortResult = { moved: 0, uncategorized: 0, duplicated: 0, skipped: [], ledger };
       await this.makeLeaves(root.path, taxonomy, added);
       if (added.length) result.created = added.map((l) => l.path);
@@ -858,8 +861,9 @@ export class ShelfSorter {
         job: state.job.status === "ready" ? job("ready", `남은 제안 ${items.length}편 · 옮길 논문 ${left}편`) : state.job,
       });
       return result;
-    }).finally(() => {
-      this.applying = false;
     });
+    } finally {
+      this.applying = false;
+    }
   }
 }

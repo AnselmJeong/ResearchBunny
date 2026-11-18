@@ -2,13 +2,25 @@ import type { Work, WorkView, Filters, Evidence } from "./types";
 import { now } from "./types";
 export function normalizeDoi(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const doi = value
+  let doi = value
     .trim()
-    .replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "")
+    // A DOI copied out of BibTeX carries TeX escapes: `10.1007/978-3-030-1\_7`, `{10.1000/x}`.
+    .replace(/\\textunderscore(?:\{\})?/g, "_")
+    .replace(/[{}]/g, "")
+    .replace(/\\([_%&#$~])/g, "$1")
+    .replace(/^(?:https?:\/\/)?(?:dx\.|www\.)?doi\.org\//i, "")
     .replace(/^doi:\s*/i, "")
+    .replace(/^(10\.\d{4,9})%2f/i, "$1/")
+    .replace(/[.,;]+$/, "")
     .toLowerCase();
+  // A closing bracket belongs to the sentence around the DOI unless the DOI opened it.
+  while (doi.endsWith(")") && doi.split("(").length < doi.split(")").length)
+    doi = doi.slice(0, -1).replace(/[.,;]+$/, "");
   return /^10\.\d{4,9}\/\S+$/.test(doi) ? doi : null;
 }
+/** A DOI as a URL path: `#`, `?` and `%` inside old SICI-style DOIs must not end the path. */
+export const doiPath = (doi: string) =>
+  doi.split("/").map(encodeURIComponent).join("/");
 const ARXIV_ID = String.raw`(\d{4}\.\d{4,5}|[a-z]+(?:-[a-z]+)?(?:\.[a-z]{2})?\/\d{7})(?!\d)`;
 /** Drop an old-style subject class (`math.GT/0309136` → `math/0309136`); new ids must start with YYMM. */
 function arxivId(raw: string): string | null {
