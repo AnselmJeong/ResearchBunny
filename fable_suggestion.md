@@ -495,10 +495,11 @@
 - 위치: `src/renderer/components/GenealogyWorkspace.tsx:400-413, 421`
 - 해결: 유효 파일을 파생시켜(`chapters.find(c => c.file === file) ?? chapters[0]`) 그것으로 불러오고, 바뀔 때 `text`를 비운다.
 
-**R-10. 계보 원고 Markdown이 LLM이 쓴 텍스트의 링크와 원격 이미지를 그대로 렌더한다** — 확인★(악용은 미확인)
+**R-10. 계보 원고 Markdown이 LLM이 쓴 텍스트의 링크와 이미지 태그를 그대로 렌더한다** — 정정됨(위험은 과장이었음)
 - 위치: `src/renderer/components/GenealogyWorkspace.tsx:466`
-- 현상: `![](https://…)`가 실제 `<img>`가 되어 렌더 즉시 웹뷰가 요청한다. CSP가 없다. 장 본문은 PDF 전문에서 LLM이 쓰므로, 지시문이 심긴 PDF가 프롬프트의 텍스트를 담은 이미지 URL을 원고에 넣게 할 수 있다.
-- 해결: `AISidebar.tsx:10-16`의 오버라이드(`a` → span 또는 RPC로 여는 외부 링크, `img` → alt 텍스트)를 재사용하고 `index.html`에 CSP `img-src 'self' data:`를 넣는다.
+- 현상: `![](https://…)`가 실제 `<img>` 요소가 된다.
+- **정정 (2026-11-18 QA)**: 처음에는 "CSP가 없어 렌더 즉시 원격 이미지를 요청한다"고 적었으나 틀렸다. `index.html`에는 이미 `img-src 'self' data: blob:`인 CSP가 있어 원격 이미지는 요청되지 않는다. 남는 문제는 깨진 이미지 아이콘과 눌러도 동작하지 않는 링크 정도였다.
+- 조치: `AISidebar.tsx`와 같은 오버라이드(`a` → span, `img` → alt 텍스트)를 적용했다. CSP는 바꿀 필요가 없다.
 
 **R-11. 인스펙터 "서고 서지 확인"이 한 파일의 후보를 다른 파일에 적용할 수 있다** — 확인★
 - 위치: `src/renderer/components/Inspector.tsx:133-140`
