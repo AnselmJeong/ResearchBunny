@@ -252,7 +252,8 @@ export class OpenAlex {
   ): Promise<Page> {
     const r = await this.request(
       "works",
-      { per_page: "50", ...params },
+      // The largest page a cursor request may ask for: half the calls for the same results.
+      { per_page: "100", ...params },
       signal,
       onCall,
     );

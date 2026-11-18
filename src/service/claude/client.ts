@@ -149,6 +149,7 @@ export class ClaudeClient {
   }
 
   async login(): Promise<void> {
+    this.verifiedAt = 0;
     if (this.loginProcess) return;
     if (this.processes.size) throw new Error("Claude 작업이 끝난 뒤 로그인해 주세요.");
     const runtime = await this.prepare();
@@ -177,7 +178,9 @@ export class ClaudeClient {
     await process?.done;
   }
 
+  private verifiedAt = 0;
   async logout(): Promise<void> {
+    this.verifiedAt = 0;
     await this.cancelLogin();
     if (this.processes.size) throw new Error("Claude 작업이 끝난 뒤 로그아웃해 주세요.");
     await this.command(await this.prepare(), ["auth", "logout"]);
@@ -200,8 +203,14 @@ export class ClaudeClient {
     request.signal?.throwIfAborted();
     if (this.loginProcess) throw new Error("Claude 로그인을 먼저 완료해 주세요.");
     const runtime = await this.prepare();
-    const status = await this.inspect(runtime, request.signal);
-    if (status.state !== "connected") throw new Error(status.error || "설정에서 Claude 구독으로 로그인해 주세요.");
+    // The CLI version and sign-in are checked with two more CLI starts. A report makes hundreds of
+    // requests, so a check that passed stands for a minute, and for no longer than the next failure.
+    if (Date.now() - this.verifiedAt > 60_000) {
+      const status = await this.inspect(runtime, request.signal);
+      if (status.state !== "connected") throw new Error(status.error || "설정에서 Claude 구독으로 로그인해 주세요.");
+      this.verifiedAt = Date.now();
+    }
+    let finished = false;
     if (this.quota?.status === "rejected" && this.quota.resetsAt && this.quota.resetsAt * 1000 > Date.now()) throw new Error(CLAUDE_LIMIT_ERROR);
     const folder = await mkdtemp(join(runtime.cwd, "request-"));
     let process: ClaudeProcess | undefined;
@@ -284,8 +293,10 @@ export class ClaudeClient {
         }
       }
       if (!completed) throw new Error("Claude 응답이 완료되기 전에 연결이 종료되었습니다. 다시 시도해 주세요.");
+      finished = true;
       return final;
     } finally {
+      if (!finished) this.verifiedAt = 0;
       process?.stop();
       await process?.done;
       await rm(folder, { recursive: true, force: true });

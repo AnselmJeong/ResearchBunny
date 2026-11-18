@@ -522,7 +522,13 @@ export class Shelf {
       for (const rel of walked.folders)
         this.db.db.prepare("INSERT INTO shelf_folders VALUES(?,?,?,?,?,1) ON CONFLICT(root_id,rel_path) DO UPDATE SET present=1")
           .run(folderId(root.id, rel), root.id, rel, parentRel(rel) === null ? null : folderId(root.id, parentRel(rel)!), rel ? basename(rel) : root.name);
+      // Most files are as they were at the last scan; only the others are read and written.
+      const state = new Map((this.db.db.prepare("SELECT id,size,mtime,hashed_size,hashed_mtime,status,stage FROM shelf_files WHERE root_id=?").all(root.id) as
+        { id: string; size: number; mtime: number; hashed_size: number | null; hashed_mtime: number | null; status: string; stage: string }[]).map((r) => [r.id, r]));
       for (const { id, file } of plan.seen) {
+        const was = state.get(id);
+        if (was && was.status !== "missing" && was.size === file.size && was.mtime === file.mtime
+          && (was.hashed_size === null || was.stage === "found" || (was.hashed_size === file.size && was.hashed_mtime === file.mtime))) continue;
         const row = this.file(id)!;
         const changed = row.hashed_size !== null && (row.hashed_size !== file.size || row.hashed_mtime !== file.mtime);
         const info = parseInfo(row);

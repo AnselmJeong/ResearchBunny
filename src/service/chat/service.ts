@@ -126,12 +126,18 @@ export class ArticleChat {
         prompt = chatInput(context, selectedHistory, input.message, input.searchEnabled, assistant.sources, assistant.notice ?? "");
       }
       if (selectedHistory.length < history.filter(m => m.status === "complete").length) assistant.notice = [assistant.notice, "입력량 상한에 맞춰 이전 대화 일부를 이번 답변의 문맥에서 제외했습니다."].filter(Boolean).join(" ");
-      let lastUpdate = 0;
+      // The window sees every step; the library is written once a second, and when the answer ends.
+      let lastUpdate = 0, lastSaved = 0;
       for await (const chunk of this.provider.stream(config, CHAT_INSTRUCTIONS, prompt, signal)) {
         signal.throwIfAborted();
         assistant.content += chunk;
         if (assistant.content.length > 200000) throw new AppError("CHAT_SIZE", "AI 답변이 너무 길어 중지했습니다.");
-        if (Date.now() - lastUpdate > 60) { this.publish(session, true); lastUpdate = Date.now(); }
+        if (Date.now() - lastUpdate > 60) {
+          const save = Date.now() - lastSaved > 1000;
+          this.publish(session, save);
+          lastUpdate = Date.now();
+          if (save) lastSaved = lastUpdate;
+        }
       }
       signal.throwIfAborted();
       if (!assistant.content.trim()) throw new AppError("CHAT_EMPTY", "AI 답변이 비어 있습니다. 다시 시도해 주세요.");

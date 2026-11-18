@@ -418,6 +418,37 @@ export const schemas = {
   undoMerge: z.object({}),
 };
 export type Command = keyof typeof schemas;
+/**
+ * Commands that only read. Everything else is followed by a "changed" event, on which the
+ * window loads its snapshot, list and inspector again, so a command listed here must not
+ * change anything those show.
+ */
+const READ_ONLY = new Set<Command>([
+  "pdfInfo", "pdfReadChunk", "chatThreads", "chatSession", "chatSend", "chatCancel", "chatClear", "chatOpenSource", "ollamaModels",
+  "claudeStatus", "claudeModels", "codexModels", "genealogies", "genealogyView", "genealogyReveal", "chooseGenealogyFolder", "genealogyChapter", "genealogyOpenOutput",
+  "snapshot", "projectStats", "list", "inspect", "attachments", "saveUi", "duplicates", "exportPreview", "pdfExportPreview", "pdfDownloadPreview",
+  "missingPdfs", "openChromeLogin", "shelfStatus", "shelfMovePreview", "shelfRelated", "shelfSearch", "workLinks", "shelfFile", "shelfReveal",
+  "chooseShelfRoot", "shelfSortState", "shelfLeaves", "shelfLeafDraft",
+  "passageSearch", "passageAsk", "passageAskCancel", "passageStatus", "importItems", "previewTrashDeletion", "previewBib", "seedQueries",
+  "testConnection", "openExternal",
+]);
+/** Polled while signing in: worth a refresh only when what they report changes. */
+const STATUS = new Set<Command>(["codexStatus"]);
+const lastStatus = new Map<Command, string>();
+/** Whether the window should reload after this command returned `data`. */
+export function changesLibrary(name: Command, input: unknown, data: unknown): boolean {
+  if (READ_ONLY.has(name)) return false;
+  // A dialog the person cancelled chose nothing.
+  if (name.startsWith("choose") && (data === null || data === undefined)) return false;
+  if (name === "attachmentAction" && ["open", "reveal"].includes((input as { action?: string } | null)?.action ?? "")) return false;
+  if (STATUS.has(name)) {
+    const now = JSON.stringify(data);
+    const same = lastStatus.get(name) === now;
+    lastStatus.set(name, now);
+    return !same;
+  }
+  return true;
+}
 export type Input<C extends Command> = z.input<(typeof schemas)[C]>;
 export interface Outputs {
   importItems: {

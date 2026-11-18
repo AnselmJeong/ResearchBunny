@@ -558,3 +558,25 @@ test("coupling ignores references cited by more than 150 papers, even under half
   for (let i = 100; i < 160; i++) refs.set(`p${i}`, [`own${i}`]);
   expect(couplingLinks(refs).length).toBeGreaterThan(0);
 });
+
+test("a paper that joins an arranged graph is fitted in without moving the others", () => {
+  const cy = cytoscape({ headless: true });
+  try {
+    reconcileGraph(cy, [...definitions, { data: { id: "ab", source: "a", target: "b" } }, { data: { id: "cb", source: "c", target: "b" } }]);
+    const arranged = { a: { x: 20, y: 320 }, b: { x: 260, y: 30 } };
+    placeGraph(cy, works, false, false, arranged);
+    const after = capturePositions(cy);
+    expect(after.a).toEqual(arranged.a);
+    expect(after.b).toEqual(arranged.b);
+    expect(Number.isFinite(after.c.x) && Number.isFinite(after.c.y)).toBe(true);
+    // The newcomer lands by the paper it links to, not at the far side of the layout.
+    expect(Math.hypot(after.c.x - arranged.b.x, after.c.y - arranged.b.y)).toBeLessThan(400);
+    // With too little placed to anchor on, or on a reset, the whole graph is laid out.
+    placeGraph(cy, works, false, false, { a: arranged.a });
+    expect(capturePositions(cy).a).not.toEqual(arranged.a);
+    placeGraph(cy, works, false, false, arranged, true);
+    expect(capturePositions(cy).b).not.toEqual(arranged.b);
+  } finally {
+    cy.destroy();
+  }
+});

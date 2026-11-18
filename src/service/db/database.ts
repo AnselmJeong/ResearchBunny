@@ -358,15 +358,22 @@ export class Library {
         this.db
           .prepare("INSERT OR IGNORE INTO identifiers VALUES(?,?,?)")
           .run(p, v, work.id);
-      this.db
-        .prepare("INSERT INTO metadata_snapshots VALUES(?,?,?,?,?)")
-        .run(
-          randomUUID(),
-          work.id,
-          incoming.source,
-          JSON.stringify(incoming),
-          now(),
-        );
+      // The same record seen again (every rediscovery of a paper) adds nothing to keep.
+      // Every fetch gives the record a new id and time; neither says the record changed.
+      const recorded = JSON.stringify({ ...incoming, id: "", fetchedAt: "" });
+      const last = this.db
+        .prepare("SELECT data FROM metadata_snapshots WHERE work_id=? AND source=? ORDER BY created_at DESC LIMIT 1")
+        .get(work.id, incoming.source) as { data: string } | undefined;
+      if (!last || JSON.stringify({ ...JSON.parse(last.data), id: "", fetchedAt: "" }) !== recorded)
+        this.db
+          .prepare("INSERT INTO metadata_snapshots VALUES(?,?,?,?,?)")
+          .run(
+            randomUUID(),
+            work.id,
+            incoming.source,
+            JSON.stringify(incoming),
+            now(),
+          );
       if (work.references)
         for (const external of work.references)
           this.db
@@ -1104,26 +1111,21 @@ export class Library {
     this.touch();
   }
   counts(projectId: string): Record<string, number> {
-    const count: Record<string, number> = {
-      archive: 0,
-      pending: 0,
-      starred: 0,
-      reading: 0,
-      trash: 0,
-      excluded: 0,
-    };
-    for (const r of this.db
-      .prepare("SELECT state FROM project_works WHERE project_id=?")
-      .all(projectId) as { state: string }[]) {
-      const s = JSON.parse(r.state) as LibraryState;
-      const k = s.screening === "included" ? "archive" : s.screening;
-      if (k !== "pending" || !s.pendingDismissed) count[k]++;
-      if (s.screening !== "trash") {
-        if (s.starred) count.starred++;
-        if (["planned", "reading"].includes(s.reading)) count.reading++;
-      }
-    }
-    return count;
+    // Counted in SQL: the snapshot asks on every refresh, and parsing each paper's state for it grew with the project.
+    const row = this.db.prepare(
+      `SELECT coalesce(sum(sc='included'),0) AS archive,
+              coalesce(sum(sc='pending' AND NOT dismissed),0) AS pending,
+              coalesce(sum(sc!='trash' AND starred),0) AS starred,
+              coalesce(sum(sc!='trash' AND reading IN ('planned','reading')),0) AS reading,
+              coalesce(sum(sc='trash'),0) AS trash,
+              coalesce(sum(sc='excluded'),0) AS excluded
+       FROM (SELECT json_extract(state,'$.screening') AS sc,
+                    coalesce(json_extract(state,'$.pendingDismissed'),0) AS dismissed,
+                    coalesce(json_extract(state,'$.starred'),0) AS starred,
+                    json_extract(state,'$.reading') AS reading
+             FROM project_works WHERE project_id=?)`,
+    ).get(projectId) as Record<string, number>;
+    return { ...row };
   }
   cacheGet(key: string): unknown | undefined {
     const r = this.db
@@ -1142,8 +1144,14 @@ export class Library {
         "INSERT INTO provider_usage(provider,run_id,input_tokens,output_tokens,created_at) VALUES(?,?,?,?,?)",
       )
       .run(provider, runId, inputTokens, outputTokens, now());
+    this.usageCache = undefined;
   }
+  private usageCache?: { provider: string; calls: number; inputTokens: number; outputTokens: number }[];
+  /** Calls and tokens per provider; settings read it on every snapshot, so it is kept until the next call is recorded. */
   usageSummary() {
+    return (this.usageCache ??= this.usageRows());
+  }
+  private usageRows() {
     return this.db
       .prepare(
         "SELECT provider,count(*) AS calls,sum(input_tokens) AS inputTokens,sum(output_tokens) AS outputTokens FROM provider_usage GROUP BY provider",
