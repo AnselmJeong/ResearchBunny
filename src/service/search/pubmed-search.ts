@@ -215,6 +215,31 @@ export async function fetchPubMedByIds(
   return parsePubMedXml(await response.text()).slice(0, maxResults);
 }
 
+/** Abstracts by PMID, 200 records per request; records without one are left out. */
+export async function fetchPubMedAbstracts(
+  ids: string[],
+  options: PubMedRequestOptions = {},
+): Promise<Map<string, string>> {
+  const abstracts = new Map<string, string>();
+  const all = Array.from(new Set(ids.filter((id) => /^\d+$/.test(id))));
+  for (let i = 0; i < all.length; i += 200) {
+    const params = new URLSearchParams({ db: "pubmed", id: all.slice(i, i + 200).join(","), rettype: "abstract", retmode: "xml", tool: "ResearchBunny" });
+    addApiKey(params, options.apiKey);
+    await reserveRequest(options);
+    const response = await (options.fetchFn ?? fetch)(`${EUTILS_BASE}/efetch.fcgi?${params}`, {
+      headers: { "User-Agent": USER_AGENT },
+      signal: options.signal,
+    });
+    if (!response.ok) throw new Error(`PubMed fetch error: HTTP ${response.status}`);
+    for (const match of (await response.text()).matchAll(/<PubmedArticle(?:\s[^>]*)?>([\s\S]*?)<\/PubmedArticle>/gi)) {
+      const pmid = firstTag(match[1], "PMID");
+      const abstract = extractAbstract(match[1]);
+      if (pmid && abstract) abstracts.set(pmid, abstract);
+    }
+  }
+  return abstracts;
+}
+
 /** PubMed publication types ("Review", "Meta-Analysis", …) by PMID, 200 per request. */
 export async function fetchPublicationTypes(
   ids: string[],

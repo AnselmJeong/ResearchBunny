@@ -4,6 +4,7 @@ import type { ClaudeStatus } from "./claude";
 import type { Genealogy, GenealogySummary, GenealogyView, Outline } from "./genealogy";
 import type { ChatSession, ChatThreadSummary } from "./chat";
 import type { PassageAnswer, PassageSearchResult, PassageStatus } from "./passages";
+import type { ScreeningJob, ScreeningSnapshot } from "./screening";
 import type { ShelfAdoptResult, ShelfMovePreview, ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo, ShelfSortResult, ShelfSortView, ShelfLeafList } from "./shelf";
 import type {
   Snapshot,
@@ -82,6 +83,10 @@ export const filtersSchema = z.object({
   shelf: z.enum(["all", "hide", "only"]).optional(),
   /** 조건 반전 (NOT): lists the papers that fail the conditions instead of the ones that meet them. */
   negate: z.boolean().optional(),
+  /** AI 추천: papers with one of these recommendations ("none": not screened). */
+  screen: z.array(z.enum(["include", "maybe", "exclude", "none"])).max(4).optional(),
+  /** 논문 성격: papers of one of these types or with one of these contributions. */
+  character: z.array(z.enum(["R", "M", "O", "concept", "origin", "debate", "method", "primary", "rebuttal"])).max(9).optional(),
 });
 const metadata = z
   .object({
@@ -124,10 +129,46 @@ export const genealogySettingsSchema = z.object({
   concurrency: z.number().int().min(1).max(8),
   csl: z.string().max(4096),
 });
+const criterion = z.object({ id: z.string().max(40).default(""), text: z.string().max(500) });
+const roleQuestion = z.object({ id: z.string().max(40).default(""), label: z.string().max(80).default(""), question: z.string().max(500) });
+const screeningMode = z.enum(["two-stage", "decision", "generative"]);
+export const screeningProfileSchema = z.object({
+  purpose: z.enum(["genealogy", "original", "custom"]),
+  custom: z.object({ label: z.string().max(80), questions: z.array(roleQuestion).max(12) }),
+  intent: z.string().max(2000),
+  include: z.array(criterion).max(20),
+  exclude: z.array(criterion).max(20),
+  suggestions: z.array(z.object({ id: z.string().max(40), text: z.string().max(300), workId: id, createdAt: z.string().max(40) })).max(30),
+  mode: screeningMode,
+  decisionModel: z.string().trim().min(1).max(80),
+});
+const screeningTarget = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("run"), runId: id }),
+  z.object({ kind: z.literal("archive") }),
+  z.object({ kind: z.literal("collection"), collectionId: id }),
+  z.object({ kind: z.literal("ids"), ids: ids.min(1) }),
+]);
 const genealogyStep = z.enum(["prepare", "cards", "gaps", "outline", "write", "check", "render"]);
 export const schemas = {
   snapshot: z.object({ projectId: id.optional() }),
   classifyArchive: z.object({ projectId: id }),
+  /** A project's screening criteria, purpose and the state of its screening job. */
+  screeningState: z.object({ projectId: id }),
+  /** Changing the intent or a criterion marks earlier judgments stale. */
+  screeningSave: z.object({ projectId: id, profile: screeningProfileSchema.partial() }),
+  /** Screens papers against the criteria; the AI only recommends. */
+  screeningStart: z.object({ projectId: id, target: screeningTarget, fresh: z.boolean().default(false) }),
+  screeningCancel: z.object({ projectId: id }),
+  /** Compares the screening configurations on the person's own archive and trash. */
+  screeningEvaluate: z.object({ projectId: id, size: z.number().int().min(5).max(200).default(40), modes: z.array(screeningMode).min(1).max(3).default(["decision", "two-stage", "generative"]) }),
+  /** An AI draft of the intent and criteria; nothing is saved until the person saves it. */
+  screeningDraft: z.object({ projectId: id }),
+  /** Archives the papers recommended for inclusion, only when the person asks; `preview` only counts them. */
+  screeningAccept: z.object({ projectId: id, target: screeningTarget, preview: z.boolean().default(true) }),
+  /** A one-line reason for turning a recommendation down, kept as a proposed exclusion criterion. */
+  screeningSuggest: z.object({ projectId: id, workId: id, reason: z.string().trim().min(1).max(300) }),
+  /** The person's own reading of a paper's type and contributions. */
+  characterSet: z.object({ workId: id, type: z.enum(["R", "M", "O"]).nullable(), contributions: z.array(z.enum(["concept", "origin", "debate", "method", "primary", "rebuttal"])).max(6) }),
   cancelClassification: z.object({ projectId: id }),
   createProject: z.object({
     name: z.string().trim().min(1).max(160),
@@ -426,6 +467,7 @@ export type Command = keyof typeof schemas;
 const READ_ONLY = new Set<Command>([
   "pdfInfo", "pdfReadChunk", "chatThreads", "chatSession", "chatSend", "chatCancel", "chatClear", "chatOpenSource", "ollamaModels",
   "claudeStatus", "claudeModels", "codexModels", "genealogies", "genealogyView", "genealogyReveal", "chooseGenealogyFolder", "genealogyChapter", "genealogyOpenOutput",
+  "screeningState", "screeningDraft",
   "snapshot", "projectStats", "list", "inspect", "attachments", "saveUi", "duplicates", "exportPreview", "pdfExportPreview", "pdfDownloadPreview",
   "missingPdfs", "openChromeLogin", "shelfStatus", "shelfMovePreview", "shelfRelated", "shelfSearch", "workLinks", "shelfFile", "shelfReveal",
   "chooseShelfRoot", "shelfSortState", "shelfLeaves", "shelfLeafDraft",
@@ -441,6 +483,8 @@ export function changesLibrary(name: Command, input: unknown, data: unknown): bo
   // A dialog the person cancelled chose nothing.
   if (name.startsWith("choose") && (data === null || data === undefined)) return false;
   if (name === "attachmentAction" && ["open", "reveal"].includes((input as { action?: string } | null)?.action ?? "")) return false;
+  // Counting the recommendations to archive changes nothing.
+  if (name === "screeningAccept" && (input as { preview?: boolean } | null)?.preview !== false) return false;
   if (STATUS.has(name)) {
     const now = JSON.stringify(data);
     const same = lastStatus.get(name) === now;
@@ -462,6 +506,15 @@ export interface Outputs {
   exportPdfs: PdfExportResult | null;
   snapshot: Snapshot;
   classifyArchive: ClassificationJob;
+  screeningState: ScreeningSnapshot;
+  screeningSave: ScreeningSnapshot;
+  screeningStart: ScreeningJob;
+  screeningCancel: void;
+  screeningEvaluate: ScreeningJob;
+  screeningDraft: { intent: string; include: string[]; exclude: string[]; basis: string };
+  screeningAccept: { ids: string[] };
+  screeningSuggest: ScreeningSnapshot;
+  characterSet: void;
   cancelClassification: void;
   createProject: Project;
   updateProject: Project;
