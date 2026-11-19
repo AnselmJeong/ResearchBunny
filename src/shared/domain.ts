@@ -1,5 +1,6 @@
 import type { Work, WorkView, Filters, Evidence } from "./types";
 import { now } from "./types";
+import { CHARACTER_TYPES, CONTRIBUTIONS, RECOMMENDATION_NAMES, type CharacterType, type Contribution } from "./screening";
 export function normalizeDoi(value: unknown): string | null {
   if (typeof value !== "string") return null;
   let doi = value
@@ -301,6 +302,10 @@ export function filterConditions(filters: Filters): string[] {
   if (filters.openAccess) conditions.push("OA 링크");
   if (filters.shelf === "hide") conditions.push("서고에 없는 논문");
   if (filters.shelf === "only") conditions.push("서고에 있는 논문");
+  if (filters.screen?.length)
+    conditions.push(`AI ${filters.screen.map((r) => (r === "none" ? "미심사" : RECOMMENDATION_NAMES[r])).join("·")}`);
+  if (filters.character?.length)
+    conditions.push(`성격 ${filters.character.map((c) => (c in CHARACTER_TYPES ? CHARACTER_TYPES[c as CharacterType] : CONTRIBUTIONS[c as Contribution].label)).join("·")}`);
   return conditions;
 }
 /** Why a paper fails the filter's conditions. */
@@ -336,6 +341,10 @@ export function conditionReasons(
     reasons.push("서고 보유");
   if (filters.shelf === "only" && w.shelf?.match !== "identity")
     reasons.push("서고에 없음");
+  if (filters.screen?.length && !filters.screen.includes(w.screen?.recommendation ?? "none"))
+    reasons.push(w.screen ? `AI ${RECOMMENDATION_NAMES[w.screen.recommendation]}` : "AI 미심사");
+  if (filters.character?.length && !filters.character.some((c) => (c in CHARACTER_TYPES ? w.character?.type === c : w.character?.contributions.includes(c as Contribution))))
+    reasons.push("논문 성격 불일치");
   if (
     filters.relevance &&
     evidence?.score !== null &&

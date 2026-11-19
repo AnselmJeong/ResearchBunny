@@ -406,6 +406,27 @@ export class Service {
         const p = schemas.screeningEvaluate.parse(args);
         return this.screener.evaluate(p.projectId, { size: p.size, modes: p.modes });
       }
+      case "screeningDraft": {
+        const p = schemas.screeningDraft.parse(args);
+        return this.screener.draft(p.projectId, AbortSignal.timeout(240000));
+      }
+      case "screeningAccept": {
+        const p = schemas.screeningAccept.parse(args);
+        const ids = this.screener.acceptable(p.projectId, p.target);
+        if (!p.preview && ids.length) this.db.mutate(p.projectId, ids, { screening: "included" });
+        return { ids };
+      }
+      case "screeningSuggest": {
+        const p = schemas.screeningSuggest.parse(args);
+        this.db.project(p.projectId);
+        this.db.get(p.workId);
+        this.screener.store.suggest(p.projectId, p.workId, p.reason);
+        return this.screener.snapshot(p.projectId);
+      }
+      case "characterSet": {
+        const p = schemas.characterSet.parse(args);
+        return this.screener.setCharacter(p.workId, p.type, p.contributions);
+      }
       case "classifyArchive":
         if (this.busy()) throw new AppError("BUSY", "진행 중인 작업이 끝난 뒤 자동 분류하세요.");
         return this.classifier.start(args.projectId);

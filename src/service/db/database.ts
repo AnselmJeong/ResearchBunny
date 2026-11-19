@@ -35,11 +35,14 @@ import {
 import type { ShelfSearchResult } from "../../shared/shelf";
 import { citationWarnings, couplingLinks, graphNodeIds, semanticLinks } from "../../shared/graph";
 import { fromBlob } from "../shelf/vectors";
+import { ScreeningStore } from "../screening/store";
 
 const SCHEMA = 3;
 const ROOT_FOLDER_LABEL: Record<string, string> = { "": "수신함" };
 export class Library {
   db: Database;
+  /** Screening judgments and paper characters shown on list rows. */
+  private screening?: ScreeningStore;
   /** Title/year hints for search results that match an unresolved shelf file. */
   shelfHints?: (works: Work[]) => Map<string, ShelfMembership>;
   /** 초기 관심 scores of the last few lists, kept while their papers and the 초기 관심 stay the same. */
@@ -452,6 +455,9 @@ export class Library {
     for (const r of this.db.prepare(`SELECT work_id AS id,collection_id FROM collection_works WHERE work_id IN (${inIds})`).all(list) as { id: string; collection_id: string }[])
       collections.set(r.id, [...(collections.get(r.id) || []), r.collection_id]);
     const shelf = this.shelfMemberships(ids);
+    this.screening ??= new ScreeningStore(this.db, (id) => this.project(id).question);
+    const screens = this.screening.views(projectId, ids);
+    const characters = this.screening.characters(ids);
     const result: WorkView[] = [];
     for (const id of ids) {
       const w = works.get(id);
@@ -465,6 +471,8 @@ export class Library {
         attachmentCount: attachments.get(id) || 0,
         collectionIds: collections.get(id) || [],
         ...(shelf.has(id) ? { shelf: shelf.get(id) } : {}),
+        ...(screens.has(id) ? { screen: screens.get(id) } : {}),
+        ...(characters.has(id) ? { character: characters.get(id) } : {}),
       });
     }
     return result;

@@ -91,6 +91,9 @@ export interface WorkView extends Work {
   collectionIds: string[];
   archiveTopicId?: string;
   shelf?: ShelfMembership;
+  /** The paper's AI screening in this project, for the purpose in force. */
+  screen?: import("./screening").ScreenView;
+  character?: import("./screening").PaperCharacter;
 }
 export interface Project {
   id: string;
@@ -181,6 +184,10 @@ export interface Filters {
   shelf?: "all" | "hide" | "only";
   /** 조건 반전 (NOT): lists the papers that fail the conditions instead of the ones that meet them. */
   negate?: boolean;
+  /** AI 추천: papers with one of these recommendations ("none": not screened). */
+  screen?: (import("./screening").Recommendation | "none")[];
+  /** 논문 성격: papers of one of these types or with one of these contributions. */
+  character?: (import("./screening").CharacterType | import("./screening").Contribution)[];
 }
 export const DEFAULT_FILTERS: Filters = {
   strictness: "balanced",

@@ -19,7 +19,7 @@ import { evaluateScreening, evaluationSet } from "../../src/service/screening/ev
 import { Screener } from "../../src/service/screening";
 import { findAbstracts } from "../../src/service/screening/abstracts";
 import type { JsonRequest } from "../../src/service/genealogy/llm";
-import type { Work } from "../../src/shared/types";
+import { DEFAULT_FILTERS, type Work } from "../../src/shared/types";
 
 const profile = (patch: Partial<ScreeningProfile> = {}): ScreeningProfile => ({
   ...defaultProfile("p1", "clozapine augmentation in treatment-resistant schizophrenia"),
@@ -326,3 +326,72 @@ test("abstracts come from PubMed by PMID, then Europe PMC by DOI", async () => {
   assert(!found.has("c"));
   assert.equal(urls.length, 2);
 });
+
+test("recommendations show on list rows, filter the list, and are archived only on request", async () => fixture(async (db) => {
+  const projectId = db.projects()[0].id;
+  const human = add(db, projectId, { title: "Human trial", doi: "10.2/h", abstract: "Patients: clozapine augmentation in humans." }, "pending");
+  const rat = add(db, projectId, { title: "Rat study", doi: "10.2/r", abstract: "Rats: clozapine in an animal model." }, "pending");
+  const decision = fakeDecision((state, name) => {
+    const isRat = state.paper.title.startsWith("Rat");
+    if (name === "relevance") return 3;
+    if (name === "exc.animal") return isRat ? 0.97 : 0.02;
+    if (name === "inc.human") return isRat ? 0.2 : 0.95;
+    if (name === "char.type") return "O";
+    if (name === "char.method") return isRat ? 0.9 : 0.1;
+    return name.startsWith("role.") ? 0.8 : 0.1;
+  });
+  const screener = new Screener({ db, decision, ai: fakeAI(), route: () => ({ provider: "codex", model: "" }), emit: () => {}, pubmedKey: () => undefined, fetcher: (async () => new Response("{}")) as never });
+  screener.store.saveProfile(projectId, { include: [{ id: "human", text: "Studies in human patients" }], exclude: [{ id: "animal", text: "Animal studies" }] });
+  screener.start(projectId, { kind: "ids", ids: [human, rat] });
+  await settle(screener);
+  const list = (filters = {}) => db.list({ projectId, scope: "pending", query: "", filters: { ...DEFAULT_FILTERS, ...filters }, showHidden: false, offset: 0, limit: 100, sort: "title" });
+  const rows = list().works;
+  assert.equal(rows.find((w) => w.id === human)!.screen!.recommendation, "include");
+  const ratRow = rows.find((w) => w.id === rat)!;
+  assert.equal(ratRow.screen!.recommendation, "exclude");
+  assert.match(ratRow.screen!.hits.join(), /제외 기준 1: Animal studies/);
+  assert.equal(ratRow.character!.type, "O");
+  // Filters show the matches only.
+  assert.deepEqual(list({ screen: ["exclude"] }).works.map((w) => w.id), [rat]);
+  assert.deepEqual(list({ character: ["method"] }).works.map((w) => w.id), [rat]);
+  assert.deepEqual(list({ screen: ["none"] }).works.map((w) => w.id), []);
+  // Nothing was archived by the job; accepting takes only the recommended paper.
+  assert.equal(db.state(projectId, human).screening, "pending");
+  assert.deepEqual(screener.acceptable(projectId, { kind: "ids", ids: [human, rat] }), [human]);
+  // A changed criterion leaves the judgment stale, and stale recommendations are not archived.
+  screener.store.saveProfile(projectId, { intent: "Something else entirely" });
+  assert.deepEqual(screener.acceptable(projectId, { kind: "ids", ids: [human, rat] }), []);
+  // The person's own type wins over the model's, and screening again keeps it.
+  screener.setCharacter(rat, "R", ["debate"]);
+  screener.start(projectId, { kind: "ids", ids: [rat] }, { fresh: true });
+  await settle(screener);
+  assert.equal(screener.store.characters([rat]).get(rat)!.type, "R");
+  assert.equal(screener.store.characters([rat]).get(rat)!.source, "user");
+  // A turned-down recommendation becomes a proposed exclusion criterion.
+  const profile = screener.store.suggest(projectId, human, "  동물 연구가 아니라 증례라서 ");
+  assert.equal(profile.suggestions[0].text, "동물 연구가 아니라 증례라서");
+}));
+
+test("the criteria draft reads the question, seeds and past decisions, and saves nothing", async () => fixture(async (db) => {
+  const projectId = db.projects()[0].id;
+  db.updateProject(projectId, "TRS", "클로자핀 증강 요법의 효과");
+  add(db, projectId, { title: "Kept trial", doi: "10.3/k", abstract: "a" });
+  add(db, projectId, { title: "Rejected rat study", doi: "10.3/r", abstract: "b" }, "trash");
+  let input: { researchQuestion: string; keptPapers: { title: string }[]; rejectedPapers: { title: string }[] } | undefined;
+  const ai = {
+    async json<T>(request: JsonRequest<T>): Promise<T> {
+      input = JSON.parse(request.input);
+      return request.parse({ intent: "클로자핀 증강의 효과를 알고 싶다.", include: ["사람 대상", "사람 대상", " 증강 요법 "], exclude: ["동물 연구"] }, 0);
+    },
+  };
+  const screener = new Screener({ db, decision: fakeDecision(() => 0), ai, route: () => ({ provider: "codex", model: "" }), emit: () => {}, pubmedKey: () => undefined });
+  const draft = await screener.draft(projectId, AbortSignal.timeout(5000));
+  assert.equal(input!.researchQuestion, "클로자핀 증강 요법의 효과");
+  assert.deepEqual(input!.keptPapers.map((p) => p.title), ["Kept trial"]);
+  assert.deepEqual(input!.rejectedPapers.map((p) => p.title), ["Rejected rat study"]);
+  assert.deepEqual(draft.include, ["사람 대상", "증강 요법"]);
+  assert.match(draft.basis, /연구 질문/);
+  assert.equal(screener.store.hasProfile(projectId), false);
+  const off = new Screener({ db, decision: fakeDecision(() => 0), ai, route: () => null, emit: () => {}, pubmedKey: () => undefined });
+  await assert.rejects(off.draft(projectId, AbortSignal.timeout(5000)), /AI 추천·분류를 켜/);
+}));

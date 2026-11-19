@@ -1,6 +1,7 @@
 import { isDoiLink, pmidOf } from "../../shared/domain";
 import { useEffect, useRef, useState } from "react";
 import { LinkPanel, LINK_LABELS, type LinkStash } from "./LinkPanel";
+import { ScreeningInspector } from "./ScreeningInspector";
 import type { ShelfFileDetails } from "../../shared/contracts";
 import {
   ArrowUpRight,
@@ -476,6 +477,7 @@ export function Inspector({
               </>}
             </section>
           )}
+          <ScreeningInspector work={work} projectId={projectId} onNotice={onNotice} onError={onError} />
           {!shelfFile && (!work.evidence || work.evidence.relation === "local") && (
             <p className="subtle">이 문헌에 저장된 발견 근거가 없습니다.</p>
           )}

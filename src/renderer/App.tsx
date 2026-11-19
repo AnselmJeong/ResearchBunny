@@ -104,6 +104,9 @@ import { GenealogyWorkspace } from "./components/GenealogyWorkspace";
 import { GenealogyDialog } from "./components/GenealogyDialog";
 import { PassageResults } from "./components/PassageResults";
 import { PassageAnswerView } from "./components/PassageAnswer";
+import { ScreeningBar } from "./components/ScreeningBar";
+import { ScreeningDialog } from "./components/ScreeningDialog";
+import { CHARACTER_TYPES, RECOMMENDATION_NAMES, type ScreeningTarget } from "../shared/screening";
 import {
   ImportDialog,
   WorkEditor,
@@ -157,6 +160,7 @@ type Dialog =
   | "shelfSort"
   | "shelfFile"
   | "genealogy"
+  | "screening"
   | null;
 function Bunny({ size = 27 }: { size?: number }) {
   return (
@@ -354,7 +358,7 @@ export function App() {
     const queue = refreshQueue(async () => {
       const data = await window.bunny.snapshot(projectId ? { projectId } : {});
       if (!valid) return;
-      activeJob = data.runs.some(r => ["running", "queued"].includes(r.status)) || data.classification.job?.status === "running" || ["scanning", "indexing"].includes(data.shelf.job.state);
+      activeJob = data.runs.some(r => ["running", "queued"].includes(r.status)) || data.classification.job?.status === "running" || data.screening.job?.status === "running" || ["scanning", "indexing"].includes(data.shelf.job.state);
       setSnapshot(data);
       const current = projectId || data.projects[0].id;
       if (!projectId) {
@@ -549,6 +553,14 @@ export function App() {
   const classification = snapshot?.classification;
   const classifying = classification?.job?.status === "running";
   const archiveScope = ARCHIVE_SCOPES.includes(scope);
+  // What the screening bar's "this list" is: a run's candidates, the archive, a collection, or the papers listed.
+  const screeningTarget: ScreeningTarget | null =
+    scope === "run" ? (currentRun && !currentRun.import && !currentRun.download ? { kind: "run", runId: currentRun.id } : null)
+    : scope === "archive" ? { kind: "archive" }
+    : scope === "collection" && scopeId ? { kind: "collection", collectionId: scopeId }
+    : ["topic", "unclassified", "pending", "starred", "reading"].includes(scope) && list.ids.length ? { kind: "ids", ids: list.ids.slice(0, 1500) }
+    : null;
+  const screeningLabel = scope === "run" ? "후보" : scope === "archive" ? "아카이브" : scope === "collection" ? "컬렉션" : "이 목록";
   const uncategorizedScope = scope === "shelf" && !!snapshot?.shelf.uncategorized && scopeId === snapshot.shelf.uncategorized.id;
   const fileInto = (ids: string[]) => {
     setFiling(ids);
@@ -1611,6 +1623,21 @@ export function App() {
                   {["indexing", "scanning"].includes(snapshot.shelf.job.state) && <button className="icon-button" title="서고 색인 일시정지" aria-label="서고 색인 일시정지" onClick={() => void task(() => window.bunny.shelfControl({ action: "pause" }))}><Square size={14} /></button>}
                   {snapshot.shelf.job.state === "paused" && <button className="text-button" onClick={() => void task(() => window.bunny.shelfControl({ action: "resume" }))}><Play size={12} />재개</button>}
                 </div>}
+                {screeningTarget && !startScreen && (
+                  <ScreeningBar
+                    projectId={projectId}
+                    state={snapshot.screening}
+                    target={screeningTarget}
+                    targetLabel={screeningLabel}
+                    selected={selected}
+                    canAccept={scope === "run" || scope === "pending"}
+                    busy={busy}
+                    onOpen={() => setDialog("screening")}
+                    onChanged={(state) => setSnapshot((current) => current && ({ ...current, screening: state }))}
+                    onNotice={(text) => flash(text)}
+                    onError={onError}
+                  />
+                )}
                 {archiveScope && classification?.job && <div className={`classification-status ${classification.job.status}`} role="status">
                   <span>{classification.job.message}</span>
                   {classifying && <button className="icon-button" title="자동 분류 취소" aria-label="자동 분류 취소" onClick={() => void task(() => window.bunny.cancelClassification({ projectId }))}><Square size={14} /></button>}
@@ -2223,6 +2250,13 @@ export function App() {
                                     관련성 판단 보류
                                   </span>
                                 )}
+                                {w.screen && (
+                                  <span className={`screen-badge ${w.screen.recommendation}${w.screen.stale ? " stale" : ""}`}
+                                    title={[w.screen.reason, w.screen.stale ? "기준을 바꾸기 전의 판정" : ""].filter(Boolean).join(" · ") || undefined}>
+                                    AI {RECOMMENDATION_NAMES[w.screen.recommendation]}{w.screen.stale ? " · 기준 변경 전" : ""}
+                                  </span>
+                                )}
+                                {w.character?.type && <span className="subtle">{CHARACTER_TYPES[w.character.type]}</span>}
                                 {w.shelf && scope !== "shelf" && (
                                   <span className={`shelf-badge ${w.shelf.match === "title" ? "hint" : ""}`} title={w.shelf.path}>
                                     <LibraryBig size={11} />
@@ -2261,6 +2295,9 @@ export function App() {
                                     {w.evidence.reasons[0]}
                                   </div>
                                 )
+                              )}
+                              {w.screen && w.screen.recommendation !== "include" && (w.screen.hits.length > 0 || w.screen.roleNote) && (
+                                <div className="row-reason screen-reason">{[...w.screen.hits.slice(0, 2), w.screen.roleNote].filter(Boolean).join(" · ")}</div>
                               )}
                             </button>
                             <span className="similarity-cell">
@@ -2657,6 +2694,16 @@ export function App() {
           onClose={() => setDialog(null)}
           onError={onError}
           onDone={flash}
+        />
+      )}
+      {dialog === "screening" && (
+        <ScreeningDialog
+          key={projectId}
+          projectId={projectId}
+          state={snapshot.screening}
+          onClose={() => setDialog(null)}
+          onSaved={(state) => setSnapshot((current) => current && ({ ...current, screening: state }))}
+          onError={onError}
         />
       )}
       {dialog === "genealogy" && scope === "collection" && snapshot.collections.some((c) => c.id === scopeId) && (

@@ -3,6 +3,7 @@ import { filtersSchema } from "../../shared/contracts";
 import type { Filters as FilterValues } from "../../shared/types";
 import { DEFAULT_FILTERS } from "../../shared/types";
 import { filterConditions } from "../../shared/domain";
+import { CHARACTER_TYPES, CONTRIBUTIONS, RECOMMENDATION_NAMES, type CharacterType, type Contribution, type Recommendation } from "../../shared/screening";
 // Keep incomplete numeric edits out of list requests and saved navigation.
 function NumericFilter({ field, value, onChange, label, min, max, placeholder, step = 1 }: {
   field: "yearFrom" | "yearTo" | "minCitations" | "minShared";
@@ -174,6 +175,36 @@ export function Filters({
             필터 초기화
           </button>
         </span>
+      </div>
+      <div className="filter-row">
+        <select
+          aria-label="AI 추천"
+          value={value.screen?.[0] || ""}
+          onChange={(e) => set("screen", e.target.value ? [e.target.value] : undefined)}
+        >
+          <option value="">AI 추천: 전체</option>
+          {(Object.keys(RECOMMENDATION_NAMES) as Recommendation[]).map((r) => (
+            <option key={r} value={r}>{RECOMMENDATION_NAMES[r]}</option>
+          ))}
+          <option value="none">아직 심사 안 함</option>
+        </select>
+        <select
+          aria-label="논문 성격"
+          value={value.character?.[0] || ""}
+          onChange={(e) => set("character", e.target.value ? [e.target.value] : undefined)}
+        >
+          <option value="">논문 성격: 전체</option>
+          <optgroup label="유형">
+            {(Object.keys(CHARACTER_TYPES) as CharacterType[]).map((t) => (
+              <option key={t} value={t}>{CHARACTER_TYPES[t]}</option>
+            ))}
+          </optgroup>
+          <optgroup label="기여">
+            {(Object.keys(CONTRIBUTIONS) as Contribution[]).map((c) => (
+              <option key={c} value={c}>{CONTRIBUTIONS[c].label}</option>
+            ))}
+          </optgroup>
+        </select>
       </div>
       <p className="subtle">
         관련성은 이 후보 집합에서 계산한 텍스트·주제 기준입니다. 초록이 부족한
