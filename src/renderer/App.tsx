@@ -1287,6 +1287,14 @@ export function App() {
               const project = await window.bunny.updateProject({ projectId: id, name });
               setSnapshot(current => current && ({ ...current, projects: current.projects.map(p => p.id === id ? project : p) }));
             }}
+            onProjectCreated={async (project, summary, withoutPdf) => {
+              await persistNavigation();
+              setSnapshot((current) => current && ({ ...current, projects: [project, ...current.projects.filter((p) => p.id !== project.id)] }));
+              setDialog(null);
+              setGenealogyId(null);
+              setProjectId(project.id);
+              flash(withoutPdf ? `${summary} · PDF 없는 ${withoutPdf}편은 아카이브의 ‘PDF 원문 찾기’로 확보할 수 있습니다.` : summary);
+            }}
             onDeleteProject={async (id) => {
               const deleted = snapshot.projects.find(p => p.id === id);
               const next = snapshot.projects.find(p => p.id !== id);

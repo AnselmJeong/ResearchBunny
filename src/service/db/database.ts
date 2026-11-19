@@ -133,6 +133,8 @@ export class Library {
       CREATE TABLE IF NOT EXISTS evidence_tables(project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS evidence_rows(project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,data TEXT NOT NULL,PRIMARY KEY(project_id,work_id));
       CREATE INDEX IF NOT EXISTS idx_evidence_rows_work ON evidence_rows(work_id);
+      -- A project's ScholarPen folder, by its name under the shared root; one project per folder.
+      CREATE TABLE IF NOT EXISTS project_links(project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,folder TEXT NOT NULL UNIQUE);
       PRAGMA user_version=3;
     `);
     if (!this.projects().length) this.createProject("내 연구", "");

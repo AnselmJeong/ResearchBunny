@@ -4262,3 +4262,14 @@ h3 .screen-badge { margin-left: 8px; vertical-align: middle; }
 .evidence-title { font-size: 11px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .evidence-missing td { font-style: italic; }
 .criterion-row .column-name { flex: 0 0 120px; }
+
+/* ---- ScholarPen links ---- */
+.scholarpen-root { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; color: var(--muted); }
+.scholarpen-links { width: 100%; border-collapse: collapse; font-size: 13px; margin: 10px 0; }
+.scholarpen-links th, .scholarpen-links td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.scholarpen-links th { color: var(--muted); font-weight: 500; font-size: 12px; }
+.scholarpen-links select { max-width: 280px; }
+.scholarpen-settings h4 { display: flex; align-items: center; gap: 6px; margin: 12px 0 6px; font-size: 13px; }
+.scholarpen-folders { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.scholarpen-folders li { display: flex; align-items: center; gap: 10px; }
+.scholarpen-folders li > span:first-child { flex: 1; }

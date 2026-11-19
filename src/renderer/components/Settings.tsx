@@ -2,6 +2,7 @@ import { CodexConnection } from "./CodexConnection";
 import { ClaudeConnection } from "./ClaudeConnection";
 import { ShelfSettings } from "./ShelfSettings";
 import { ProjectSettings } from "./ProjectSettings";
+import { ScholarPenSettings } from "./ScholarPenSettings";
 import { useState } from "react";
 import { ExternalLink, ShieldCheck, Database, RefreshCw, LoaderCircle, CircleCheck, CircleAlert } from "lucide-react";
 import type { Project, Settings as SettingsValue } from "../../shared/types";
@@ -20,6 +21,7 @@ export function Settings({
   projectId,
   onRenameProject,
   onDeleteProject,
+  onProjectCreated,
 }: {
   settings: SettingsValue;
   onClose: () => void;
@@ -30,6 +32,7 @@ export function Settings({
   projectId: string;
   onRenameProject: (id: string, name: string) => Promise<void>;
   onDeleteProject: (id: string) => Promise<void>;
+  onProjectCreated: (project: Project, summary: string, withoutPdf: number) => void | Promise<void>;
 }) {
   const [value, setValue] = useState(settings),
     [oa, setOa] = useState<string | undefined>(),
@@ -90,6 +93,7 @@ export function Settings({
           <a href="#settings-connections">연결</a>
           <a href="#settings-shelf">서고</a>
           <a href="#settings-projects">프로젝트</a>
+          <a href="#settings-scholarpen">ScholarPen</a>
           <a href="#settings-library">라이브러리</a>
           <a href="#settings-appearance">화면</a>
         </nav>
@@ -400,6 +404,7 @@ export function Settings({
           </section>
           <ShelfSettings onError={onError} onChanged={onSaved} />
           <ProjectSettings projects={projects} projectId={projectId} onRename={onRenameProject} onDelete={onDeleteProject} />
+          <ScholarPenSettings projects={projects} onProjectCreated={onProjectCreated} onError={onError} />
           <section id="settings-library" className="settings-group">
             <h3>
               <Database size={16} /> 로컬 라이브러리
