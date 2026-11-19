@@ -5,6 +5,7 @@ import type { Genealogy, GenealogySummary, GenealogyView, Outline } from "./gene
 import type { ChatSession, ChatThreadSummary } from "./chat";
 import type { PassageAnswer, PassageSearchResult, PassageStatus } from "./passages";
 import type { ScreeningJob, ScreeningSnapshot } from "./screening";
+import type { EvidenceJob, EvidenceTableConfig, EvidenceTableView } from "./evidence";
 import type { ShelfAdoptResult, ShelfMovePreview, ShelfStatusResult, ShelfRelated, ShelfSearchResult, ShelfCandidate, ParsedFilename, ShelfFileInfo, ShelfSortResult, ShelfSortView, ShelfLeafList } from "./shelf";
 import type {
   Snapshot,
@@ -148,6 +149,11 @@ const screeningTarget = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("collection"), collectionId: id }),
   z.object({ kind: z.literal("ids"), ids: ids.min(1) }),
 ]);
+const evidenceTarget = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("archive") }),
+  z.object({ kind: z.literal("collection"), collectionId: id }),
+  z.object({ kind: z.literal("ids"), ids: ids.min(1) }),
+]);
 const genealogyStep = z.enum(["prepare", "cards", "gaps", "outline", "write", "check", "render"]);
 export const schemas = {
   snapshot: z.object({ projectId: id.optional() }),
@@ -167,6 +173,15 @@ export const schemas = {
   screeningAccept: z.object({ projectId: id, target: screeningTarget, preview: z.boolean().default(true) }),
   /** A one-line reason for turning a recommendation down, kept as a proposed exclusion criterion. */
   screeningSuggest: z.object({ projectId: id, workId: id, reason: z.string().trim().min(1).max(300) }),
+  /** A project's evidence table for its archive, a collection or chosen papers. */
+  evidenceTable: z.object({ projectId: id, target: evidenceTarget }),
+  /** The table's columns: name and what to find. Redefining a column marks filled rows stale. */
+  evidenceColumns: z.object({ projectId: id, columns: z.array(z.object({ id: z.string().max(40).default(""), name: z.string().trim().max(40), seek: z.string().max(300), query: z.string().max(300).default("") })).max(16) }),
+  /** Fills missing, stale and abstract-only rows; `fresh` fills every row again. */
+  evidenceFill: z.object({ projectId: id, target: evidenceTarget, fresh: z.boolean().default(false) }),
+  evidenceCancel: z.object({ projectId: id }),
+  /** Saves the table as CSV (one line per cell) or Markdown; the window asks where. */
+  exportEvidence: z.object({ projectId: id, target: evidenceTarget, format: z.enum(["csv", "md"]) }),
   /** The person's own reading of a paper's type and contributions. */
   characterSet: z.object({ workId: id, type: z.enum(["R", "M", "O"]).nullable(), contributions: z.array(z.enum(["concept", "origin", "debate", "method", "primary", "rebuttal"])).max(6) }),
   cancelClassification: z.object({ projectId: id }),
@@ -467,7 +482,7 @@ export type Command = keyof typeof schemas;
 const READ_ONLY = new Set<Command>([
   "pdfInfo", "pdfReadChunk", "chatThreads", "chatSession", "chatSend", "chatCancel", "chatClear", "chatOpenSource", "ollamaModels",
   "claudeStatus", "claudeModels", "codexModels", "genealogies", "genealogyView", "genealogyReveal", "chooseGenealogyFolder", "genealogyChapter", "genealogyOpenOutput",
-  "screeningState", "screeningDraft",
+  "screeningState", "screeningDraft", "evidenceTable", "exportEvidence",
   "snapshot", "projectStats", "list", "inspect", "attachments", "saveUi", "duplicates", "exportPreview", "pdfExportPreview", "pdfDownloadPreview",
   "missingPdfs", "openChromeLogin", "shelfStatus", "shelfMovePreview", "shelfRelated", "shelfSearch", "workLinks", "shelfFile", "shelfReveal",
   "chooseShelfRoot", "shelfSortState", "shelfLeaves", "shelfLeafDraft",
@@ -515,6 +530,11 @@ export interface Outputs {
   screeningAccept: { ids: string[] };
   screeningSuggest: ScreeningSnapshot;
   characterSet: void;
+  evidenceTable: EvidenceTableView;
+  evidenceColumns: EvidenceTableConfig;
+  evidenceFill: EvidenceJob;
+  evidenceCancel: void;
+  exportEvidence: { path: string } | null;
   cancelClassification: void;
   createProject: Project;
   updateProject: Project;

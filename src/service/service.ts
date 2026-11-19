@@ -13,6 +13,7 @@ import { genealogyTools } from "./genealogy/tools";
 import { defaultGenealogySettings, defaultRoutes } from "../shared/genealogy";
 import { DecisionClient } from "./screening/decision";
 import { Screener } from "./screening";
+import { EvidenceTables } from "./evidence";
 import { version } from "../../package.json";
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile, rename, stat } from "node:fs/promises";
@@ -81,6 +82,7 @@ export class Service {
   /** The Ollama Cloud decision model, for screening. */
   decision: DecisionClient;
   screener: Screener;
+  evidenceTables: EvidenceTables;
   secrets: {
     openalex?: string;
     openai?: string;
@@ -187,6 +189,19 @@ export class Service {
       },
     });
     this.sorter = new ShelfSorter(this.db, this.shelf, this.shelfQueries, this.ai, emit);
+    this.evidenceTables = new EvidenceTables({
+      db: this.db,
+      ai: new GenealogyAI(this.db, { codex: this.codex, claude: this.claude, ollama: this.ollama }, models),
+      // One call reads a whole paper's passages: the card stage's connection.
+      route: () => {
+        const s = this.settings();
+        return s.aiEnabled ? defaultRoutes(s).cards : null;
+      },
+      purpose: (projectId) => this.screener.store.profile(projectId).purpose,
+      search: async (query, workId, signal) =>
+        (await this.passageSearch.search(query, { limit: 3, perWork: 3, works: new Set([workId]), revision: String(this.shelf.revision), signal })).hits,
+      emit,
+    });
     this.genealogy = new GenealogyEngine({
       db: this.db,
       store: new GenealogyStore(this.db),
@@ -286,7 +301,7 @@ export class Service {
     this.downloadsSyncing.unref?.();
   }
   busy() {
-    return this.chat.active.size > 0 || this.answers.active.size > 0 || this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0 || !!this.sorter.active || this.genealogy.active.size > 0 || this.screener.active.size > 0;
+    return this.chat.active.size > 0 || this.answers.active.size > 0 || this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0 || !!this.sorter.active || this.genealogy.active.size > 0 || this.screener.active.size > 0 || this.evidenceTables.active.size > 0;
   }
   settings(): Settings {
     const saved = this.db.pref<Partial<AIConfig>>("ai");
@@ -423,6 +438,25 @@ export class Service {
         this.screener.store.suggest(p.projectId, p.workId, p.reason);
         return this.screener.snapshot(p.projectId);
       }
+      case "evidenceTable": {
+        const p = schemas.evidenceTable.parse(args);
+        return this.evidenceTables.view(p.projectId, p.target);
+      }
+      case "evidenceColumns": {
+        const p = schemas.evidenceColumns.parse(args);
+        this.db.project(p.projectId);
+        if (this.evidenceTables.active.has(p.projectId)) throw new AppError("BUSY", "근거 표를 채우는 동안에는 열을 바꿀 수 없습니다.");
+        return this.evidenceTables.store.saveColumns(p.projectId, p.columns);
+      }
+      case "evidenceFill": {
+        const p = schemas.evidenceFill.parse(args);
+        return this.evidenceTables.start(p.projectId, p.target, p.fresh);
+      }
+      case "evidenceCancel":
+        this.evidenceTables.cancel(schemas.evidenceCancel.parse(args).projectId);
+        return;
+      case "performEvidenceExport":
+        return this.evidenceTables.export(args.projectId, args.target, args.format, args.path);
       case "characterSet": {
         const p = schemas.characterSet.parse(args);
         return this.screener.setCharacter(p.workId, p.type, p.contributions);
@@ -943,6 +977,7 @@ export class Service {
           ...this.downloads.active.values(),
           ...this.classifier.active.values(),
           ...this.screener.active.values(),
+          ...this.evidenceTables.active.values(),
         ])
           control.abort();
         // Saves the app Chrome's logins and ends it; bounded so quitting never hangs on Chrome.

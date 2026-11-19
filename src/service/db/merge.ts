@@ -22,6 +22,7 @@ const OWNED: [table: string, column: string][] = [
   ["candidates", "work_id"],
   ["screenings", "work_id"],
   ["work_characters", "work_id"],
+  ["evidence_rows", "work_id"],
 ];
 /**
  * What one merge changed, and nothing else: the two works and their own rows as
@@ -138,6 +139,8 @@ export function mergeWorks(db: Library, keepId: string, removeId: string) {
     sql.prepare("DELETE FROM screenings WHERE work_id=?").run(removeId);
     sql.prepare("INSERT OR IGNORE INTO work_characters SELECT ?,data FROM work_characters WHERE work_id=?").run(keepId, removeId);
     sql.prepare("DELETE FROM work_characters WHERE work_id=?").run(removeId);
+    sql.prepare("INSERT OR IGNORE INTO evidence_rows SELECT project_id,?,data FROM evidence_rows WHERE work_id=?").run(keepId, removeId);
+    sql.prepare("DELETE FROM evidence_rows WHERE work_id=?").run(removeId);
     for (const a of db.attachments(removeId)) {
       const updated: Attachment = { ...a, workId: keepId };
       db.saveAttachment(updated);

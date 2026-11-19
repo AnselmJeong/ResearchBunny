@@ -166,6 +166,13 @@ async function command(name: Command, input: any): Promise<any> {
       }
       return;
     }
+    case "exportEvidence": {
+      const result = await dialog.showSaveDialog(window!, {
+        defaultPath: `근거 표.${args.format}`,
+        filters: [args.format === "csv" ? { name: "CSV", extensions: ["csv"] } : { name: "Markdown", extensions: ["md"] }],
+      });
+      return result.canceled ? null : rpc("performEvidenceExport", { ...args, path: result.filePath });
+    }
     case "exportBib": {
       const result = await dialog.showSaveDialog(window!, {
         defaultPath: "ResearchBunny.bib",

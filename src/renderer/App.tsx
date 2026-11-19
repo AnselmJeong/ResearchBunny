@@ -24,6 +24,7 @@ import {
   FolderInput,
   FolderMinus,
   FolderOutput,
+  Table2,
   Inbox,
   List,
   LoaderCircle,
@@ -106,6 +107,7 @@ import { PassageResults } from "./components/PassageResults";
 import { PassageAnswerView } from "./components/PassageAnswer";
 import { ScreeningBar } from "./components/ScreeningBar";
 import { ScreeningDialog } from "./components/ScreeningDialog";
+import { EvidenceTable } from "./components/EvidenceTable";
 import { CHARACTER_TYPES, RECOMMENDATION_NAMES, type ScreeningTarget } from "../shared/screening";
 import {
   ImportDialog,
@@ -161,6 +163,7 @@ type Dialog =
   | "shelfFile"
   | "genealogy"
   | "screening"
+  | "evidence"
   | null;
 function Bunny({ size = 27 }: { size?: number }) {
   return (
@@ -1390,6 +1393,10 @@ export function App() {
                       계보 리포트
                     </button>
                   )}
+                  {(scope === "archive" || scope === "collection") && <button className="secondary" onClick={() => setDialog("evidence")} disabled={!snapshot.counts.archive}
+                    data-help="논문마다 설계·표본·결과처럼 정한 열을 본문 구절에서 찾아 원문 인용·쪽과 함께 표로 정리합니다.">
+                    <Table2 size={15} /> 근거 표
+                  </button>}
                   {(archiveScope || scope === "collection") && <button className="secondary" onClick={() => setDialog("download")} disabled={!snapshot.counts.archive}>
                     <Download size={15} /> PDF 원문 찾기
                   </button>}
@@ -2694,6 +2701,18 @@ export function App() {
           onClose={() => setDialog(null)}
           onError={onError}
           onDone={flash}
+        />
+      )}
+      {dialog === "evidence" && (scope === "archive" || scope === "collection") && (
+        <EvidenceTable
+          key={`${projectId}:${scope}:${scopeId}`}
+          projectId={projectId}
+          target={scope === "collection" ? { kind: "collection", collectionId: scopeId } : { kind: "archive" }}
+          title={title}
+          purpose={snapshot.screening.profile.purpose}
+          onClose={() => setDialog(null)}
+          onOpen={(workId, attachmentId, page) => void openArticle(workId, attachmentId, page).catch(onError)}
+          onError={onError}
         />
       )}
       {dialog === "screening" && (

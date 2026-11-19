@@ -129,6 +129,10 @@ export class Library {
       CREATE TABLE IF NOT EXISTS screenings(project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,data TEXT NOT NULL,PRIMARY KEY(project_id,work_id));
       CREATE INDEX IF NOT EXISTS idx_screenings_work ON screenings(work_id);
       CREATE TABLE IF NOT EXISTS work_characters(work_id TEXT PRIMARY KEY REFERENCES works(id) ON DELETE CASCADE,data TEXT NOT NULL);
+      -- Evidence tables: a project's columns and one row of checked cells per paper.
+      CREATE TABLE IF NOT EXISTS evidence_tables(project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS evidence_rows(project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,data TEXT NOT NULL,PRIMARY KEY(project_id,work_id));
+      CREATE INDEX IF NOT EXISTS idx_evidence_rows_work ON evidence_rows(work_id);
       PRAGMA user_version=3;
     `);
     if (!this.projects().length) this.createProject("내 연구", "");
