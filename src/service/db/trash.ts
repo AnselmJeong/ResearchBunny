@@ -92,6 +92,7 @@ export function deleteTrashedWorks(
     for (const id of ids) {
       db.db.prepare("DELETE FROM chat_threads WHERE project_id=? AND work_id=?").run(projectId, id);
       db.db.prepare("DELETE FROM screenings WHERE project_id=? AND work_id=?").run(projectId, id);
+      db.db.prepare("DELETE FROM evidence_rows WHERE project_id=? AND work_id=?").run(projectId, id);
       db.db.prepare("DELETE FROM preferences WHERE key=?").run(`article-chat:${JSON.stringify([projectId, id])}`);
       db.db
         .prepare(

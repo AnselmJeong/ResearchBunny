@@ -95,6 +95,13 @@ async function command(name: Command, input: any): Promise<any> {
       if (pid) attention("앱 전용 Chrome에서 기관·출판사에 로그인하세요.", pid);
       return;
     }
+    case "chooseScholarPenRoot": {
+      const result = await dialog.showOpenDialog(window!, {
+        title: "ScholarPen 공유 폴더 선택 (프로젝트 폴더들이 들어 있는 폴더)",
+        properties: ["openDirectory"],
+      });
+      return result.canceled ? null : result.filePaths[0];
+    }
     case "chooseGenealogyFolder": {
       const result = await dialog.showOpenDialog(window!, {
         title: "계보 리포트 작업 폴더 선택",
@@ -165,6 +172,13 @@ async function command(name: Command, input: any): Promise<any> {
         }
       }
       return;
+    }
+    case "exportEvidence": {
+      const result = await dialog.showSaveDialog(window!, {
+        defaultPath: `근거 표.${args.format}`,
+        filters: [args.format === "csv" ? { name: "CSV", extensions: ["csv"] } : { name: "Markdown", extensions: ["md"] }],
+      });
+      return result.canceled ? null : rpc("performEvidenceExport", { ...args, path: result.filePath });
     }
     case "exportBib": {
       const result = await dialog.showSaveDialog(window!, {

@@ -1,6 +1,6 @@
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
-import { cp, mkdir, stat, rm } from "node:fs/promises";
+import { chmod, cp, mkdir, stat, rm } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 await rm("dist/native", { recursive: true, force: true });
 await mkdir("dist/native", { recursive: true });
@@ -35,6 +35,8 @@ await build({
 for (const [source, name] of [
   ["src/service/index.ts", "service.js"],
   ["src/workers/pdf.ts", "pdf-worker.cjs"],
+  // The read-only MCP connector ScholarPen and coding agents start; see docs/connector.md.
+  ["src/connector/index.ts", "connector.js"],
 ]) {
   const result = await Bun.build({
     entrypoints: [source],
@@ -46,6 +48,19 @@ for (const [source, name] of [
   });
   if (!result.success) throw new Error(result.logs.join("\n"));
 }
+// The connector runs on the bun inside the app bundle (Contents/MacOS/bun), or on the bun in PATH in a checkout.
+await Bun.write(
+  "dist/runtime/researchbunny-connector",
+  `#!/bin/sh
+# ResearchBunny connector: a read-only MCP server on stdio. See docs/connector.md.
+here="$(cd "$(dirname "$0")" && pwd)"
+bun="$here/../../../MacOS/bun"
+[ -x "$bun" ] || bun="$(command -v bun)"
+[ -n "$bun" ] || { echo "researchbunny-connector: bun not found" >&2; exit 1; }
+exec "$bun" "$here/connector.js" "$@"
+`,
+);
+await chmod("dist/runtime/researchbunny-connector", 0o755);
 // Tests and the packaged process use identical worker bytes.
 await cp("dist/runtime/pdf-worker.cjs", "dist/pdf-worker.cjs");
 await rm("dist/runtime/node_modules", { recursive: true, force: true });
