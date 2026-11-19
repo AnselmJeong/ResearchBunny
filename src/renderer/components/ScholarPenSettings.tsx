@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { FolderOpen, FolderPlus, Link2, PenLine, RefreshCw, Unlink } from "lucide-react";
+import { Copy, FolderOpen, FolderPlus, Link2, PenLine, PlugZap, RefreshCw, Unlink } from "lucide-react";
 import type { Project } from "../../shared/types";
 import type { ScholarPenState } from "../../shared/scholarpen";
 
@@ -113,6 +113,25 @@ export function ScholarPenSettings({ projects, onProjectCreated, onError }: {
               </ul>
             </>
           )}
+        </>
+      )}
+      {state?.connector?.exists && (
+        <>
+          <h4><PlugZap size={14} /> 커넥터 (MCP, 읽기 전용)</h4>
+          <p className="subtle">
+            ScholarPen과 Claude Code·Codex가 이 라이브러리의 아카이브, 본문 구절, 근거 표, BibTeX를 읽는 프로그램입니다. 앱이 꺼져 있어도 동작하며 아무것도 쓰지 않습니다.
+            연결된 폴더 안에서 실행하면 그 프로젝트가 기본 범위가 됩니다. 의미 검색은 로컬 Ollama가 켜져 있을 때만 됩니다.
+          </p>
+          {[
+            ["Claude Code", `claude mcp add researchbunny -- /bin/sh '${state.connector.command}'`],
+            ["Codex", `codex mcp add researchbunny -- /bin/sh '${state.connector.command}'`],
+          ].map(([label, command]) => (
+            <div className="connector-command" key={label}>
+              <span>{label}</span>
+              <code>{command}</code>
+              <button className="icon-button" title="복사" aria-label={`${label} 등록 명령 복사`} onClick={() => void navigator.clipboard.writeText(command)}><Copy size={13} /></button>
+            </div>
+          ))}
         </>
       )}
     </section>

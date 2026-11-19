@@ -28,6 +28,8 @@ export interface LinkDeps {
   /** Works whose PDF passages are indexed. */
   indexed: (ids: string[]) => Set<string>;
   emit: (event: AppEvent) => void;
+  /** The connector launcher shipped with the app, if this build has one. */
+  connector?: string;
 }
 
 /** A folder name under the root: one path segment, not hidden. */
@@ -89,7 +91,8 @@ export class ScholarPenLinks {
     const root = this.root();
     const links = this.links();
     const byFolder = new Map([...links].map(([projectId, folder]) => [folder, projectId]));
-    if (!root) return { root: null, online: false, folders: [], links: Object.fromEntries(links), synced: this.synced };
+    const connector = this.deps.connector ? { command: this.deps.connector, exists: existsSync(this.deps.connector), data: this.deps.db.root } : null;
+    if (!root) return { root: null, online: false, folders: [], links: Object.fromEntries(links), synced: this.synced, connector };
     let entries: { name: string; isDirectory: () => boolean }[] = [];
     let online = true;
     try {
@@ -107,7 +110,7 @@ export class ScholarPenLinks {
         hasReferences: REFERENCE_FILES.some((f) => existsSync(join(root, e.name, f))),
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
-    return { root, online, folders, links: Object.fromEntries(links), synced: this.synced };
+    return { root, online, folders, links: Object.fromEntries(links), synced: this.synced, connector };
   }
 
   /** Links a project to a folder under the root, making the folder when asked; null unlinks. Files already written stay. */

@@ -39,6 +39,9 @@ export class EvidenceStore {
     if (row) return JSON.parse(row.data) as EvidenceTableConfig;
     return { projectId, columns: DEFAULT_COLUMNS[this.purpose(projectId)], version: 1, updatedAt: new Date(0).toISOString() };
   }
+  hasConfig(projectId: string) {
+    return !!this.db.prepare("SELECT 1 FROM evidence_tables WHERE project_id=?").get(projectId);
+  }
   saveColumns(projectId: string, columns: EvidenceColumn[]): EvidenceTableConfig {
     const before = this.config(projectId);
     const cleaned = columns
@@ -250,8 +253,10 @@ export class EvidenceTables {
     const route = this.deps.route();
     if (!route) throw new AppError("AI_DISABLED", "설정에서 AI 연결을 고르고 AI 추천·분류를 켜 주세요.");
     if (this.active.has(projectId)) throw new AppError("BUSY", "진행 중인 근거 표 작업이 끝난 뒤 실행하세요.");
-    const config = this.store.config(projectId);
+    let config = this.store.config(projectId);
     if (!config.columns.length) throw new AppError("EMPTY", "근거 표에 열이 없습니다. 열을 먼저 정하세요.");
+    // The purpose's default columns are kept from the first fill on: changing the purpose later must not hide filled rows.
+    if (!this.store.hasConfig(projectId)) config = this.store.saveColumns(projectId, config.columns);
     const ids = this.targetIds(projectId, target);
     const rows = this.store.rows(projectId, ids);
     const todo = fresh ? ids : ids.filter((id) => {

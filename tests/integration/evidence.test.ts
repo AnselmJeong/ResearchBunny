@@ -123,6 +123,9 @@ test("a fill job saves rows, marks them stale when columns change, and exports C
     ]);
     const events: string[] = [];
     const tables = new EvidenceTables({ db, ai: model, route: () => route, purpose: () => "original", search: async () => [], emit: (e) => events.push(e.type) });
+    // The first fill keeps the purpose's default columns.
+    const defaults = new EvidenceTables({ db, ai: model, route: () => route, purpose: () => "genealogy", search: async () => [], emit: () => {} });
+    assert.equal(defaults.store.hasConfig(projectId), false);
     tables.store.saveColumns(projectId, columns);
     tables.start(projectId, { kind: "archive" });
     for (let i = 0; i < 1000 && tables.active.size; i++) await Bun.sleep(2);

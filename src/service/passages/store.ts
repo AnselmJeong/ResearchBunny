@@ -76,12 +76,18 @@ export class PassageStore {
   db: Database;
   private codes: { model: string; stamp: number; loadedAt: number; ids: Int32Array; bits: Uint32Array; mean: Float32Array; size: number } | null = null;
 
-  constructor(path: string) {
-    this.db = new Database(path);
+  /** `readonly`: another process (the connector) only reads; the schema and pragmas are left to the app. */
+  constructor(path: string, options: { readonly?: boolean } = {}) {
+    this.db = new Database(path, { readonly: options.readonly });
     const version = this.db.pragma("user_version", { simple: true }) as number;
     if (version > SCHEMA) {
       this.db.close();
       throw new Error("passages.sqlite was written by a newer app");
+    }
+    if (options.readonly) {
+      this.db.pragma("busy_timeout = 10000");
+      this.db.pragma("query_only = ON");
+      return;
     }
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("synchronous = NORMAL");

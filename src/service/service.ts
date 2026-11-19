@@ -214,6 +214,8 @@ export class Service {
         return new Set(rows.filter((r) => docs.get(r.hash)?.status === "ok").map((r) => r.work_id));
       },
       emit,
+      // Built beside the PDF worker; see docs/connector.md.
+      connector: join(dirname(workerPath), "researchbunny-connector"),
     });
     this.genealogy = new GenealogyEngine({
       db: this.db,

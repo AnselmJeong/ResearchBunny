@@ -32,6 +32,8 @@ export interface ScholarPenState {
   links: Record<string, string>;
   /** When each linked project's files were last written, and any write error. */
   synced: Record<string, { at: string; error?: string }>;
+  /** The read-only MCP connector in this app: its launcher and the library it reads. */
+  connector: { command: string; exists: boolean; data: string } | null;
 }
 
 /** `.researchbunny/project.json`: the link and the project's question and criteria. */
