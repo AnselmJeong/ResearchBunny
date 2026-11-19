@@ -89,6 +89,8 @@ export const filtersSchema = z.object({
   screen: z.array(z.enum(["include", "maybe", "exclude", "none"])).max(4).optional(),
   /** 논문 성격: papers of one of these types or with one of these contributions. */
   character: z.array(z.enum(["R", "M", "O", "concept", "origin", "debate", "method", "primary", "rebuttal"])).max(9).optional(),
+  /** 목적 역할: papers that can play a role for the project's purpose, or that cannot. */
+  role: z.array(z.enum(["fits", "none"])).max(2).optional(),
 });
 const metadata = z
   .object({

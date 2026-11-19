@@ -188,6 +188,8 @@ export interface Filters {
   screen?: (import("./screening").Recommendation | "none")[];
   /** 논문 성격: papers of one of these types or with one of these contributions. */
   character?: (import("./screening").CharacterType | import("./screening").Contribution)[];
+  /** 목적 역할: papers that can play a role for the project's purpose, or that cannot. */
+  role?: ("fits" | "none")[];
 }
 export const DEFAULT_FILTERS: Filters = {
   strictness: "balanced",

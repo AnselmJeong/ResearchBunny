@@ -2272,6 +2272,8 @@ export function App() {
                                   </span>
                                 )}
                                 {w.character?.type && <span className="subtle">{CHARACTER_TYPES[w.character.type]}</span>}
+                                {w.screen?.role.fits === true && <span className="role-chip" title={w.screen.role.label}>역할 · {w.screen.role.roles[0]}{w.screen.role.roles.length > 1 ? ` 외 ${w.screen.role.roles.length - 1}` : ""}</span>}
+                                {w.screen?.role.fits === false && <span className="role-chip none" title={w.screen.role.label}>역할 없음</span>}
                                 {w.shelf && scope !== "shelf" && (
                                   <span className={`shelf-badge ${w.shelf.match === "title" ? "hint" : ""}`} title={w.shelf.path}>
                                     <LibraryBig size={11} />

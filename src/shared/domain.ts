@@ -304,6 +304,7 @@ export function filterConditions(filters: Filters): string[] {
   if (filters.shelf === "only") conditions.push("서고에 있는 논문");
   if (filters.screen?.length)
     conditions.push(`AI ${filters.screen.map((r) => (r === "none" ? "미심사" : RECOMMENDATION_NAMES[r])).join("·")}`);
+  if (filters.role?.length) conditions.push(filters.role.includes("fits") ? "목적 역할 있음" : "목적 역할 없음");
   if (filters.character?.length)
     conditions.push(`성격 ${filters.character.map((c) => (c in CHARACTER_TYPES ? CHARACTER_TYPES[c as CharacterType] : CONTRIBUTIONS[c as Contribution].label)).join("·")}`);
   return conditions;
@@ -343,6 +344,11 @@ export function conditionReasons(
     reasons.push("서고에 없음");
   if (filters.screen?.length && !filters.screen.includes(w.screen?.recommendation ?? "none"))
     reasons.push(w.screen ? `AI ${RECOMMENDATION_NAMES[w.screen.recommendation]}` : "AI 미심사");
+  if (filters.role?.length) {
+    const fits = w.screen?.role.fits;
+    const role = fits === true ? "fits" : fits === false ? "none" : null;
+    if (!role || !filters.role.includes(role)) reasons.push(role ? "목적 역할 불일치" : "목적 역할 미판정");
+  }
   if (filters.character?.length && !filters.character.some((c) => (c in CHARACTER_TYPES ? w.character?.type === c : w.character?.contributions.includes(c as Contribution))))
     reasons.push("논문 성격 불일치");
   if (

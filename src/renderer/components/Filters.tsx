@@ -205,6 +205,15 @@ export function Filters({
             ))}
           </optgroup>
         </select>
+        <select
+          aria-label="목적 역할"
+          value={value.role?.[0] || ""}
+          onChange={(e) => set("role", e.target.value ? [e.target.value] : undefined)}
+        >
+          <option value="">목적 역할: 전체</option>
+          <option value="fits">지금 목적에서 역할 있음</option>
+          <option value="none">지금 목적에서 역할 없음</option>
+        </select>
       </div>
       <p className="subtle">
         관련성은 이 후보 집합에서 계산한 텍스트·주제 기준입니다. 초록이 부족한

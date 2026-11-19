@@ -188,8 +188,12 @@ export interface ScreenView {
   hits: string[];
   /** Inclusion criteria the paper clearly meets. */
   matched: string[];
-  /** Why a relevant paper waits: no role for the purpose. */
-  roleNote: string;
+  /**
+   * The paper's role for the purpose in force, as a label and a filter: it
+   * never changes the recommendation. `fits` is null when the purpose has no
+   * role questions or they were not asked.
+   */
+  role: { fits: boolean | null; label: string; roles: string[] };
   reason: string;
   quote: string;
   quoteChecked: boolean;
@@ -211,8 +215,8 @@ export const PROMPT_VERSION = "screen-1";
  * `full` for its hover text (every reason, the matched criteria and the
  * generative model's reason).
  */
-export function screenExplanation(screen: Pick<ScreenView, "recommendation" | "hits" | "matched" | "roleNote" | "reason" | "stale">): { line: string; full: string } {
-  const why = [...screen.hits, screen.roleNote].filter(Boolean);
+export function screenExplanation(screen: Pick<ScreenView, "recommendation" | "hits" | "matched" | "role" | "reason" | "stale">): { line: string; full: string } {
+  const why = screen.hits;
   const line = screen.recommendation === "include"
     ? screen.reason || screen.matched.join(" · ")
     : [...why, screen.reason].filter(Boolean).join(" · ");
@@ -220,6 +224,7 @@ export function screenExplanation(screen: Pick<ScreenView, "recommendation" | "h
     `AI ${RECOMMENDATION_NAMES[screen.recommendation]}${screen.stale ? " (기준을 바꾸기 전의 판정)" : ""}`,
     ...why.map((h) => `• ${h}`),
     ...screen.matched.map((m) => `✓ ${m}`),
+    ...(screen.role.label ? [`◇ ${screen.role.label}`] : []),
     ...(screen.reason ? [`AI 이유: ${screen.reason}`] : []),
   ].join("\n");
   return { line, full };
@@ -303,24 +308,34 @@ export function roleFit(result: Pick<ScreenResult, "roles">, key: string): numbe
 }
 export const ROLE_FIT = 0.4;
 
-/** The recommendation for the purpose in force. A relevant paper with no role for the purpose waits instead of being excluded. */
-export function recommend(profile: ScreeningProfile, result: ScreenResult): { recommendation: Recommendation; hits: string[]; matched: string[]; roleNote: string; roleMissing: boolean } {
-  if (result.error) return { recommendation: "maybe", hits: [`판정 실패: ${result.error}`], matched: [], roleNote: "", roleMissing: false };
-  if (result.basis === "none") return { recommendation: "maybe", hits: ["초록이 없어 판정하지 않음"], matched: [], roleNote: "", roleMissing: false };
+/**
+ * The recommendation follows the topic alone: whether a paper belongs in the
+ * project. The purpose decides which archived papers a piece of writing draws
+ * on, so its role is a label and a filter (`roleOf`), not a reason to wait.
+ */
+export function recommend(profile: ScreeningProfile, result: ScreenResult): { recommendation: Recommendation; hits: string[]; matched: string[] } {
+  if (result.error) return { recommendation: "maybe", hits: [`판정 실패: ${result.error}`], matched: [] };
+  if (result.basis === "none") return { recommendation: "maybe", hits: ["초록이 없어 판정하지 않음"], matched: [] };
   const { topic, hits, matched } = topicOf(profile, result);
-  if (topic === "off") return { recommendation: "exclude", hits, matched, roleNote: "", roleMissing: false };
-  if (topic === "uncertain") return { recommendation: "maybe", hits, matched, roleNote: "", roleMissing: false };
+  return { recommendation: topic === "off" ? "exclude" : topic === "uncertain" ? "maybe" : "include", hits, matched };
+}
+
+/** The paper's role for the purpose in force: the roles it can play, or that it has none. */
+export function roleOf(profile: ScreeningProfile, result: Pick<ScreenResult, "roles">): ScreenView["role"] & { missing: boolean } {
   const questions = roleQuestions(profile);
-  if (!questions.length) return { recommendation: "include", hits, matched, roleNote: "", roleMissing: false };
-  const fit = roleFit(result, purposeKey(profile));
-  if (fit === null) return { recommendation: "include", hits, matched, roleNote: "", roleMissing: true };
-  if (fit >= ROLE_FIT) return { recommendation: "include", hits, matched, roleNote: "", roleMissing: false };
   const name = profile.purpose === "custom" ? profile.custom.label || PURPOSE_NAMES.custom : PURPOSE_NAMES[profile.purpose];
-  return { recommendation: "maybe", hits, matched, roleNote: `주제 관련 · ${name} 목적에서 맡을 역할 없음`, roleMissing: false };
+  const answers = result.roles[purposeKey(profile)]?.answers;
+  if (!questions.length) return { fits: null, label: "", roles: [], missing: false };
+  if (!answers) return { fits: null, label: "", roles: [], missing: true };
+  const roles = questions.filter((q) => (answers[q.id] ?? 0) >= ROLE_FIT).sort((a, b) => answers[b.id] - answers[a.id]).map((q) => q.label);
+  return roles.length
+    ? { fits: true, label: `${name} 역할: ${roles.join(" · ")}`, roles, missing: false }
+    : { fits: false, label: `${name} 목적에서 맡을 역할 없음`, roles: [], missing: false };
 }
 
 export function screenView(profile: ScreeningProfile, result: ScreenResult): ScreenView {
-  const { recommendation, hits, matched, roleNote, roleMissing } = recommend(profile, result);
+  const { recommendation, hits, matched } = recommend(profile, result);
+  const { missing: roleMissing, ...role } = roleOf(profile, result);
   const key = purposeKey(profile);
   const answers = result.roles[key]?.answers || {};
   return {
@@ -329,7 +344,7 @@ export function screenView(profile: ScreeningProfile, result: ScreenResult): Scr
     relevance: result.relevance,
     hits,
     matched,
-    roleNote,
+    role,
     reason: result.reason,
     quote: result.quote,
     quoteChecked: result.quoteChecked,

@@ -49,13 +49,13 @@ export function ScreeningInspector({ work, projectId, onNotice, onError }: {
           {screen.basis === "none" && <p className="subtle">초록이 없어 모델에 묻지 않고 보류로 두었습니다.</p>}
           {screen.error && <p className="warning-text">판정 실패로 보류: {screen.error}</p>}
           {screen.roleMissing && <p className="subtle">지금 목적의 역할 질문은 아직 묻지 않았습니다. 다시 심사하면 그 질문만 묻습니다.</p>}
-          {(screen.hits.length > 0 || screen.roleNote || screen.matched.length > 0) && (
+          {(screen.hits.length > 0 || screen.matched.length > 0) && (
             <ul className="evidence-list">
               {screen.hits.map((hit) => <li key={hit}>{hit}</li>)}
-              {screen.roleNote && <li>{screen.roleNote}</li>}
               {screen.matched.map((m) => <li key={m} className="green">{m}</li>)}
             </ul>
           )}
+          {screen.role.label && <p className={screen.role.fits ? "role-label fits" : "role-label"}>{screen.role.label}</p>}
           {screen.reason && <p>{screen.reason}</p>}
           {screen.quote && (
             <>
