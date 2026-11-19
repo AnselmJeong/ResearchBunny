@@ -2253,10 +2253,12 @@ export function App() {
                               onClick={() => inspect(w.id)}
                             >
                               <h3>{w.title}</h3>
-                              <p>
+                              {/* The journal follows the authors on their line, out of the way of the verdict and role. */}
+                              <p className="byline">
                                 {w.authors.slice(0, 3).join(" · ") ||
                                   "저자 미상"}
                                 {w.authors.length > 3 ? " 외" : ""}
+                                {(w.venue || w.type) && <span className="venue">{w.venue || w.type}</span>}
                               </p>
                               <div className="paper-meta">
                                 {/* The verdict leads the line so a list reads down one column; its reasons show on hover. */}
@@ -2268,7 +2270,6 @@ export function App() {
                                 )}
                                 {w.screen?.role.fits === true && <span className="role-chip" data-help={w.screen.role.label}>역할 · {w.screen.role.roles[0]}{w.screen.role.roles.length > 1 ? ` 외 ${w.screen.role.roles.length - 1}` : ""}</span>}
                                 {w.screen?.role.fits === false && <span className="role-chip none" data-help={w.screen.role.label}>역할 없음</span>}
-                                <span className="venue">{w.venue || w.type}</span>
                                 {seeds.includes(w.id) && (
                                   <span className="seed-label">◆ seed</span>
                                 )}
