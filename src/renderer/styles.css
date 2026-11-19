@@ -4348,12 +4348,25 @@ html[data-theme="dark"] { --caution: #e2b765; }
   line-height: 18px;
   text-align: center;
 }
+/* Accent lines above and below and a green tint mark the box off from the toolbar and the list. */
 .filter-panel {
   border-top: 2px solid var(--accent);
-  background: color-mix(in srgb, var(--accent-soft) 40%, var(--bg));
+  border-bottom: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 75%, var(--bg));
 }
 .filter-panel > .filter-row:last-child { margin-bottom: 0; }
+/* The box slides: its row grows from 0fr to 1fr while it fades in, and back when it shuts. */
+.filter-drawer {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 0.24s ease-out, opacity 0.18s ease-out;
+}
+.filter-drawer.open { grid-template-rows: 1fr; opacity: 1; }
+.filter-drawer-inner { min-height: 0; overflow: hidden; }
+.filter-drawer .filter-panel { animation: none; }
 .filter-row.screen-filters select { font-weight: 600; }
 @media (prefers-reduced-motion: reduce) {
-  .filter-toggle .filter-chevron { transition: none; }
+  .filter-toggle .filter-chevron,
+  .filter-drawer { transition: none; }
 }

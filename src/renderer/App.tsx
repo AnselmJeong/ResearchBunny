@@ -1958,7 +1958,12 @@ export function App() {
                     </span>
                   </div>
                 )}
-                {filtersOpen && <Filters value={filters} onChange={setFilters} />}
+                {/* Always mounted so the box can slide open and shut; while shut it is inert. */}
+                <div className={`filter-drawer${filtersOpen ? " open" : ""}`} inert={!filtersOpen}>
+                  <div className="filter-drawer-inner">
+                    <Filters value={filters} onChange={setFilters} />
+                  </div>
+                </div>
                 {conditions.length > 0 && (
                   <div className="filter-status">
                     <span>
