@@ -47,6 +47,12 @@ export interface ScreeningProfile {
   /** Two or three sentences: what the project wants to know and what it does not want. */
   intent: string;
   include: Criterion[];
+  /**
+   * How inclusion criteria combine. "any": each describes one kind of paper the
+   * project wants, and meeting one is enough (the default). "all": every one
+   * must hold, as in a systematic review's PICO criteria.
+   */
+  includeMode?: IncludeMode;
   exclude: Criterion[];
   /** Exclusion criteria proposed from recommendations the person turned down. */
   suggestions: { id: string; text: string; workId: string; createdAt: string }[];
@@ -59,6 +65,11 @@ export interface ScreeningProfile {
   updatedAt: string;
 }
 export type ScreeningMode = "two-stage" | "decision" | "generative";
+export type IncludeMode = "any" | "all";
+export const INCLUDE_MODE_NAMES: Record<IncludeMode, string> = {
+  any: "하나라도 맞으면 포함",
+  all: "모두 맞아야 포함",
+};
 export const MODE_NAMES: Record<ScreeningMode, string> = {
   "two-stage": "결정 모델 + 생성 모델",
   decision: "결정 모델만",
@@ -74,6 +85,7 @@ export function defaultProfile(projectId: string, question = ""): ScreeningProfi
     custom: { label: "", questions: [] },
     intent: question,
     include: [],
+    includeMode: "any",
     exclude: [],
     suggestions: [],
     version: 1,
@@ -172,8 +184,10 @@ export interface ScreenView {
   recommendation: Recommendation;
   topic: TopicVerdict;
   relevance: number | null;
-  /** Criteria that decided the recommendation, as "제외 기준 2: 동물 연구". */
+  /** Why the paper is excluded or waits, criterion by criterion, in full. */
   hits: string[];
+  /** Inclusion criteria the paper clearly meets. */
+  matched: string[];
   /** Why a relevant paper waits: no role for the purpose. */
   roleNote: string;
   reason: string;
@@ -192,20 +206,48 @@ export interface ScreenView {
 
 export const PROMPT_VERSION = "screen-1";
 
+/**
+ * A recommendation in words: `line` for a list row (the deciding reason first),
+ * `full` for its hover text (every reason, the matched criteria and the
+ * generative model's reason).
+ */
+export function screenExplanation(screen: Pick<ScreenView, "recommendation" | "hits" | "matched" | "roleNote" | "reason" | "stale">): { line: string; full: string } {
+  const why = [...screen.hits, screen.roleNote].filter(Boolean);
+  const line = screen.recommendation === "include"
+    ? screen.reason || screen.matched.join(" · ")
+    : [...why, screen.reason].filter(Boolean).join(" · ");
+  const full = [
+    `AI ${RECOMMENDATION_NAMES[screen.recommendation]}${screen.stale ? " (기준을 바꾸기 전의 판정)" : ""}`,
+    ...why.map((h) => `• ${h}`),
+    ...screen.matched.map((m) => `✓ ${m}`),
+    ...(screen.reason ? [`AI 이유: ${screen.reason}`] : []),
+  ].join("\n");
+  return { line, full };
+}
+
 /** Probability above which an exclusion criterion clearly applies, and below which an inclusion criterion clearly fails. */
 export const CLEAR = 0.9;
 /** An inclusion criterion is met above this; an exclusion criterion is clear of the paper below CLEAN. */
 export const MET = 0.7;
 export const CLEAN = 0.4;
 
-const criterionLabel = (kind: "include" | "exclude", index: number, text: string) =>
-  `${kind === "include" ? "포함" : "제외"} 기준 ${index + 1}: ${text.length > 40 ? text.slice(0, 39) + "…" : text}`;
+const number = (kind: "include" | "exclude", index: number) => `${kind === "include" ? "포함" : "제외"} 기준 ${index + 1}`;
 
 /**
- * Topic relevance from the criterion judgments. Exclusion needs a clear
- * violation; anything short of that is uncertain, never excluded.
+ * Topic relevance from the criterion judgments. Under "any" (the default) a
+ * paper that clearly meets one inclusion criterion is relevant, whatever its
+ * overall score; only an exclusion criterion that clearly applies overrides
+ * that. Exclusion needs a clear violation: an exclusion criterion that
+ * clearly applies, or inclusion criteria that clearly fail (every one under
+ * "any", any one under "all"). Anything short of that is uncertain, never
+ * excluded. `hits` say why in full; `matched` names the inclusion criteria
+ * the paper clearly meets.
  */
-export function topicOf(profile: Pick<ScreeningProfile, "include" | "exclude">, result: Pick<ScreenResult, "criteria" | "relevance">): { topic: TopicVerdict; hits: string[] } {
+export function topicOf(
+  profile: Pick<ScreeningProfile, "include" | "exclude" | "includeMode">,
+  result: Pick<ScreenResult, "criteria" | "relevance">,
+): { topic: TopicVerdict; hits: string[]; matched: string[] } {
+  const all = profile.includeMode === "all";
   const judged = (id: string) => result.criteria[id] || {};
   const applies = (id: string) => {
     const j = judged(id);
@@ -223,21 +265,33 @@ export function topicOf(profile: Pick<ScreeningProfile, "include" | "exclude">, 
     const j = judged(id);
     return j.verdict ? j.verdict === "no" : j.p !== undefined && j.p < CLEAN;
   };
-  const excluded = profile.exclude.flatMap((c, i) => (applies(c.id) ? [criterionLabel("exclude", i, c.text)] : []));
-  const failed = profile.include.flatMap((c, i) => (fails(c.id) ? [criterionLabel("include", i, c.text)] : []));
-  if (excluded.length || failed.length) return { topic: "off", hits: [...excluded, ...failed] };
+  const include = profile.include.map((c, i) => ({ ...c, label: number("include", i) }));
+  const exclude = profile.exclude.map((c, i) => ({ ...c, label: number("exclude", i) }));
+  const matched = include.filter((c) => met(c.id)).map((c) => `${c.label}에 맞음: ${c.text}`);
+  const excluded = exclude.filter((c) => applies(c.id)).map((c) => `${c.label}에 해당: ${c.text}`);
+  const failing = include.filter((c) => fails(c.id));
+  const failed = all
+    ? failing.map((c) => `${c.label}에 맞지 않음: ${c.text}`)
+    : include.length && failing.length === include.length
+      ? ["어느 포함 기준에도 맞지 않음"]
+      : [];
+  if (excluded.length || failed.length) return { topic: "off", hits: [...excluded, ...failed], matched };
   const relevance = result.relevance;
-  const criteria = profile.include.length + profile.exclude.length;
+  const criteria = include.length + exclude.length;
   // With no criterion to go by, only an unrelated score is clear enough to exclude.
-  if (!criteria && relevance !== null && relevance <= 0.5) return { topic: "off", hits: ["주제와 무관"] };
-  const allMet = profile.include.every((c) => met(c.id));
-  const allClean = profile.exclude.every((c) => clean(c.id));
-  if (allMet && allClean && (relevance === null ? criteria > 0 : relevance >= 2)) return { topic: "relevant", hits: [] };
-  const unsure = [
-    ...profile.include.flatMap((c, i) => (met(c.id) ? [] : [criterionLabel("include", i, c.text)])),
-    ...profile.exclude.flatMap((c, i) => (clean(c.id) ? [] : [criterionLabel("exclude", i, c.text)])),
+  if (!criteria && relevance !== null && relevance <= 0.5) return { topic: "off", hits: ["연구 의도와 무관"], matched };
+  // One clearly met alternative is enough: an unclear exclusion or a low overall score does not hold it back.
+  if (!all && matched.length) return { topic: "relevant", hits: [], matched };
+  const included = !include.length || (all ? include.every((c) => met(c.id)) : matched.length > 0);
+  const unclear = exclude.filter((c) => !clean(c.id)).map((c) => `${c.label} 해당 여부 불확실: ${c.text}`);
+  const lowRelevance = relevance !== null && relevance < 2;
+  if (included && !unclear.length && (relevance === null ? criteria > 0 : !lowRelevance)) return { topic: "relevant", hits: [], matched };
+  const hits = [
+    ...(included ? [] : all ? include.filter((c) => !met(c.id)).map((c) => `${c.label} 충족 여부 불확실: ${c.text}`) : ["분명히 맞는 포함 기준이 없음"]),
+    ...unclear,
+    ...(lowRelevance ? [`연구 의도와의 관련성 낮음 (${relevance!.toFixed(1)}/4)`] : []),
   ];
-  return { topic: "uncertain", hits: unsure.length ? unsure.map((h) => `${h} (불확실)`) : relevance !== null && relevance < 2 ? ["관련성 낮음"] : [] };
+  return { topic: "uncertain", hits, matched };
 }
 
 /** How well a paper serves the purpose: its best role, or null when the role questions were not asked. */
@@ -250,22 +304,23 @@ export function roleFit(result: Pick<ScreenResult, "roles">, key: string): numbe
 export const ROLE_FIT = 0.4;
 
 /** The recommendation for the purpose in force. A relevant paper with no role for the purpose waits instead of being excluded. */
-export function recommend(profile: ScreeningProfile, result: ScreenResult): { recommendation: Recommendation; hits: string[]; roleNote: string; roleMissing: boolean } {
-  if (result.error || result.basis === "none") return { recommendation: "maybe", hits: [], roleNote: "", roleMissing: false };
-  const { topic, hits } = topicOf(profile, result);
-  if (topic === "off") return { recommendation: "exclude", hits, roleNote: "", roleMissing: false };
-  if (topic === "uncertain") return { recommendation: "maybe", hits, roleNote: "", roleMissing: false };
+export function recommend(profile: ScreeningProfile, result: ScreenResult): { recommendation: Recommendation; hits: string[]; matched: string[]; roleNote: string; roleMissing: boolean } {
+  if (result.error) return { recommendation: "maybe", hits: [`판정 실패: ${result.error}`], matched: [], roleNote: "", roleMissing: false };
+  if (result.basis === "none") return { recommendation: "maybe", hits: ["초록이 없어 판정하지 않음"], matched: [], roleNote: "", roleMissing: false };
+  const { topic, hits, matched } = topicOf(profile, result);
+  if (topic === "off") return { recommendation: "exclude", hits, matched, roleNote: "", roleMissing: false };
+  if (topic === "uncertain") return { recommendation: "maybe", hits, matched, roleNote: "", roleMissing: false };
   const questions = roleQuestions(profile);
-  if (!questions.length) return { recommendation: "include", hits, roleNote: "", roleMissing: false };
+  if (!questions.length) return { recommendation: "include", hits, matched, roleNote: "", roleMissing: false };
   const fit = roleFit(result, purposeKey(profile));
-  if (fit === null) return { recommendation: "include", hits, roleNote: "", roleMissing: true };
-  if (fit >= ROLE_FIT) return { recommendation: "include", hits, roleNote: "", roleMissing: false };
+  if (fit === null) return { recommendation: "include", hits, matched, roleNote: "", roleMissing: true };
+  if (fit >= ROLE_FIT) return { recommendation: "include", hits, matched, roleNote: "", roleMissing: false };
   const name = profile.purpose === "custom" ? profile.custom.label || PURPOSE_NAMES.custom : PURPOSE_NAMES[profile.purpose];
-  return { recommendation: "maybe", hits, roleNote: `주제 관련 · ${name} 목적에 맞는 역할 없음`, roleMissing: false };
+  return { recommendation: "maybe", hits, matched, roleNote: `주제 관련 · ${name} 목적에서 맡을 역할 없음`, roleMissing: false };
 }
 
 export function screenView(profile: ScreeningProfile, result: ScreenResult): ScreenView {
-  const { recommendation, hits, roleNote, roleMissing } = recommend(profile, result);
+  const { recommendation, hits, matched, roleNote, roleMissing } = recommend(profile, result);
   const key = purposeKey(profile);
   const answers = result.roles[key]?.answers || {};
   return {
@@ -273,6 +328,7 @@ export function screenView(profile: ScreeningProfile, result: ScreenResult): Scr
     topic: result.topic,
     relevance: result.relevance,
     hits,
+    matched,
     roleNote,
     reason: result.reason,
     quote: result.quote,
@@ -307,12 +363,16 @@ export interface ScreeningJob {
   /** What the finished job recommended. */
   counts?: Record<Recommendation, number>;
   target?: ScreeningTarget["kind"];
+  /** The papers it screened, so the counts can follow later criteria and purpose changes. */
+  spec?: ScreeningTarget;
   updatedAt: string;
 }
 export interface ScreeningSnapshot {
   profile: ScreeningProfile;
   job: ScreeningJob | null;
   evaluation: EvaluationReport | null;
+  /** The last screened papers' recommendations under the current criteria and purpose. */
+  live: { counts: Record<Recommendation, number>; stale: number; unscreened: number } | null;
   /** Whether the decision model (an Ollama Cloud key) and the generative model (AI turned on in Settings) can be used. */
   ready: { decision: boolean; generative: boolean };
 }

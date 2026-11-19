@@ -3,10 +3,12 @@ import { LoaderCircle, Plus, Sparkles, Square, Trash2 } from "lucide-react";
 import { Modal } from "./Modal";
 import {
   DECISION_MODELS,
+  INCLUDE_MODE_NAMES,
   MODE_NAMES,
   PURPOSE_NAMES,
   PURPOSE_QUESTIONS,
   type Criterion,
+  type IncludeMode,
   type RoleQuestion,
   type ScreeningMode,
   type ScreeningProfile,
@@ -74,6 +76,7 @@ export function ScreeningDialog({ projectId, state, onClose, onSaved, onError }:
           custom: form.custom,
           intent: form.intent,
           include: form.include.filter((c) => c.text.trim()),
+          includeMode: form.includeMode ?? "any",
           exclude: form.exclude.filter((c) => c.text.trim()),
           suggestions: form.suggestions,
           mode: form.mode,
@@ -99,8 +102,9 @@ export function ScreeningDialog({ projectId, state, onClose, onSaved, onError }:
         intent: result.intent,
         include: result.include.map((text) => ({ id: newId(), text })),
         exclude: result.exclude.map((text) => ({ id: newId(), text })),
+        includeMode: "any",
       }));
-      setDraftNote(`AI 초안: ${result.basis}. 고친 뒤 저장하세요.`);
+      setDraftNote(`AI 초안: ${result.basis}. 포함 기준만 만들었습니다(하나라도 맞으면 포함). 제외 기준은 동물 연구처럼 꼭 빼야 할 것만 직접 추가하세요. 고친 뒤 저장하세요.`);
     } catch (cause) {
       onError(cause);
     } finally {
@@ -159,7 +163,15 @@ export function ScreeningDialog({ projectId, state, onClose, onSaved, onError }:
             onChange={(e) => set("intent", e.target.value)} />
         </label>
         <CriterionList label="포함 기준" items={form.include} onChange={(items) => set("include", items)} placeholder="예: 치료 저항성 조현병 환자를 대상으로 한 연구" />
-        <CriterionList label="제외 기준" items={form.exclude} onChange={(items) => set("exclude", items)} placeholder="예: 동물 실험이나 세포 연구" />
+        <label className="field inline-field">
+          포함 기준을
+          <select value={form.includeMode ?? "any"} onChange={(e) => set("includeMode", e.target.value as IncludeMode)}>
+            {(Object.keys(INCLUDE_MODE_NAMES) as IncludeMode[]).map((m) => <option key={m} value={m}>{INCLUDE_MODE_NAMES[m]}</option>)}
+          </select>
+          <span className="subtle">{(form.includeMode ?? "any") === "any" ? "기준마다 원하는 논문의 한 종류를 적습니다. 하나에 분명히 맞으면 포함, 모두에 분명히 맞지 않을 때만 제외합니다." : "체계적 고찰처럼 모든 기준(대상·중재·설계…)을 갖춰야 포함하고, 하나라도 분명히 어기면 제외합니다."}</span>
+        </label>
+        <CriterionList label="제외 기준 (선택)" items={form.exclude} onChange={(items) => set("exclude", items)} placeholder="예: 동물 실험이나 세포 연구" />
+        <p className="subtle">제외 기준은 포함 기준에 맞아도 꼭 빼야 할 것만 적습니다. 분명히 해당할 때만 제외하고, 포함 기준을 뒤집은 문장은 필요 없습니다.</p>
         {form.suggestions.length > 0 && (
           <fieldset className="criterion-list suggestions">
             <legend>거절한 추천에서 나온 제외 기준 후보</legend>
