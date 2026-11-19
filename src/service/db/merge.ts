@@ -20,6 +20,8 @@ const OWNED: [table: string, column: string][] = [
   ["metadata_snapshots", "work_id"],
   ["citations", "citing_id"],
   ["candidates", "work_id"],
+  ["screenings", "work_id"],
+  ["work_characters", "work_id"],
 ];
 /**
  * What one merge changed, and nothing else: the two works and their own rows as
@@ -131,6 +133,11 @@ export function mergeWorks(db: Library, keepId: string, removeId: string) {
     // A genealogy keeps the paper and its card under the surviving record.
     sql.prepare("INSERT OR IGNORE INTO genealogy_papers(genealogy_id,work_id,data,card) SELECT genealogy_id,?,data,card FROM genealogy_papers WHERE work_id=?").run(keepId, removeId);
     sql.prepare("DELETE FROM genealogy_papers WHERE work_id=?").run(removeId);
+    // Screening judgments and the paper's character follow it; the surviving record's own win.
+    sql.prepare("INSERT OR IGNORE INTO screenings SELECT project_id,?,data FROM screenings WHERE work_id=?").run(keepId, removeId);
+    sql.prepare("DELETE FROM screenings WHERE work_id=?").run(removeId);
+    sql.prepare("INSERT OR IGNORE INTO work_characters SELECT ?,data FROM work_characters WHERE work_id=?").run(keepId, removeId);
+    sql.prepare("DELETE FROM work_characters WHERE work_id=?").run(removeId);
     for (const a of db.attachments(removeId)) {
       const updated: Attachment = { ...a, workId: keepId };
       db.saveAttachment(updated);

@@ -121,6 +121,11 @@ export class Library {
       CREATE TABLE IF NOT EXISTS genealogy_state(genealogy_id TEXT NOT NULL REFERENCES genealogies(id) ON DELETE CASCADE,key TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(genealogy_id,key));
       -- Extracted reading text, keyed by attachment hash or PMCID, shared by every report.
       CREATE TABLE IF NOT EXISTS genealogy_texts(key TEXT PRIMARY KEY,data TEXT NOT NULL,extracted_at TEXT NOT NULL);
+      -- AI screening: a project's criteria, each paper's judgment in it, and each paper's character (one per paper).
+      CREATE TABLE IF NOT EXISTS screening_profiles(project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS screenings(project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,data TEXT NOT NULL,PRIMARY KEY(project_id,work_id));
+      CREATE INDEX IF NOT EXISTS idx_screenings_work ON screenings(work_id);
+      CREATE TABLE IF NOT EXISTS work_characters(work_id TEXT PRIMARY KEY REFERENCES works(id) ON DELETE CASCADE,data TEXT NOT NULL);
       PRAGMA user_version=3;
     `);
     if (!this.projects().length) this.createProject("내 연구", "");
@@ -611,6 +616,16 @@ export class Library {
             this.mutate(projectId, [item.id], { pendingDismissed: false, ...item.state }, false);
       this.db.prepare("DELETE FROM changes WHERE id=?").run(row.id);
     });
+    return true;
+  }
+  /** An abstract found later at a provider. A record that has one, or one the person typed, keeps it. */
+  setAbstract(id: string, abstract: string, source: string): boolean {
+    const work = this.get(id);
+    if (work.abstract?.trim() || "abstract" in work.edits || !abstract.trim()) return false;
+    this.db
+      .prepare("UPDATE works SET data=? WHERE id=?")
+      .run(JSON.stringify({ ...work, abstract: abstract.trim(), raw: { ...work.raw, abstractSource: source } }), id);
+    this.touch();
     return true;
   }
   edit(id: string, patch: Partial<Work>): Work {

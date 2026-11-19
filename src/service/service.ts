@@ -10,7 +10,9 @@ import { GenealogyAI } from "./genealogy/llm";
 import { GenealogyEngine } from "./genealogy/engine";
 import { GenealogyStore } from "./genealogy/store";
 import { genealogyTools } from "./genealogy/tools";
-import { defaultGenealogySettings } from "../shared/genealogy";
+import { defaultGenealogySettings, defaultRoutes } from "../shared/genealogy";
+import { DecisionClient } from "./screening/decision";
+import { Screener } from "./screening";
 import { version } from "../../package.json";
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile, rename, stat } from "node:fs/promises";
@@ -76,6 +78,9 @@ export class Service {
   answers: PassageAnswerer;
   sorter: ShelfSorter;
   genealogy: GenealogyEngine;
+  /** The Ollama Cloud decision model, for screening. */
+  decision: DecisionClient;
+  screener: Screener;
   secrets: {
     openalex?: string;
     openai?: string;
@@ -160,6 +165,27 @@ export class Service {
     };
     this.pdf.shelf = inbox;
     this.classifier = new ArchiveClassifier(this.db, this.ai, emit);
+    this.decision = new DecisionClient(() => this.secrets.ollama);
+    const models = () => {
+      const s = this.settings();
+      return { codex: s.codexModel, claude: s.claudeModel, ollama: s.ollamaModel };
+    };
+    this.screener = new Screener({
+      db: this.db,
+      decision: this.decision,
+      ai: new GenealogyAI(this.db, { codex: this.codex, claude: this.claude, ollama: this.ollama }, models),
+      // Screening runs on a subscription or Ollama, like reports; the paid API falls back to Codex.
+      route: () => {
+        const s = this.settings();
+        return s.aiEnabled ? defaultRoutes(s).light : null;
+      },
+      emit,
+      pubmedKey: () => this.secrets.pubmed,
+      onAbstracts: (ids) => {
+        for (const id of ids)
+          if (this.db.db.prepare("SELECT 1 FROM shelf_files WHERE work_id=? LIMIT 1").get(id)) this.shelf.ftsRefresh(id);
+      },
+    });
     this.sorter = new ShelfSorter(this.db, this.shelf, this.shelfQueries, this.ai, emit);
     this.genealogy = new GenealogyEngine({
       db: this.db,
@@ -260,7 +286,7 @@ export class Service {
     this.downloadsSyncing.unref?.();
   }
   busy() {
-    return this.chat.active.size > 0 || this.answers.active.size > 0 || this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0 || !!this.sorter.active || this.genealogy.active.size > 0;
+    return this.chat.active.size > 0 || this.answers.active.size > 0 || this.discovery.active.size > 0 || this.pdf.active.size > 0 || this.downloads.active.size > 0 || this.classifier.active.size > 0 || !!this.sorter.active || this.genealogy.active.size > 0 || this.screener.active.size > 0;
   }
   settings(): Settings {
     const saved = this.db.pref<Partial<AIConfig>>("ai");
@@ -309,6 +335,7 @@ export class Service {
           settings: this.settings(),
           shelf: this.shelf.summary(projectId),
           genealogies: this.genealogy.store.list(projectId),
+          screening: this.screener.snapshot(projectId),
           ui: settledUi(this.db, projectId),
         };
       }
@@ -359,6 +386,26 @@ export class Service {
           return this.db.list(args, search, this.shelf.currentModelKey());
         }
         return this.db.list(args, undefined, this.shelf.currentModelKey());
+      case "screeningState":
+        return this.screener.snapshot(schemas.screeningState.parse(args).projectId);
+      case "screeningSave": {
+        const p = schemas.screeningSave.parse(args);
+        this.db.project(p.projectId);
+        if (this.screener.active.has(p.projectId)) throw new AppError("BUSY", "진행 중인 심사가 끝난 뒤 기준을 바꾸세요.");
+        this.screener.store.saveProfile(p.projectId, p.profile);
+        return this.screener.snapshot(p.projectId);
+      }
+      case "screeningStart": {
+        const p = schemas.screeningStart.parse(args);
+        return this.screener.start(p.projectId, p.target, { fresh: p.fresh });
+      }
+      case "screeningCancel":
+        this.screener.cancel(schemas.screeningCancel.parse(args).projectId);
+        return;
+      case "screeningEvaluate": {
+        const p = schemas.screeningEvaluate.parse(args);
+        return this.screener.evaluate(p.projectId, { size: p.size, modes: p.modes });
+      }
       case "classifyArchive":
         if (this.busy()) throw new AppError("BUSY", "진행 중인 작업이 끝난 뒤 자동 분류하세요.");
         return this.classifier.start(args.projectId);
@@ -874,6 +921,7 @@ export class Service {
           ...this.pdf.active.values(),
           ...this.downloads.active.values(),
           ...this.classifier.active.values(),
+          ...this.screener.active.values(),
         ])
           control.abort();
         // Saves the app Chrome's logins and ends it; bounded so quitting never hangs on Chrome.

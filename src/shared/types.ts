@@ -388,6 +388,7 @@ export interface Snapshot {
   settings: Settings;
   shelf: import("./shelf").ShelfSummary;
   genealogies: import("./genealogy").GenealogySummary[];
+  screening: import("./screening").ScreeningSnapshot;
   ui: Record<string, unknown>;
 }
 /**
