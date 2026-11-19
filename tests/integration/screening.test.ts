@@ -11,7 +11,6 @@ import {
   scoreEvaluation,
   screenExplanation,
   screenView,
-  topicOf,
   type ScreenResult,
   type ScreeningProfile,
 } from "../../src/shared/screening";
@@ -130,16 +129,20 @@ test("a row says why in one line and in full on hover", () => {
   assert.equal(kept.line, "포함 기준 1에 맞음: Studies in human patients");
 });
 
-test("a relevant paper with no role for the purpose waits instead of being excluded", () => {
+test("the purpose's role is a label: it never holds back a relevant paper", () => {
   const p = profile({ purpose: "original" });
   const r = result({ relevance: 3, criteria: { human: { p: 0.95 }, animal: { p: 0.05 } }, roles: { original: { answers: { primary: 0.1, method: 0.2, numbers: 0.1, comparable: 0.1 }, model: "clef", judgedAt: "" } } });
-  const outcome = recommend(p, r);
-  assert.equal(outcome.recommendation, "maybe");
-  assert.match(outcome.roleNote, /원저 연구 목적에서 맡을 역할 없음/);
-  assert.equal(topicOf(p, r).topic, "relevant");
-  // The same paper fits the genealogy purpose once its genealogy roles were asked.
-  r.roles.genealogy = { answers: { concepts: 0.8 }, model: "clef", judgedAt: "" };
-  assert.equal(recommend({ ...p, purpose: "genealogy" }, r).recommendation, "include");
+  assert.equal(recommend(p, r).recommendation, "include");
+  const view = screenView(p, r);
+  assert.deepEqual(view.role, { fits: false, label: "원저 연구 목적에서 맡을 역할 없음", roles: [] });
+  assert.match(screenExplanation(view).full, /◇ 원저 연구 목적에서 맡을 역할 없음/);
+  // The genealogy purpose's roles, once asked, label the same paper.
+  r.roles.genealogy = { answers: { concepts: 0.8, debate: 0.5, origin: 0.1, fate: 0.1 }, model: "clef", judgedAt: "" };
+  assert.deepEqual(screenView({ ...p, purpose: "genealogy" }, r).role, { fits: true, label: "계보·종설 역할: 기본 개념과 흐름 정리 · 논쟁 정리 또는 반박", roles: ["기본 개념과 흐름 정리", "논쟁 정리 또는 반박"] });
+  // Not asked yet: no label, and a re-screen asks only these questions.
+  const unasked = screenView({ ...p, purpose: "custom", custom: { label: "방법 절", questions: [{ id: "m", label: "측정 도구", question: "Does it present a measurement tool?" }] } }, r);
+  assert.equal(unasked.role.fits, null);
+  assert.equal(unasked.roleMissing, true);
 });
 
 test("the decision client posts named questions to systemone and maps errors", async () => {
@@ -385,6 +388,8 @@ test("recommendations show on list rows, filter the list, and are archived only 
   assert.deepEqual(list({ screen: ["exclude"] }).works.map((w) => w.id), [rat]);
   assert.deepEqual(list({ character: ["method"] }).works.map((w) => w.id), [rat]);
   assert.deepEqual(list({ screen: ["none"] }).works.map((w) => w.id), []);
+  assert.deepEqual(list({ role: ["fits"] }).works.map((w) => w.id).sort(), [human, rat].sort());
+  assert.deepEqual(list({ role: ["none"] }).works.map((w) => w.id), []);
   // Nothing was archived by the job; accepting takes only the recommended paper.
   assert.equal(db.state(projectId, human).screening, "pending");
   assert.deepEqual(screener.acceptable(projectId, { kind: "ids", ids: [human, rat] }), [human]);
