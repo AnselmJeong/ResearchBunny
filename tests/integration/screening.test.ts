@@ -9,6 +9,8 @@ import {
   defaultProfile,
   recommend,
   scoreEvaluation,
+  screenExplanation,
+  screenView,
   topicOf,
   type ScreenResult,
   type ScreeningProfile,
@@ -78,20 +80,28 @@ function fakeAI(judge: (id: string, input: { papers: { id: string; abstract: str
 const deps = (decision: ReturnType<typeof fakeDecision> | undefined, ai: ReturnType<typeof fakeAI> | undefined) =>
   ({ decision, ai, route: { provider: "codex" as const, model: "" }, runId: "test" });
 
-test("exclusion needs a clear violation; anything short of it waits as 보류", () => {
-  const p = profile();
-  assert.equal(recommend(p, result({ relevance: 3, criteria: { human: { p: 0.95 }, animal: { p: 0.05 } } })).recommendation, "include");
-  // An exclusion criterion that only probably applies is not enough.
-  assert.equal(recommend(p, result({ relevance: 3, criteria: { human: { p: 0.95 }, animal: { p: 0.8 } } })).recommendation, "maybe");
+test("one clearly met inclusion criterion includes; exclusion needs a clear violation", () => {
+  const p = profile({ include: [{ id: "human", text: "Studies in human patients" }, { id: "model", text: "Computational models of the mechanism" }] });
+  assert.equal(recommend(p, result({ relevance: 3, criteria: { human: { p: 0.95 }, model: { p: 0.05 }, animal: { p: 0.05 } } })).recommendation, "include");
+  // The other alternative failing, an unclear exclusion or a low overall score do not hold back a clearly met criterion.
+  const met = recommend(p, result({ relevance: 1.2, criteria: { human: { p: 0.95 }, model: { p: 0.02 }, animal: { p: 0.8 } } }));
+  assert.equal(met.recommendation, "include");
+  assert.deepEqual(met.matched, ["포함 기준 1에 맞음: Studies in human patients"]);
+  // An exclusion criterion that clearly applies overrides a met inclusion criterion.
   const off = recommend(p, result({ relevance: 3, criteria: { human: { p: 0.95 }, animal: { p: 0.97 } } }));
   assert.equal(off.recommendation, "exclude");
-  assert.match(off.hits[0], /제외 기준 1: Animal/);
-  // An inclusion criterion that clearly fails excludes too.
-  assert.equal(recommend(p, result({ relevance: 3, criteria: { human: { p: 0.03 }, animal: { p: 0.1 } } })).recommendation, "exclude");
+  assert.deepEqual(off.hits, ["제외 기준 1에 해당: Animal or in vitro studies"]);
+  // Every alternative clearly failing excludes; one still open waits.
+  const none = recommend(p, result({ relevance: 1, criteria: { human: { p: 0.03 }, model: { p: 0.05 }, animal: { p: 0.1 } } }));
+  assert.equal(none.recommendation, "exclude");
+  assert.deepEqual(none.hits, ["어느 포함 기준에도 맞지 않음"]);
+  const open = recommend(p, result({ relevance: 2, criteria: { human: { p: 0.5 }, model: { p: 0.05 }, animal: { p: 0.1 } } }));
+  assert.equal(open.recommendation, "maybe");
+  assert.deepEqual(open.hits, ["분명히 맞는 포함 기준이 없음"]);
   // The generative model's verdict outranks the probability.
-  assert.equal(recommend(p, result({ relevance: 3, criteria: { human: { p: 0.95, verdict: "yes" }, animal: { p: 0.97, verdict: "unclear" } } })).recommendation, "maybe");
-  // A failure or a missing abstract never excludes.
-  assert.equal(recommend(p, result({ error: "boom", criteria: { animal: { p: 0.99 } } })).recommendation, "maybe");
+  assert.equal(recommend(p, result({ relevance: 3, criteria: { human: { p: 0.95, verdict: "no" }, model: { p: 0.3, verdict: "unclear" }, animal: { p: 0.02 } } })).recommendation, "maybe");
+  // A failure or a missing abstract never excludes, and says why.
+  assert.deepEqual(recommend(p, result({ error: "boom", criteria: { animal: { p: 0.99 } } })).hits, ["판정 실패: boom"]);
   assert.equal(recommend(p, result({ basis: "none" })).recommendation, "maybe");
   // Without criteria only an unrelated score excludes.
   const bare = profile({ include: [], exclude: [] });
@@ -100,12 +110,32 @@ test("exclusion needs a clear violation; anything short of it waits as 보류", 
   assert.equal(recommend(bare, result({ relevance: 3.4 })).recommendation, "include");
 });
 
+test("with every inclusion criterion required, one that clearly fails excludes and an unclear one waits", () => {
+  const p = profile({ includeMode: "all", include: [{ id: "human", text: "Studies in human patients" }, { id: "rct", text: "Randomised trials" }] });
+  assert.equal(recommend(p, result({ relevance: 3, criteria: { human: { p: 0.95 }, rct: { p: 0.9 }, animal: { p: 0.05 } } })).recommendation, "include");
+  const off = recommend(p, result({ relevance: 3, criteria: { human: { p: 0.95 }, rct: { p: 0.04 }, animal: { p: 0.05 } } }));
+  assert.equal(off.recommendation, "exclude");
+  assert.deepEqual(off.hits, ["포함 기준 2에 맞지 않음: Randomised trials"]);
+  const unsure = recommend(p, result({ relevance: 3, criteria: { human: { p: 0.95 }, rct: { p: 0.5 }, animal: { p: 0.6 } } }));
+  assert.equal(unsure.recommendation, "maybe");
+  assert.deepEqual(unsure.hits, ["포함 기준 2 충족 여부 불확실: Randomised trials", "제외 기준 1 해당 여부 불확실: Animal or in vitro studies"]);
+});
+
+test("a row says why in one line and in full on hover", () => {
+  const p = profile();
+  const off = screenExplanation(screenView(p, result({ relevance: 3, criteria: { human: { p: 0.95 }, animal: { p: 0.97 } }, reason: "쥐 실험입니다." })));
+  assert.equal(off.line, "제외 기준 1에 해당: Animal or in vitro studies · 쥐 실험입니다.");
+  assert.equal(off.full, "AI 제외 추천\n• 제외 기준 1에 해당: Animal or in vitro studies\n✓ 포함 기준 1에 맞음: Studies in human patients\nAI 이유: 쥐 실험입니다.");
+  const kept = screenExplanation(screenView(p, result({ relevance: 3, criteria: { human: { p: 0.95 }, animal: { p: 0.02 } } })));
+  assert.equal(kept.line, "포함 기준 1에 맞음: Studies in human patients");
+});
+
 test("a relevant paper with no role for the purpose waits instead of being excluded", () => {
   const p = profile({ purpose: "original" });
   const r = result({ relevance: 3, criteria: { human: { p: 0.95 }, animal: { p: 0.05 } }, roles: { original: { answers: { primary: 0.1, method: 0.2, numbers: 0.1, comparable: 0.1 }, model: "clef", judgedAt: "" } } });
   const outcome = recommend(p, r);
   assert.equal(outcome.recommendation, "maybe");
-  assert.match(outcome.roleNote, /원저 연구 목적에 맞는 역할 없음/);
+  assert.match(outcome.roleNote, /원저 연구 목적에서 맡을 역할 없음/);
   assert.equal(topicOf(p, r).topic, "relevant");
   // The same paper fits the genealogy purpose once its genealogy roles were asked.
   r.roles.genealogy = { answers: { concepts: 0.8 }, model: "clef", judgedAt: "" };
@@ -349,7 +379,7 @@ test("recommendations show on list rows, filter the list, and are archived only 
   assert.equal(rows.find((w) => w.id === human)!.screen!.recommendation, "include");
   const ratRow = rows.find((w) => w.id === rat)!;
   assert.equal(ratRow.screen!.recommendation, "exclude");
-  assert.match(ratRow.screen!.hits.join(), /제외 기준 1: Animal studies/);
+  assert.match(ratRow.screen!.hits.join(), /제외 기준 1에 해당: Animal studies/);
   assert.equal(ratRow.character!.type, "O");
   // Filters show the matches only.
   assert.deepEqual(list({ screen: ["exclude"] }).works.map((w) => w.id), [rat]);
@@ -381,7 +411,9 @@ test("the criteria draft reads the question, seeds and past decisions, and saves
   const ai = {
     async json<T>(request: JsonRequest<T>): Promise<T> {
       input = JSON.parse(request.input);
-      return request.parse({ intent: "클로자핀 증강의 효과를 알고 싶다.", include: ["사람 대상", "사람 대상", " 증강 요법 "], exclude: ["동물 연구"] }, 0);
+      assert.match(request.instruction, /alternatives/);
+      assert.match(request.instruction, /exclude: return an empty list/);
+      return request.parse({ intent: "클로자핀 증강의 효과를 알고 싶다.", include: ["사람 대상", "사람 대상", " 증강 요법 "], exclude: [] }, 0);
     },
   };
   const screener = new Screener({ db, decision: fakeDecision(() => 0), ai, route: () => ({ provider: "codex", model: "" }), emit: () => {}, pubmedKey: () => undefined });
@@ -390,6 +422,7 @@ test("the criteria draft reads the question, seeds and past decisions, and saves
   assert.deepEqual(input!.keptPapers.map((p) => p.title), ["Kept trial"]);
   assert.deepEqual(input!.rejectedPapers.map((p) => p.title), ["Rejected rat study"]);
   assert.deepEqual(draft.include, ["사람 대상", "증강 요법"]);
+  assert.deepEqual(draft.exclude, []);
   assert.match(draft.basis, /연구 질문/);
   assert.equal(screener.store.hasProfile(projectId), false);
   const off = new Screener({ db, decision: fakeDecision(() => 0), ai, route: () => null, emit: () => {}, pubmedKey: () => undefined });

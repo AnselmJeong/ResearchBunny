@@ -108,7 +108,7 @@ import { PassageAnswerView } from "./components/PassageAnswer";
 import { ScreeningBar } from "./components/ScreeningBar";
 import { ScreeningDialog } from "./components/ScreeningDialog";
 import { EvidenceTable } from "./components/EvidenceTable";
-import { CHARACTER_TYPES, RECOMMENDATION_NAMES, type ScreeningTarget } from "../shared/screening";
+import { CHARACTER_TYPES, RECOMMENDATION_NAMES, screenExplanation, type ScreeningTarget } from "../shared/screening";
 import {
   ImportDialog,
   WorkEditor,
@@ -2267,7 +2267,7 @@ export function App() {
                                 )}
                                 {w.screen && (
                                   <span className={`screen-badge ${w.screen.recommendation}${w.screen.stale ? " stale" : ""}`}
-                                    title={[w.screen.reason, w.screen.stale ? "기준을 바꾸기 전의 판정" : ""].filter(Boolean).join(" · ") || undefined}>
+                                    title={screenExplanation(w.screen).full}>
                                     AI {RECOMMENDATION_NAMES[w.screen.recommendation]}{w.screen.stale ? " · 기준 변경 전" : ""}
                                   </span>
                                 )}
@@ -2311,8 +2311,9 @@ export function App() {
                                   </div>
                                 )
                               )}
-                              {w.screen && w.screen.recommendation !== "include" && (w.screen.hits.length > 0 || w.screen.roleNote) && (
-                                <div className="row-reason screen-reason">{[...w.screen.hits.slice(0, 2), w.screen.roleNote].filter(Boolean).join(" · ")}</div>
+                              {w.screen && screenExplanation(w.screen).line && (
+                                // One line in the list; hovering shows every reason in full.
+                                <div className="row-reason screen-reason" title={screenExplanation(w.screen).full}>{screenExplanation(w.screen).line}</div>
                               )}
                             </button>
                             <span className="similarity-cell">

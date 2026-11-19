@@ -139,6 +139,7 @@ export const screeningProfileSchema = z.object({
   custom: z.object({ label: z.string().max(80), questions: z.array(roleQuestion).max(12) }),
   intent: z.string().max(2000),
   include: z.array(criterion).max(20),
+  includeMode: z.enum(["any", "all"]),
   exclude: z.array(criterion).max(20),
   suggestions: z.array(z.object({ id: z.string().max(40), text: z.string().max(300), workId: id, createdAt: z.string().max(40) })).max(30),
   mode: screeningMode,

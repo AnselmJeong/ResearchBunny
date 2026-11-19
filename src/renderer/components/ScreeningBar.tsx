@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Archive, LoaderCircle, Settings2, ShieldCheck, Square } from "lucide-react";
-import { PURPOSE_NAMES, type ScreeningPurpose, type ScreeningSnapshot, type ScreeningTarget } from "../../shared/screening";
+import { PURPOSE_NAMES, RECOMMENDATION_NAMES, type Recommendation, type ScreeningPurpose, type ScreeningSnapshot, type ScreeningTarget } from "../../shared/screening";
 
 /**
  * The screening controls above a list: the purpose in force, screening the
@@ -88,7 +88,14 @@ export function ScreeningBar({ projectId, state, target, targetLabel, selected, 
               <Archive size={14} /> 포함 추천 담기
             </button>
           )}
-          {job && job.status !== "running" && <span className={`screening-status ${job.status}`}>{job.message}</span>}
+          {job && job.status !== "running" && (
+            <span className={`screening-status ${job.status}`} title={job.message}>
+              {state.live && job.status === "completed"
+                // Recomputed from the stored judgments, so a changed rule or purpose shows here at once.
+                ? `${job.target === "run" ? "후보" : job.target === "archive" ? "아카이브" : "심사한 논문"} · ${(Object.keys(RECOMMENDATION_NAMES) as Recommendation[]).map((r) => `${RECOMMENDATION_NAMES[r]} ${state.live!.counts[r]}편`).join(" · ")}${state.live.stale ? ` · 기준 변경 전 ${state.live.stale}편` : ""}${state.live.unscreened ? ` · 미심사 ${state.live.unscreened}편` : ""}`
+                : job.message}
+            </span>
+          )}
         </>
       )}
     </div>
