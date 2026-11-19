@@ -16,6 +16,7 @@ import {
   BookmarkMinus,
   BookOpen,
   Check,
+  ChevronDown,
   ChevronRight,
   Compass,
   Download,
@@ -1890,12 +1891,19 @@ export function App() {
                       ))}
                     </div>
                   )}
+                  {/* A disclosure: it opens and closes the filter box right below the toolbar. */}
                   <button
-                    className={filtersOpen ? "active" : ""}
+                    className={`filter-toggle${filtersOpen ? " open" : ""}`}
+                    aria-expanded={filtersOpen}
+                    aria-controls="filter-panel"
+                    // One note for both states: a shown note keeps its text while the pointer stays on the button.
+                    data-help="아래 필터 상자를 펼치거나 접습니다. AI 추천·논문 성격·연도·피인용수 등으로 목록을 좁히고, 접어도 걸어 둔 조건은 그대로 적용됩니다."
                     onClick={() => setFiltersOpen(!filtersOpen)}
                   >
-                    <SlidersHorizontal size={14} />
-                    필터{conditions.length > 0 && <span>{negating ? "NOT" : conditions.length}</span>}
+                    <SlidersHorizontal size={15} />
+                    필터
+                    {conditions.length > 0 && <span className="filter-count">{negating ? "NOT" : conditions.length}</span>}
+                    <ChevronDown size={15} className="filter-chevron" aria-hidden />
                   </button>
                   <button
                     className="icon-button"
@@ -2147,7 +2155,8 @@ export function App() {
                           }
                         />
                         <div className="selection-scopes">
-                          <label className="page-selection-label" htmlFor="page-selection">
+                          <label className="page-selection-label" htmlFor="page-selection"
+                            data-help="행을 클릭하면 자세히 보고, 오른쪽 클릭하면 선택합니다. shift를 누르고 고르면 범위가 선택됩니다.">
                             {pageSelectionLabel}
                           </label>
                           {morePages && (
@@ -2212,7 +2221,7 @@ export function App() {
                         })}
                         <span />
                       </div>
-                      <div className="paper-list">
+                      <div className={`paper-list${scope === "run" ? " run-list" : ""}`}>
                         {list.works.map((w, index) => (
                           <article
                             key={w.id}
@@ -2240,7 +2249,6 @@ export function App() {
                             />
                             <button
                               className="paper-main"
-                              title="클릭하면 자세히 보기 · 오른쪽 클릭하면 선택"
                               // Browsing shows the record only; the PDF loads on 원문 보기.
                               onClick={() => inspect(w.id)}
                             >
@@ -2251,7 +2259,16 @@ export function App() {
                                 {w.authors.length > 3 ? " 외" : ""}
                               </p>
                               <div className="paper-meta">
-                                <span>{w.venue || w.type}</span>
+                                {/* The verdict leads the line so a list reads down one column; its reasons show on hover. */}
+                                {w.screen && (
+                                  <span className={`screen-badge ${w.screen.recommendation}${w.screen.stale ? " stale" : ""}`}
+                                    data-help={screenExplanation(w.screen).full} data-help-wide="">
+                                    AI {RECOMMENDATION_NAMES[w.screen.recommendation]}{w.screen.stale ? " · 기준 변경 전" : ""}
+                                  </span>
+                                )}
+                                {w.screen?.role.fits === true && <span className="role-chip" data-help={w.screen.role.label}>역할 · {w.screen.role.roles[0]}{w.screen.role.roles.length > 1 ? ` 외 ${w.screen.role.roles.length - 1}` : ""}</span>}
+                                {w.screen?.role.fits === false && <span className="role-chip none" data-help={w.screen.role.label}>역할 없음</span>}
+                                <span className="venue">{w.venue || w.type}</span>
                                 {seeds.includes(w.id) && (
                                   <span className="seed-label">◆ seed</span>
                                 )}
@@ -2265,15 +2282,7 @@ export function App() {
                                     관련성 판단 보류
                                   </span>
                                 )}
-                                {w.screen && (
-                                  <span className={`screen-badge ${w.screen.recommendation}${w.screen.stale ? " stale" : ""}`}
-                                    title={screenExplanation(w.screen).full}>
-                                    AI {RECOMMENDATION_NAMES[w.screen.recommendation]}{w.screen.stale ? " · 기준 변경 전" : ""}
-                                  </span>
-                                )}
-                                {w.character?.type && <span className="subtle">{CHARACTER_TYPES[w.character.type]}</span>}
-                                {w.screen?.role.fits === true && <span className="role-chip" title={w.screen.role.label}>역할 · {w.screen.role.roles[0]}{w.screen.role.roles.length > 1 ? ` 외 ${w.screen.role.roles.length - 1}` : ""}</span>}
-                                {w.screen?.role.fits === false && <span className="role-chip none" title={w.screen.role.label}>역할 없음</span>}
+                                {w.character?.type && <span>{CHARACTER_TYPES[w.character.type]}</span>}
                                 {w.shelf && scope !== "shelf" && (
                                   <span className={`shelf-badge ${w.shelf.match === "title" ? "hint" : ""}`} title={w.shelf.path}>
                                     <LibraryBig size={11} />
@@ -2312,10 +2321,6 @@ export function App() {
                                     {w.evidence.reasons[0]}
                                   </div>
                                 )
-                              )}
-                              {w.screen && screenExplanation(w.screen).line && (
-                                // One line in the list; hovering shows every reason in full.
-                                <div className="row-reason screen-reason" title={screenExplanation(w.screen).full}>{screenExplanation(w.screen).line}</div>
                               )}
                             </button>
                             <span className="similarity-cell">

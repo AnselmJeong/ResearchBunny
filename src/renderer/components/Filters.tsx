@@ -63,9 +63,50 @@ export function Filters({
   const set = (key: keyof FilterValues, v: unknown) =>
     onChange({ ...value, [key]: v });
   return (
-    <div className="filter-panel">
+    <div className="filter-panel" id="filter-panel" role="region" aria-label="필터">
+      {/* AI 추천 first: screening a list starts from the verdict. */}
+      <div className="filter-row screen-filters">
+        <select
+          aria-label="AI 추천"
+          value={value.screen?.[0] || ""}
+          onChange={(e) => set("screen", e.target.value ? [e.target.value] : undefined)}
+        >
+          <option value="">AI 추천: 전체</option>
+          {(Object.keys(RECOMMENDATION_NAMES) as Recommendation[]).map((r) => (
+            <option key={r} value={r}>{RECOMMENDATION_NAMES[r]}</option>
+          ))}
+          <option value="none">아직 심사 안 함</option>
+        </select>
+        <select
+          aria-label="논문 성격"
+          value={value.character?.[0] || ""}
+          onChange={(e) => set("character", e.target.value ? [e.target.value] : undefined)}
+        >
+          <option value="">논문 성격: 전체</option>
+          <optgroup label="유형">
+            {(Object.keys(CHARACTER_TYPES) as CharacterType[]).map((t) => (
+              <option key={t} value={t}>{CHARACTER_TYPES[t]}</option>
+            ))}
+          </optgroup>
+          <optgroup label="기여">
+            {(Object.keys(CONTRIBUTIONS) as Contribution[]).map((c) => (
+              <option key={c} value={c}>{CONTRIBUTIONS[c].label}</option>
+            ))}
+          </optgroup>
+        </select>
+        <select
+          aria-label="목적 역할"
+          value={value.role?.[0] || ""}
+          onChange={(e) => set("role", e.target.value ? [e.target.value] : undefined)}
+        >
+          <option value="">목적 역할: 전체</option>
+          <option value="fits">지금 목적에서 역할 있음</option>
+          <option value="none">지금 목적에서 역할 없음</option>
+        </select>
+      </div>
       <div className="filter-row">
-        <label className="check">
+        <label className="check"
+          data-help="초기 관심(seed·연구 질문)과 텍스트·주제가 가까운 문헌만 봅니다. 초록이 부족한 논문은 판단 보류로 남습니다.">
           <input
             type="checkbox"
             checked={value.relevance}
@@ -176,49 +217,6 @@ export function Filters({
           </button>
         </span>
       </div>
-      <div className="filter-row">
-        <select
-          aria-label="AI 추천"
-          value={value.screen?.[0] || ""}
-          onChange={(e) => set("screen", e.target.value ? [e.target.value] : undefined)}
-        >
-          <option value="">AI 추천: 전체</option>
-          {(Object.keys(RECOMMENDATION_NAMES) as Recommendation[]).map((r) => (
-            <option key={r} value={r}>{RECOMMENDATION_NAMES[r]}</option>
-          ))}
-          <option value="none">아직 심사 안 함</option>
-        </select>
-        <select
-          aria-label="논문 성격"
-          value={value.character?.[0] || ""}
-          onChange={(e) => set("character", e.target.value ? [e.target.value] : undefined)}
-        >
-          <option value="">논문 성격: 전체</option>
-          <optgroup label="유형">
-            {(Object.keys(CHARACTER_TYPES) as CharacterType[]).map((t) => (
-              <option key={t} value={t}>{CHARACTER_TYPES[t]}</option>
-            ))}
-          </optgroup>
-          <optgroup label="기여">
-            {(Object.keys(CONTRIBUTIONS) as Contribution[]).map((c) => (
-              <option key={c} value={c}>{CONTRIBUTIONS[c].label}</option>
-            ))}
-          </optgroup>
-        </select>
-        <select
-          aria-label="목적 역할"
-          value={value.role?.[0] || ""}
-          onChange={(e) => set("role", e.target.value ? [e.target.value] : undefined)}
-        >
-          <option value="">목적 역할: 전체</option>
-          <option value="fits">지금 목적에서 역할 있음</option>
-          <option value="none">지금 목적에서 역할 없음</option>
-        </select>
-      </div>
-      <p className="subtle">
-        관련성은 이 후보 집합에서 계산한 텍스트·주제 기준입니다. 초록이 부족한
-        논문은 판단 보류로 남습니다.
-      </p>
     </div>
   );
 }

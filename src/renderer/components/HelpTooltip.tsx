@@ -217,7 +217,8 @@ export function HelpTooltip() {
           ref={box}
           role="tooltip"
           popover="manual"
-          className="help-tooltip"
+          // data-help-wide: a longer note in lines, such as an AI verdict's reasons.
+          className={`help-tooltip${tip.target.dataset.helpWide !== undefined ? " wide" : ""}`}
           onPointerEnter={clear}
           onPointerLeave={() => {
             clear();
