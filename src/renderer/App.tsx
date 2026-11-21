@@ -34,6 +34,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Play,
+  RefreshCw,
   RotateCcw,
   Settings as SettingsIcon,
   SlidersHorizontal,
@@ -1425,6 +1426,11 @@ export function App() {
                     data-help="비슷한 서고 논문의 폴더(로컬 임베딩)와 AI 판정으로 수신함 PDF가 갈 폴더를 제안합니다. 미분류 목록에서 열면 미분류 PDF도 다시 판정합니다. 확인하고 승인한 PDF만 옮깁니다."
                     onClick={() => setDialog("shelfSort")}>
                     <FolderInput size={15} /> 수신함 정리
+                  </button>}
+                  {scope === "shelf" && <button className="secondary" disabled={!snapshot.shelf.online || ["paused", "scanning"].includes(snapshot.shelf.job.state)}
+                    data-help="서고 폴더를 지금 다시 읽어, Finder에서 지우거나 옮긴 PDF를 바로 반영합니다. 지운 PDF는 서지·임베딩 기록과 함께 색인에서 빼고, 프로젝트 논문의 PDF 연결은 같은 논문의 다른 서고 PDF로 옮깁니다. 서고 파일은 건드리지 않습니다."
+                    onClick={() => void task(() => window.bunny.shelfControl({ action: "reindex" }))}>
+                    <RefreshCw size={15} /> 다시 색인
                   </button>}
                   <div className="view-switch">
                     {(

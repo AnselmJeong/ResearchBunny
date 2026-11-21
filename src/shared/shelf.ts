@@ -303,8 +303,16 @@ export interface ParsedFilename {
   title: string;
 }
 /** Parse the library's `연도 - 저자 - 제목.pdf` naming convention. */
+/**
+ * A name without the copy number a clash adds: "Title (2)" and Chrome's "Title (1)"
+ * mean "Title". Four-digit years such as "(2016)" are part of a name and stay.
+ */
+export const withoutCopyNumber = (stem: string) => stem.replace(/\s*\(\d{1,2}\)\s*$/, "").trim();
+/** Shelf file names that are one name once the copy number and case are set aside: `a.pdf` and `A (2).pdf`. */
+export const shelfNameKey = (name: string) => withoutCopyNumber(name.normalize("NFC").replace(/\.pdf$/i, "")).toLowerCase();
+
 export function parseShelfFilename(name: string): ParsedFilename | null {
-  const base = name.replace(/\.pdf$/i, "").normalize("NFC").trim();
+  const base = withoutCopyNumber(name.replace(/\.pdf$/i, "").normalize("NFC").trim());
   const match = base.match(/^(\d{4}|n\.d\.)\s+-\s+(.+?)\s+-\s+(.+)$/i);
   if (!match) return null;
   const year = Number(match[1]);

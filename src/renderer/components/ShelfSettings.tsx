@@ -198,9 +198,9 @@ export function ShelfSettings({ onError, onChanged }: { onError: (error: unknown
         <div><dt>임베딩</dt><dd>{counts.embedded.toLocaleString()} / {counts.embeddable.toLocaleString()}</dd></div>
         {STATUS_LABELS.map(([key, label]) => <div key={key}><dt>{label}</dt><dd>{counts.statuses[key].toLocaleString()}</dd></div>)}
       </dl>
-      <p className="subtle">마지막 스캔 {summary.root?.lastScanAt ? new Date(summary.root.lastScanAt).toLocaleString() : "없음"} · 앱이 켜져 있으면 30분마다 다시 스캔합니다.</p>
+      <p className="subtle">마지막 스캔 {summary.root?.lastScanAt ? new Date(summary.root.lastScanAt).toLocaleString() : "없음"} · 앱이 켜져 있으면 30분마다 다시 스캔합니다. Finder에서 PDF를 지우거나 옮겼다면 다시 색인을 누르세요. 바로 반영하고, 지운 PDF는 서지·임베딩 기록과 함께 색인에서 뺍니다.</p>
       <div className="stack-actions">
-        <button disabled={busy || running} onClick={() => void control("scan")}><RefreshCw size={14} />다시 스캔</button>
+        <button disabled={busy || job?.state === "scanning" || job?.state === "paused"} onClick={() => void control("reindex")}><RefreshCw size={14} />다시 색인</button>
         {job?.state === "paused"
           ? <button disabled={busy} onClick={() => void control("resume")}><Play size={14} />재개</button>
           : <button disabled={busy} onClick={() => void control("pause")}><Pause size={14} />일시정지</button>}
