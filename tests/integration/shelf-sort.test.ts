@@ -22,7 +22,9 @@ const INBOX = {
   dong: "2026 - Dong - A gardening note on quantum soil.pdf",
   eun: "_uncategorized/2025 - Eun - Pottery glaze chemistry notes.pdf",
   copy: "2023 - Kim - Hippocampal dopamine supports memory consolidation (1).pdf",
-  version: "2023 - Kim - Hippocampal dopamine supports memory consolidation.pdf",
+  // Same name as the filed paper: moved there it would become "… (2).pdf".
+  clash: "2023 - Kim - Hippocampal dopamine supports memory consolidation.pdf",
+  version: "2024 - Kim - Hippocampal dopamine supports memory consolidation.pdf",
   leeAgain: "2022 - Lee - Hippocampal replay and memory.pdf",
 };
 const TAXONOMY = {
@@ -50,8 +52,10 @@ async function buildShelf(dir: string, system = true) {
   await pdf(join(dir, INBOX.dong), ["A gardening note on quantum soil", "Quantum soil gardening for tomatoes."]);
   await pdf(join(dir, INBOX.eun), ["Pottery glaze chemistry notes", "Glaze chemistry for pottery kilns."]);
   await copyFile(join(dir, KIM), join(dir, INBOX.copy));
-  // Another version: same title, clearly larger. A near-identical re-download: same title, size within 2%.
-  await pdf(join(dir, INBOX.version), ["Hippocampal dopamine supports memory consolidation", "Min Kim", "Accepted manuscript with supplementary discussion of dopamine release,", "replay, consolidation, behavioural controls and extended methods."]);
+  // Same title, clearly larger: under the filed paper's own name a second copy, under another name another version.
+  // A near-identical re-download: same title, size within 2%.
+  await pdf(join(dir, INBOX.clash), ["Hippocampal dopamine supports memory consolidation", "Min Kim", "Accepted manuscript with supplementary discussion of dopamine release,", "replay, consolidation, behavioural controls and extended methods."]);
+  await pdf(join(dir, INBOX.version), ["Hippocampal dopamine supports memory consolidation", "Min Kim", "Preprint posted before review, with an extended discussion of dopamine release,", "replay, consolidation, behavioural controls, pilot data and extended methods."]);
   await pdf(join(dir, INBOX.leeAgain), ["Hippocampal replay and memory", "J Lee", "Hippocampal replay during rest strengthens memory trace."]);
   if (!system) return;
   await mkdir(join(dir, "_system"), { recursive: true });
@@ -185,7 +189,7 @@ test("inbox proposals combine neighbour votes, AI decisions and duplicate rules,
 
   // The inbox is the shelf root: what an earlier run parked in _uncategorized is not proposed again.
   const items = state.items;
-  expect(items).toHaveLength(7);
+  expect(items).toHaveLength(8);
   expect(items.find((i) => i.relPath === INBOX.eun)).toBeUndefined();
   expect(byPath(items, INBOX.ahn)).toMatchObject({ target: MEMORY, source: "ai", confidence: "high", agree: true });
   expect(byPath(items, INBOX.ahn).votes[0].path).toBe(MEMORY);
@@ -196,6 +200,9 @@ test("inbox proposals combine neighbour votes, AI decisions and duplicate rules,
   expect(byPath(items, INBOX.copy)).toMatchObject({ target: "_duplicated", source: "duplicate", existing: KIM, reason: "같은 파일이 이미 서고에 있습니다." });
   expect(byPath(items, INBOX.leeAgain)).toMatchObject({ target: "_duplicated", source: "duplicate", existing: LEE });
   expect(byPath(items, INBOX.version)).toMatchObject({ target: MEMORY, source: "version", existing: KIM });
+  // Sizes differ, so it may be the other version: a duplicate, but one to look at.
+  expect(byPath(items, INBOX.clash)).toMatchObject({ target: "_duplicated", source: "duplicate", confidence: "medium", existing: KIM });
+  expect(byPath(items, INBOX.clash).reason).toStartWith("같은 이름의 논문이 이미 폴더에 있습니다 (그 파일 1쪽 · ");
 
   // One AI call: only papers without an existing copy, with candidates and the rules of candidate leaves.
   expect(calls).toHaveLength(1);
@@ -216,20 +223,20 @@ test("inbox proposals combine neighbour votes, AI decisions and duplicate rules,
   const approved = items.filter((i) => i.target).map((i) => ({ fileId: i.fileId, target: i.target! }));
   const result = await service.call("shelfSortApply", { items: [{ fileId: byPath(items, INBOX.ahn).fileId, target: "01 Brain/../escape" }, ...approved] });
   await service.shelf.wait();
-  expect(result).toMatchObject({ moved: 3, uncategorized: 1, duplicated: 2 });
+  expect(result).toMatchObject({ moved: 3, uncategorized: 1, duplicated: 3 });
   expect(result.skipped.map((s: { reason: string }) => s.reason)).toEqual(["분류 기준에 없는 폴더입니다.", "파일이 바뀌었습니다. 제안을 다시 만드세요."]);
 
-  // Files moved with their names; a taken name gets " (2)" as intake.py does.
+  // Files moved with their names; no "(2)" copy lands next to the paper it repeats.
   const moved = [`${MEMORY}/${INBOX.ahn}`, `${SLEEP}/${INBOX.choi}`, `_uncategorized/${INBOX.dong}`, `_duplicated/${INBOX.copy}`, `_duplicated/${INBOX.leeAgain}`,
-    `${MEMORY}/2023 - Kim - Hippocampal dopamine supports memory consolidation (2).pdf`];
+    `_duplicated/${INBOX.clash}`, `${MEMORY}/${INBOX.version}`];
   for (const rel of moved) expect((await stat(join(dir, rel))).isFile()).toBe(true);
   expect((await readdir(dir)).filter((name) => name.endsWith(".pdf"))).toEqual([INBOX.baek]);
 
   // The ledger intake.py keeps: move_log.jsonl, logs/intake-<date>.md and a rebuilt index.json.
   const log = (await readFile(join(dir, "_system", "move_log.jsonl"), "utf8")).trim().split("\n");
-  expect(log).toHaveLength(6);
+  expect(log).toHaveLength(7);
   expect(log[0]).toStartWith('{"id": -100, "src": ');
-  expect(log.map((line) => JSON.parse(line).by)).toEqual(Array(6).fill("ResearchBunny"));
+  expect(log.map((line) => JSON.parse(line).by)).toEqual(Array(7).fill("ResearchBunny"));
   const [logName] = await readdir(join(dir, "_system", "logs"));
   const runLog = await readFile(join(dir, "_system", "logs", logName), "utf8");
   expect(logName).toMatch(/^intake-\d{4}-\d\d-\d\d\.md$/);
@@ -238,7 +245,8 @@ test("inbox proposals combine neighbour votes, AI decisions and duplicate rules,
   expect(runLog).toContain(`- (uncategorized) _duplicated/${INBOX.copy}\n`);
   const index = JSON.parse(await readFile(join(dir, "index.json"), "utf8"));
   expect(index.categories[MEMORY]).toContain(INBOX.ahn);
-  expect(index.categories._duplicated.sort()).toEqual([INBOX.copy, INBOX.leeAgain].sort());
+  expect(index.categories._duplicated.sort()).toEqual([INBOX.copy, INBOX.leeAgain, INBOX.clash].sort());
+  expect((await readdir(join(dir, MEMORY))).filter((name) => name.includes("(2)"))).toEqual([]);
   expect(index.files[INBOX.dong]).toEqual({ category: "_uncategorized" });
 
   // The index follows without re-reading: same row, folder, attachment; duplicates leave the shelf.

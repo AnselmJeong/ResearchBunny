@@ -16,7 +16,9 @@ import {
   isUncategorizedFolder,
   leafNameProblem,
   leafPath,
+  shelfNameKey,
   titleKey,
+  withoutCopyNumber,
   type ShelfFileInfo,
   type ShelfLeafList,
   type ShelfNewLeaf,
@@ -431,22 +433,31 @@ export class ShelfSorter {
     const library = rows.filter((r) => !sorting(r));
     const inbox = rows.filter(sorting);
 
-    // Existing copies, first by path as in the shelf's own duplicate rule.
-    const titleOf = (row: Row) => titleKey(parseInfo(row).parsed?.title || "");
-    const known = { hash: new Map<string, Row>(), work: new Map<string, Row>(), title: new Map<string, Row>() };
+    // Existing copies, first by path as in the shelf's own duplicate rule. A clash's copy number
+    // ("Title (2).pdf") is set aside: rows indexed before parsing dropped it still carry it.
+    const titleOf = (row: Row) => titleKey(withoutCopyNumber(parseInfo(row).parsed?.title || ""));
+    const nameOf = (row: Row) => shelfNameKey(basename(row.rel_path));
+    const known = { hash: new Map<string, Row>(), work: new Map<string, Row>(), title: new Map<string, Row>(), name: new Map<string, Row>() };
     const remember = (row: Row) => {
       if (row.hash && !known.hash.has(row.hash)) known.hash.set(row.hash, row);
       if (row.work_id && !known.work.has(row.work_id)) known.work.set(row.work_id, row);
       const key = titleOf(row);
       if (key.length >= TITLE_KEY_MIN && !known.title.has(key)) known.title.set(key, row);
+      if (parseInfo(row).parsed && !known.name.has(nameOf(row))) known.name.set(nameOf(row), row);
     };
     library.forEach(remember);
     const copyOf = (row: Row): { row: Row; exact: boolean } | null => {
       const primary = parseInfo(row).duplicateOf;
       const twin = (row.hash && known.hash.get(row.hash)) || (primary ? byId.get(primary) : undefined);
       if (twin && twin.id !== row.id) return { row: twin, exact: true };
-      const same = (row.work_id && known.work.get(row.work_id)) || known.title.get(titleOf(row));
+      // The shelf's names are "year - authors - title": the same name is the same paper, whatever copy number it carries.
+      const same = (row.work_id && known.work.get(row.work_id)) || known.title.get(titleOf(row)) || (parseInfo(row).parsed ? known.name.get(nameOf(row)) : undefined);
       return same && same.id !== row.id ? { row: same, exact: false } : null;
+    };
+    const pagesOf = (row: Row) => {
+      const pages = parseInfo(row).pages;
+      const size = row.size >= 1024 * 1024 ? `${(row.size / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(row.size / 1024))} KB`;
+      return `${pages ? `${pages}쪽 · ` : ""}${size}`;
     };
 
     const items: ShelfSortItem[] = [];
@@ -469,6 +480,14 @@ export class ShelfSorter {
       if (copy && (copy.exact || sameSize(copy.row.size, row.size))) {
         patch(item, { target: SHELF_DUPLICATED, source: "duplicate", confidence: "high", existing: copy.row.rel_path,
           reason: copy.exact ? "같은 파일이 이미 서고에 있습니다." : "같은 논문의 크기가 같은 사본(2% 이내)이 이미 서고에 있습니다." });
+        continue;
+      }
+      // Filed next to its namesake it would become "… (2).pdf": a second copy of one paper, not a version to keep.
+      // Sizes differ, so it may be the preprint or the journal's typeset PDF of the copy there: left for review.
+      const namesake = parseInfo(row).parsed ? known.name.get(nameOf(row)) : undefined;
+      if (namesake && namesake.id !== row.id && leafOf.has(namesake.folder.normalize("NFC"))) {
+        patch(item, { target: SHELF_DUPLICATED, source: "duplicate", confidence: "medium", existing: namesake.rel_path,
+          reason: `같은 이름의 논문이 이미 폴더에 있습니다 (그 파일 ${pagesOf(namesake)}, 이 파일 ${pagesOf(row)}). 프리프린트와 출판본처럼 판본이 다를 수 있으니 확인하세요.` });
         continue;
       }
       remember(row);

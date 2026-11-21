@@ -434,7 +434,7 @@ export const schemas = {
   }),
   shelfMovePreview: z.object({ path: z.string().trim().min(1).max(4096) }),
   chooseShelfRoot: z.object({}),
-  shelfControl: z.object({ action: z.enum(["pause", "resume", "cancel", "retryFailed", "reresolve", "reembed", "confirmMissing", "scan"]) }),
+  shelfControl: z.object({ action: z.enum(["pause", "resume", "cancel", "retryFailed", "reresolve", "reembed", "confirmMissing", "scan", "reindex"]) }),
   shelfPull: z.object({}),
   shelfAdopt: z.object({}),
   shelfRelated: z.object({ projectId: id, workId: id, limit: z.number().int().min(1).max(50).default(10), otherFoldersOnly: z.boolean().default(false) }),

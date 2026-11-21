@@ -130,6 +130,9 @@ export class Shelf {
   /** Papers embedded by the current pass, reported when it ends. */
   private embeddedNow = 0;
   private confirmMissing = false;
+  /** The user asked to read the shelf again now; the next walk forgets files that are gone. */
+  private reindexRequested = false;
+  private reindexRunning = false;
   private held = false;
   private resolverPausedUntil = 0;
   private resolverReason = "";
@@ -320,6 +323,69 @@ export class Shelf {
     this.db.db.prepare("DELETE FROM shelf_files WHERE id=?").run(id);
     return row.work_id;
   }
+  /**
+   * Take files that are gone from disk out of the index for good: their rows,
+   * their PDF links, and records, embeddings and search rows nothing else uses.
+   * Runs after a full pass, so moved and renamed files have already been matched.
+   */
+  private forgetGone(root: RootRow): number {
+    const gone = this.db.db.prepare("SELECT * FROM shelf_files WHERE root_id=? AND status='missing' ORDER BY rel_path").all(root.id) as FileRow[];
+    this.db.transaction(() => {
+      const works = new Set<string>();
+      // Rows first, links after: a paper's links go to a file that stays, never to another file being forgotten.
+      for (const row of gone) this.db.db.prepare("DELETE FROM shelf_files WHERE id=?").run(row.id);
+      for (const row of gone) {
+        this.dropLinks(row, root);
+        if (row.work_id) works.add(row.work_id);
+      }
+      this.relinkStrays(root);
+      this.promoteCopies(root);
+      this.dropOrphans(works);
+    });
+    this.revision++;
+    return gone.length;
+  }
+  /**
+   * Links naming a shelf row that no longer exists, left by versions before the
+   * reindex (a renamed file taking another row's path kept that row's attachment):
+   * they follow a shelf file with the same bytes, or go.
+   */
+  private relinkStrays(root: RootRow) {
+    const strays = this.db.db.prepare(
+      "SELECT data FROM attachments WHERE json_extract(data,'$.shelfFileId') IS NOT NULL AND json_extract(data,'$.shelfFileId') NOT IN (SELECT id FROM shelf_files)",
+    ).all() as { data: string }[];
+    for (const { data } of strays) {
+      const a = JSON.parse(data) as Attachment;
+      const twin = this.db.db.prepare(
+        "SELECT * FROM shelf_files WHERE root_id=? AND hash=? AND status NOT IN ('missing','hidden','failed') ORDER BY json_extract(info,'$.duplicateOf') IS NOT NULL,rel_path LIMIT 1",
+      ).get(root.id, a.hash) as FileRow | undefined;
+      const linked = twin && this.db.db.prepare("SELECT 1 FROM attachments WHERE work_id=? AND id!=? AND (json_extract(data,'$.shelfFileId')=? OR json_extract(data,'$.hash')=?) LIMIT 1")
+        .get(a.workId, a.id, twin.id, twin.hash);
+      if (!twin || linked) this.db.db.prepare("DELETE FROM attachments WHERE id=?").run(a.id);
+      else this.db.saveAttachment({ ...a, name: basename(twin.rel_path), path: join(root.path, twin.rel_path), size: twin.size, exists: true, shelfFileId: twin.id });
+    }
+  }
+  /**
+   * The links a file left behind when its bytes left the shelf. Its own attachment
+   * goes; a paper that linked it is relinked to another shelf file of the same work,
+   * or loses the link, so the paper shows as needing a PDF again.
+   */
+  private dropLinks(row: FileRow, root: RootRow) {
+    const heir = row.work_id
+      ? this.db.db.prepare(
+        "SELECT * FROM shelf_files WHERE root_id=? AND work_id=? AND id!=? AND hash IS NOT NULL AND status NOT IN ('missing','hidden','failed') ORDER BY json_extract(info,'$.duplicateOf') IS NOT NULL,rel_path LIMIT 1",
+      ).get(root.id, row.work_id, row.id) as FileRow | undefined
+      : undefined;
+    const links = this.db.db.prepare("SELECT data FROM attachments WHERE id=? OR json_extract(data,'$.shelfFileId')=?").all(row.attachment_id || "", row.id) as { data: string }[];
+    for (const { data } of links) {
+      const a = JSON.parse(data) as Attachment;
+      const own = a.id === row.attachment_id || a.workId === row.work_id;
+      const linked = heir && this.db.db.prepare("SELECT 1 FROM attachments WHERE work_id=? AND id!=? AND (json_extract(data,'$.shelfFileId')=? OR json_extract(data,'$.hash')=?) LIMIT 1")
+        .get(a.workId, a.id, heir.id, heir.hash);
+      if (own || !heir || linked) this.db.db.prepare("DELETE FROM attachments WHERE id=?").run(a.id);
+      else this.db.saveAttachment({ ...a, name: basename(heir.rel_path), path: join(root.path, heir.rel_path), hash: heir.hash!, size: heir.size, exists: true, shelfFileId: heir.id });
+    }
+  }
   start() {
     if (this.timer) return;
     this.timer = setInterval(() => void this.scan("timer"), RESCAN_MS);
@@ -333,12 +399,25 @@ export class Shelf {
     clearTimeout(this.followUp);
     clearTimeout(this.storedTimer);
     this.timer = undefined;
+    this.reindexRequested = false;
     this.control?.abort();
   }
+  /** Until no cycle runs, including one a reindex request starts when the cycle it stopped ends. */
   async wait() {
-    await this.running;
+    while (this.running) await this.running;
   }
-  command(action: "pause" | "resume" | "cancel" | "retryFailed" | "reresolve" | "reembed" | "confirmMissing" | "scan") {
+  command(action: "pause" | "resume" | "cancel" | "retryFailed" | "reresolve" | "reembed" | "confirmMissing" | "scan" | "reindex") {
+    if (action === "reindex") {
+      if (this.reindexRunning) return;
+      this.reindexRequested = true;
+      // A cycle in progress may have walked before the user's changes; stop it and walk again when it ends.
+      if (this.running) {
+        this.control?.abort();
+        return;
+      }
+      void this.scan(action);
+      return;
+    }
     if (action === "pause") {
       this.db.pref("shelf:paused", true);
       this.control?.abort();
@@ -398,6 +477,7 @@ export class Shelf {
       .finally(() => {
         this.control = null;
         this.running = null;
+        this.reindexRunning = false;
         this.managed = null;
         this.revision++;
         this.emit({ type: "changed" });
@@ -406,6 +486,8 @@ export class Shelf {
           this.storedQueued = false;
           this.indexStoredSoon();
         }
+        // Started here, not on a timer, so `wait()` sees the new cycle before it returns.
+        if (this.reindexRequested && !this.paused() && !this.held) void this.scan("reindex");
       });
     return this.running;
   }
@@ -418,7 +500,11 @@ export class Shelf {
   }
 
   private async cycle(root: RootRow, config: ShelfConfig, signal: AbortSignal) {
-    this.setJob({ state: "scanning", message: "서고 폴더를 확인하고 있습니다." });
+    // A reindex is the user saying the folder is as they want it: what is gone, they removed.
+    const reindex = this.reindexRequested;
+    this.reindexRequested = false;
+    this.reindexRunning = reindex;
+    this.setJob({ state: "scanning", message: reindex ? "서고 폴더를 처음부터 다시 읽고 있습니다." : "서고 폴더를 확인하고 있습니다." });
     if (!(await rootOnline(root.path))) {
       this.online = false;
       this.setJob({ state: "offline", message: "서고 오프라인 · NAS 연결이 필요합니다. 서지·초록·추천은 계속 쓸 수 있습니다." });
@@ -435,13 +521,23 @@ export class Shelf {
       this.retrySoon();
       return;
     }
+    if (reindex) {
+      // An empty walk of a shelf that had files is a share not mounted properly, never a deletion.
+      if (!walked.files.length && this.db.db.prepare("SELECT 1 FROM shelf_files WHERE root_id=? AND status!='missing' LIMIT 1").get(root.id)) {
+        this.setJob({ state: "idle", message: "서고 폴더에서 PDF를 하나도 찾지 못해 색인을 그대로 두었습니다. NAS 연결을 확인한 뒤 다시 색인하세요." });
+        return;
+      }
+      this.confirmMissing = true;
+    }
     const confirm = await this.applyScan(root, walked, signal);
     this.modelKey = null; // re-check the model digest once per cycle
     this.setJob({ state: "indexing", message: "서고 색인 중", ...this.progress(root.id) });
     await this.indexWaiting(root, signal, () => this.setJob({ state: "indexing", message: this.indexMessage(), ...this.progress(root.id) }, true));
+    // Every new file is hashed by now, so a file that was moved or renamed has taken back its row.
+    const forgotten = reindex ? this.forgetGone(root) : 0;
     await this.embed(signal);
     this.db.db.prepare("UPDATE shelf_roots SET last_scan_at=? WHERE id=?").run(now(), root.id);
-    this.finish(root, confirm);
+    this.finish(root, confirm, reindex ? `다시 색인 완료 · 사라진 파일 ${forgotten.toLocaleString()}개를 색인에서 뺐습니다` : "");
   }
   /** The app's own downloads and imports: extract and embed just the files waiting in the index, without a walk. */
   private async catchUp(root: RootRow, signal: AbortSignal) {
@@ -467,7 +563,7 @@ export class Shelf {
       report();
     }
   }
-  private finish(root: RootRow, confirm: { missing: number; total: number } | null) {
+  private finish(root: RootRow, confirm: { missing: number; total: number } | null, note = "") {
     if (!this.resolverActive() && this.timer) {
       // Resume bibliographic checks when the OpenAlex pause ends rather than at the next 30-minute scan.
       clearTimeout(this.followUp);
@@ -477,7 +573,7 @@ export class Shelf {
     const counts = this.counts(root.id);
     this.setJob(confirm
       ? { state: "confirm", message: `서고 파일 ${confirm.missing}개가 한 번에 사라졌습니다. 마운트를 확인한 뒤 '사라진 파일 반영'을 누르세요.`, confirm }
-      : { state: "idle", message: `서고 ${counts.works.toLocaleString()}편 · 확인 필요 ${this.reviewCount(root.id).toLocaleString()}편${counts.stages.extracted ? ` · 서지 확인 대기 ${counts.stages.extracted.toLocaleString()}편` : ""}${this.embeddedNow ? ` · 새로 임베딩 ${this.embeddedNow.toLocaleString()}편` : ""}${this.resolverPausedUntil > Date.now() ? ` · ${this.resolverReason}` : ""}${this.embeddingPaused ? ` · ${this.embeddingPaused}` : ""}` });
+      : { state: "idle", message: `${note ? `${note} · ` : ""}서고 ${counts.works.toLocaleString()}편 · 확인 필요 ${this.reviewCount(root.id).toLocaleString()}편${counts.stages.extracted ? ` · 서지 확인 대기 ${counts.stages.extracted.toLocaleString()}편` : ""}${this.embeddedNow ? ` · 새로 임베딩 ${this.embeddedNow.toLocaleString()}편` : ""}${this.resolverPausedUntil > Date.now() ? ` · ${this.resolverReason}` : ""}${this.embeddingPaused ? ` · ${this.embeddingPaused}` : ""}` });
   }
 
   /** A share that is not readable yet (just mounted, permission pending) is retried within minutes. */
@@ -718,6 +814,8 @@ export class Shelf {
         this.db.db.prepare("UPDATE shelf_files SET rel_path=?,folder_id=?,size=?,mtime=?,hashed_size=?,hashed_mtime=?,seen_at=?,missing_since=NULL,status=? WHERE id=?")
           .run(current.rel_path, current.folder_id, size, mtime, size, mtime, now(), info.statusBeforeMissing || "provisional", renamed.id);
         this.syncAttachmentPath(renamed.id, root);
+        // The bytes this path held before (another version put in its place, say) are gone from it.
+        this.dropLinks(current, root);
         if (current.work_id && current.work_id !== renamed.work_id) this.dropWorkIfOrphan(current.work_id);
         return;
       }

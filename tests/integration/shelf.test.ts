@@ -9,7 +9,7 @@ import { AppError, DEFAULT_FILTERS, type Run, type Work, type ListResult, type M
 import { hasValidPdf } from "../../src/service/interchange/pdf";
 import { mergeWorks, undoMerge } from "../../src/service/db/merge";
 import { deleteTrashedWorks } from "../../src/service/db/trash";
-import { authorMatches, parseShelfFilename, extractAbstractCandidate, SHELF_ALL, SHELF_INBOX, SHELF_REVIEW } from "../../src/shared/shelf";
+import { authorMatches, parseShelfFilename, extractAbstractCandidate, shelfNameKey, SHELF_ALL, SHELF_INBOX, SHELF_REVIEW } from "../../src/shared/shelf";
 import { movedRel, planScan, rootRelation } from "../../src/service/shelf/scanner";
 import { slimRaw } from "../../src/service/shelf/resolver";
 import { fromCsl } from "../../src/service/providers/doi-org";
@@ -124,6 +124,10 @@ test("filename parsing, abstract extraction, move planning and raw slimming", ()
   expect(parseShelfFilename("2026 - Bauer-Negrini, et al. - ADHD and Late-Life Cognitive Impairment.pdf")).toEqual({ year: 2026, authors: ["Bauer-Negrini"], title: "ADHD and Late-Life Cognitive Impairment" });
   expect(parseShelfFilename("2026 - Bae, Cha - Neural Data Needs Semantic Tokenization; Behavioral Events - Boundaries.pdf")).toEqual({ year: 2026, authors: ["Bae", "Cha"], title: "Neural Data Needs Semantic Tokenization; Behavioral Events - Boundaries" });
   expect(parseShelfFilename("scan0001.pdf")).toBeNull();
+  // A clash's copy number is not part of the title; a year in parentheses is.
+  expect(parseShelfFilename("2026 - Yu et al. - Neuroimaging-Based Subgroups in Schizophrenia (2).pdf")?.title).toBe("Neuroimaging-Based Subgroups in Schizophrenia");
+  expect(parseShelfFilename("2016 - Friston et al. - The dysconnection hypothesis (2016).pdf")?.title).toBe("The dysconnection hypothesis (2016)");
+  expect(shelfNameKey("2024 - Cole et al. - Accelerated Theta Burst (3).pdf")).toBe(shelfNameKey("2024 - Cole et al. - accelerated theta burst.PDF"));
   expect(extractAbstractCandidate(`Title here ${ABSTRACT_SMITH} Introduction The body.`)).toStartWith("Interoception, the sensing");
   expect(extractAbstractCandidate("Abstract Too short. Introduction")).toBeNull();
   const plan = planScan(
@@ -968,6 +972,113 @@ test("shelf lookups keep an OpenAlex reserve, keep paid results and resume after
     }
   });
 });
+
+const SMITH_AAM = "01 Domain A/Leaf X/2024 - Smith et al. - Interoceptive prediction errors in anxiety (2).pdf";
+/** Another version of Smith's paper under the clash name intake.py and 수신함 정리 give it. */
+const writeSmithAam = (dir: string) => pdf(join(dir, SMITH_AAM), ["Accepted manuscript", "Interoceptive prediction errors in anxiety", "John Smith, Mary Jones", "doi: 10.1000/intero", "Author version before typesetting, double spaced."]);
+const linkOf = (service: Service, workId: string) => service.db.attachments(workId).filter((a) => a.mode === "linked");
+
+test("다시 색인 forgets files deleted by hand at once, past the mass-disappearance check, and relinks project papers to another copy", async () => {
+  await fixture(async ({ service, dir, ollama, calls, projectId }) => {
+    await writeSmithAam(dir);
+    await configure(service, dir, ollama.url);
+    const smith = fileOf(service, SMITH)!, aam = fileOf(service, SMITH_AAM)!, kim = fileOf(service, KIM)!;
+    const park = fileOf(service, PARK)!, lost = fileOf(service, LOST)!, supp = fileOf(service, SUPP)!;
+    // Both versions are one paper with a PDF each.
+    expect(aam.work_id).toBe(smith.work_id);
+    // Project papers that link shelf PDFs: one to the second version, one to a paper with no other copy.
+    const p1 = service.db.upsert(blankWork({ title: "Interoception and anxiety (project record)", source: "manual" })).work;
+    const p2 = service.db.upsert(blankWork({ title: "Hearing and cognition (project record)", source: "manual" })).work;
+    service.db.db.prepare("INSERT INTO project_works(project_id,work_id,state) VALUES(?,?,?)").run(projectId, p2.id, "{}");
+    service.shelf.attachTo(aam.id, p1.id);
+    service.shelf.attachTo(park.id, p2.id);
+
+    // Deleted by hand in Finder: more than 20% of the shelf at once, plus one file renamed.
+    for (const rel of [SMITH_AAM, PARK, LOST, SUPP]) await rm(join(dir, rel));
+    const renamed = "03 New/kim-renamed.pdf";
+    await mkdir(join(dir, "03 New"), { recursive: true });
+    await rename(join(dir, KIM), join(dir, renamed));
+    const callsBefore = { ...calls };
+    // A scan already running is stopped and the folder read again.
+    void service.call("shelfControl", { action: "scan" });
+    await service.call("shelfControl", { action: "reindex" });
+    await service.shelf.wait();
+
+    expect(service.shelf.job.state).toBe("idle");
+    expect(service.shelf.job.message).toStartWith("다시 색인 완료 · 사라진 파일 4개를 색인에서 뺐습니다 · ");
+    expect(service.db.db.prepare("SELECT count(*) AS n FROM shelf_files WHERE status='missing'").get()).toEqual({ n: 0 });
+    for (const row of [aam, park, lost, supp]) expect(service.shelf.file(row.id)).toBeNull();
+    // A renamed file keeps its row, record and embedding: nothing is looked up again.
+    expect(fileOf(service, renamed)).toMatchObject({ id: kim.id, work_id: kim.work_id, status: "ok" });
+    expect(calls).toEqual(callsBefore);
+    // Records only the shelf used are gone with their search rows and embeddings.
+    for (const row of [lost, supp]) {
+      expect(service.db.db.prepare("SELECT 1 FROM works WHERE id=?").get(row.work_id)).toBeNull();
+      expect(service.db.db.prepare("SELECT 1 FROM work_embeddings WHERE work_id=?").get(row.work_id)).toBeNull();
+      expect(service.shelf.vectors.has(row.work_id)).toBe(false);
+    }
+    expect(service.db.db.prepare("SELECT count(*) AS n FROM shelf_fts WHERE work_id IN (?,?,?)").get(lost.work_id, supp.work_id, park.work_id)).toEqual({ n: 0 });
+    // The paper keeps the version still on the shelf; a project link follows it there.
+    expect(linkOf(service, smith.work_id).map((a) => a.path)).toEqual([join(dir, SMITH)]);
+    expect(linkOf(service, p1.id)).toMatchObject([{ path: join(dir, SMITH), shelfFileId: smith.id, hash: smith.hash, exists: true }]);
+    expect(await hasValidPdf(service.db, p1.id)).toBe(true);
+    // With no other copy, the link goes: the project paper needs a PDF again.
+    expect(linkOf(service, p2.id)).toEqual([]);
+    expect(service.db.db.prepare("SELECT count(*) AS n FROM attachments WHERE json_extract(data,'$.shelfFileId') IN (?,?,?,?)").get(aam.id, park.id, lost.id, supp.id)).toEqual({ n: 0 });
+
+    // A share mounted empty is never read as everything deleted.
+    await rename(dir, dir + "-elsewhere");
+    await mkdir(dir);
+    await service.call("shelfControl", { action: "reindex" });
+    await service.shelf.wait();
+    expect(service.shelf.job.message).toContain("PDF를 하나도 찾지 못해 색인을 그대로 두었습니다");
+    expect(service.db.db.prepare("SELECT count(*) AS n FROM shelf_files WHERE status='missing'").get()).toEqual({ n: 0 });
+    await rm(dir, { recursive: true });
+    await rename(dir + "-elsewhere", dir);
+  });
+}, 60000);
+
+test("a newer version renamed onto its namesake's path takes the path's links; the replaced bytes leave none behind", async () => {
+  await fixture(async ({ service, dir, ollama }) => {
+    await writeSmithAam(dir);
+    await configure(service, dir, ollama.url);
+    const smith = fileOf(service, SMITH)!, aam = fileOf(service, SMITH_AAM)!;
+    const project = service.db.upsert(blankWork({ title: "Interoception (project record)", source: "manual" })).work;
+    service.shelf.attachTo(smith.id, project.id);
+    // What the duplicate cleanup did: the old file to _duplicated, the other version renamed to the clean name.
+    await mkdir(join(dir, "_duplicated"), { recursive: true });
+    await rename(join(dir, SMITH), join(dir, "_duplicated", basename(SMITH)));
+    await rename(join(dir, SMITH_AAM), join(dir, SMITH));
+    await service.call("shelfControl", { action: "scan" });
+    await service.shelf.wait();
+
+    expect(fileOf(service, SMITH)).toMatchObject({ id: aam.id, hash: aam.hash, work_id: smith.work_id, status: "ok" });
+    expect(service.shelf.file(smith.id)).toBeNull();
+    // One PDF per file: no attachment of the replaced row points at the path with the wrong hash.
+    const atPath = service.db.db.prepare("SELECT json_extract(data,'$.hash') AS hash,json_extract(data,'$.shelfFileId') AS file FROM attachments WHERE json_extract(data,'$.path')=?").all(join(dir, SMITH));
+    expect(atPath).toEqual(expect.arrayContaining([{ hash: aam.hash, file: aam.id }]));
+    expect(atPath.every((a) => (a as { hash: string }).hash === aam.hash)).toBe(true);
+    expect(linkOf(service, project.id)).toMatchObject([{ shelfFileId: aam.id, hash: aam.hash, path: join(dir, SMITH) }]);
+
+    // What versions before 다시 색인 left after the same swap: links naming a row that is gone.
+    // They follow a shelf file with the same bytes, or go when the paper already has it or none is left.
+    const stray = (id: string, workId: string, hash: string) => service.db.saveAttachment({
+      id, workId, name: basename(SMITH), path: join(dir, SMITH), hash, mode: "linked", size: 1, status: "서고 PDF · 원본 위치 유지", exists: true, shelfFileId: "gone-row",
+    });
+    const other = service.db.upsert(blankWork({ title: "Anxiety reading list (project record)", source: "manual" })).work;
+    stray("stray-own", smith.work_id, smith.hash);
+    stray("stray-link", other.id, aam.hash);
+    stray("stray-lost", other.id, "f".repeat(64));
+    await service.call("shelfControl", { action: "reindex" });
+    await service.shelf.wait();
+    expect(service.db.db.prepare("SELECT count(*) AS n FROM attachments WHERE json_extract(data,'$.shelfFileId') NOT IN (SELECT id FROM shelf_files)").get()).toEqual({ n: 0 });
+    expect(linkOf(service, other.id)).toMatchObject([{ id: "stray-link", shelfFileId: aam.id, path: join(dir, SMITH) }]);
+    // The old bytes are still on the shelf as the copy, which now carries the paper's second PDF itself.
+    const copy = fileOf(service, COPY)!;
+    expect(JSON.parse(copy.info).duplicateOf).toBeUndefined();
+    expect(linkOf(service, smith.work_id).map((a) => a.shelfFileId).sort()).toEqual([aam.id, copy.id].sort());
+  });
+}, 60000);
 
 test("a copy takes over when its primary file is deleted, and a stale missing row gives up its path", async () => {
   await fixture(async ({ service, dir, ollama }) => {
